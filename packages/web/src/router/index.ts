@@ -59,11 +59,6 @@ export const router = createRouter({
       path: "/problems",
       component: () => import("../views/ProblemsTab.vue"),
     },
-    {
-      name: "history",
-      path: "/history",
-      component: () => import("../views/HistoryTab.vue"),
-    },
     { path: "/:pathMatch(.*)*", redirect: { name: "browse" } },
   ],
 });

@@ -21,6 +21,7 @@ import MonacoEditor from "../components/MonacoEditor.vue";
 import StatusLine from "../components/StatusLine.vue";
 import ContributePanel from "../components/edit/ContributePanel.vue";
 import DiffDialog from "../components/edit/DiffDialog.vue";
+import FileInfoDialog from "../components/edit/FileInfoDialog.vue";
 import OpenFileDialog from "../components/edit/OpenFileDialog.vue";
 import ProblemsPanel from "../components/edit/ProblemsPanel.vue";
 import TptpPane from "../components/edit/TptpPane.vue";
@@ -37,6 +38,7 @@ import { useChangesStore, type ChangeRow } from "../stores/changes";
 import { useKBStore } from "../stores/kb";
 import { isTestFile, testDialect, useTestsStore } from "../stores/tests";
 import { downloadText, errMsg } from "../utils/format";
+import type { Diagnostic } from "../stores/kb";
 
 const NEW_FILE_TEXT = "; New KIF file\n";
 
@@ -68,7 +70,7 @@ const editingTest = computed(
 const language = computed(() =>
   editingTest.value ? testDialect(current.value!.name) : "kif",
 );
-const diags = shallowRef<any[]>([]);
+const diags = shallowRef<Diagnostic[]>([]);
 const cursor = ref<{ lineNumber: number; column: number } | null>(null);
 /** Toolbar status; when `statusLink` is set it renders as a link into the
  *  Diagnostics tab, filtered to this file. */
@@ -85,6 +87,7 @@ const ghPanelOpen = ref(false);
 const openDialogOpen = ref(false);
 const diffOpen = ref(false);
 const diffRow = ref<ChangeRow | null>(null);
+const infoOpen = ref(false);
 
 // -- Editor -------------------------------------------------------------------
 
@@ -189,7 +192,7 @@ async function validateNow() {
   // no backing file, so it falls back to parse-only checking in a throwaway KB.
   const known = file ? kb.find(file.name, file.origin.kind) : undefined;
   logValidateLane(known ? `lsp (${known.name})` : "scratch (parse-only)");
-  let result: any[];
+  let result: Diagnostic[];
   try {
     if (file && isTestFile(file.name)) {
       await call(
@@ -709,6 +712,14 @@ function onJump({ line, col }: { line: number; col: number }) {
               <rect x="9" y="2.5" width="6" height="11" rx="1" />
             </svg>
           </button>
+          <button
+            type="button"
+            title="File info: KB footprint and edit history"
+            aria-label="File info: KB footprint and edit history"
+            @click="infoOpen = true"
+          >
+            &#9432;
+          </button>
         </div>
         <span class="file-name" :title="dirty ? 'Unsaved changes' : ''">{{
           fileLabel
@@ -759,6 +770,8 @@ function onJump({ line, col }: { line: number; col: number }) {
         @taken="onTaken"
         @keep="onKeep"
       />
+
+      <FileInfoDialog v-model="infoOpen" :current="current" />
     </Card>
 
     <Card class="edit-pane" :class="{ split: tptpOpen }">

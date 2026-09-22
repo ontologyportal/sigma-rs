@@ -52,6 +52,7 @@ mod tests {
             [(
                 "02084071 05 n 01 dog 0 001 @ 02083346 n 0000 | a dog &%Canine+\n",
                 sigmakee_rs_core::lexicon::Pos::Noun,
+                "WordNetMappings30-noun.txt",
             )],
             None,
             None,
@@ -97,6 +98,7 @@ mod tests {
             [(
                 "02084071 05 n 01 dog 0 001 @ 02083346 n 0000 | a dog &%Canine+\n",
                 sigmakee_rs_core::lexicon::Pos::Noun,
+                "WordNetMappings30-noun.txt",
             )],
             None,
             None,

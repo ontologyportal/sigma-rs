@@ -452,6 +452,14 @@ pub trait DiagnosticSource {
         None
     }
 
+    /// [`sentence_location`](Self::sentence_location) for every sentence at
+    /// once.  A per-sid lookup is a scan of the whole source map, so a
+    /// consumer anchoring thousands of sentences builds this once and
+    /// indexes it.  Default: no locations.
+    fn sentence_locations(&self) -> std::collections::HashMap<SentenceId, Span> {
+        std::collections::HashMap::new()
+    }
+
     /// Column span `(start, len)` of argument `arg` within the one-line flat
     /// rendering of `sid`, for drawing a caret underline.  `arg` indexes the
     /// sentence's elements (as `highlight_arg` does).  Default: none.

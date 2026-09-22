@@ -3,10 +3,18 @@
  *  single-file URL, or a whole GitHub repo+branch. `accept` picks which
  *  local/URL files count: `.kif` constituents (the Knowledge base tab) or
  *  test files (the Inference Tests tab); a repo is listed whole either way.
- *  Nothing here loads into the KB -- imported files show up as `available`
- *  rows in the table. Emits `imported` with a one-line summary the tab logs. */
+ *  By default nothing here loads into the KB -- imported files show up as
+ *  `available` rows in the table -- unless "Also load into the knowledge
+ *  base" is checked (`.kif` imports only), which fetches and ingests every
+ *  imported file immediately. Emits `imported` with a one-line summary the
+ *  tab logs. */
 import { computed, ref, watch } from "vue";
-import { GitOrigin } from "../../models/Origin";
+import {
+  GitOrigin,
+  LocalOrigin,
+  RemoteOrigin,
+  type Origin,
+} from "../../models/Origin";
 import { useKBStore } from "../../stores/kb";
 import {
   acceptsFile,
@@ -104,6 +112,28 @@ function removeRepo(r: RepoRef) {
 
 // -- Import -------------------------------------------------------------------
 
+/** Load into the KB immediately after import, instead of leaving the new
+ *  entries `available` for the user to pick later. Only meaningful for
+ *  `.kif` constituents -- a test-file import ignores it. */
+const loadNow = ref(false);
+
+/** Fetch every `entries` file's text and load it into the KB in one batch,
+ *  same as the KB tab's "load a standard set" preset. Returns the clause to
+ *  append to the import summary, or "" if there was nothing to load. */
+async function loadIntoKb(
+  entries: { name: string; origin: Origin }[],
+): Promise<string> {
+  if (!entries.length) return "";
+  const { added, failed } = await kb.loadFiles(entries, (n, total) =>
+    status.set(`Loading ${n}/${total} into the knowledge base…`),
+  );
+  return (
+    `, loaded ${added} into the knowledge base` +
+    (failed.length ? ` (${failed.length} failed)` : "") +
+    "."
+  );
+}
+
 async function doImport() {
   busy.value = true;
   try {
@@ -124,9 +154,14 @@ async function doImport() {
       message =
         `Imported ${added.length} file(s) into the library` +
         (skipped.length
-          ? ` (${skipped.length} skipped, not ${kinds.value.label}).`
-          : ".");
+          ? ` (${skipped.length} skipped, not ${kinds.value.label})`
+          : "");
       resetFileInputs();
+      if (loadNow.value && props.accept === "kif")
+        message += await loadIntoKb(
+          added.map((name) => ({ name, origin: new LocalOrigin() })),
+        );
+      else message += ".";
     } else if (mode.value === "url") {
       if (!url.value.trim()) {
         status.set("Enter a URL first.", true);
@@ -134,8 +169,13 @@ async function doImport() {
       }
       status.set("Fetching…");
       const entry = await library.importUrl(url.value);
-      message = `Imported ${entry.name} into the library.`;
+      message = `Imported ${entry.name} into the library`;
       url.value = "";
+      if (loadNow.value && props.accept === "kif")
+        message += await loadIntoKb([
+          { name: entry.name, origin: new RemoteOrigin(entry.url) },
+        ]);
+      else message += ".";
     } else {
       const r: RepoRef = {
         owner: owner.value,
@@ -144,8 +184,16 @@ async function doImport() {
       };
       status.set(`Listing ${originForRepo(r).label}…`);
       await library.addRepo(r);
-      const n = library.catalogs[library.repoId(r)]?.length ?? 0;
-      message = `Registered ${originForRepo(r).label} — ${n} file(s).`;
+      const catalog = library.catalogs[library.repoId(r)] ?? [];
+      message = `Registered ${originForRepo(r).label} — ${catalog.length} file(s)`;
+      if (loadNow.value && props.accept === "kif") {
+        const origin = originForRepo(r);
+        message += await loadIntoKb(
+          catalog
+            .filter((c) => acceptsFile("kif", c.path))
+            .map((c) => ({ name: origin.nameFor(c.path), origin })),
+        );
+      } else message += ".";
     }
     status.set(message);
     emit("imported", message);
@@ -259,6 +307,14 @@ watch(
         </li>
       </ul>
     </div>
+
+    <label v-if="accept === 'kif'" class="check mt">
+      <input v-model="loadNow" type="checkbox" :disabled="busy" />
+      Also load into the knowledge base
+      <span v-if="mode === 'github'" class="hint"
+        >(loads every listed file)</span
+      >
+    </label>
 
     <StatusLine class="mt-sm" :text="status.text" :error="status.error" />
 

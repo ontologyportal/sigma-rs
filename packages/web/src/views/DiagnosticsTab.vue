@@ -1,11 +1,17 @@
 <script setup lang="ts">
-import { computed, nextTick, ref } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import BusyButton from "../components/BusyButton.vue";
 import Card from "../components/Card.vue";
 import SourceLoc from "../components/SourceLoc.vue";
+import WordNetDiagnosticsCard from "../components/diagnostics/WordNetDiagnosticsCard.vue";
 import { useTabQuery } from "../composables/useTabQuery";
 import { updateParams } from "../router";
+import { call } from "../services/sigma";
 import { useKBStore, type Diagnostic } from "../stores/kb";
+import { useShellStore } from "../stores/shell.ts";
+import type { WordNetDiagnostics } from "sigmakee/sdk";
+import Row from "../components/Row.vue";
+import Col from "../components/Col.vue";
 
 const DIAG_SEV_ORDER = ["error", "warning", "info", "hint"];
 
@@ -25,6 +31,9 @@ type Facets = {
   filtered: { d: Diagnostic; i: number }[];
   errors: number;
 };
+
+const shell = useShellStore();
+const isCompact = computed(() => shell.effectiveLayout == "comfortable");
 
 const DIM_LABEL: Record<Dim, string> = {
   file: "File",
@@ -269,14 +278,42 @@ const revalidating = ref(false);
 const listRef = ref<HTMLElement | null>(null);
 let flashTimer: ReturnType<typeof setTimeout> | null = null;
 
+// WordNet<->KB diagnostics (see WordNetDiagnosticsCard): a separate report,
+// not part of `kb.diagnostics` or its count pill -- refetched whenever the
+// KB's own diagnostics are (re)computed, since that's the same "the KB just
+// changed" signal. `null` (including on a failed/no-lexicon RPC) hides the
+// WordNet sub-tab entirely rather than showing an empty one.
+const wordNetDiag = ref<WordNetDiagnostics | null>(null);
+async function loadWordNetDiagnostics() {
+  try {
+    wordNetDiag.value = (await call("wordnetDiagnostics")).diagnostics;
+  } catch {
+    wordNetDiag.value = null;
+  }
+}
+watch(() => kb.diagnostics, loadWordNetDiagnostics, { immediate: true });
+
+const hasWordNet = computed(() => wordNetDiag.value !== null);
+type Subtab = "diagnostics" | "wordnet";
+const subtab = computed<Subtab>(() =>
+  str(query.value.view) === "wordnet" && hasWordNet.value
+    ? "wordnet"
+    : "diagnostics",
+);
+
 function toggleFilterPanel() {
   filterOpen.value = !filterOpen.value;
 }
 
-/** The URL keys for a filter, sort and page (`p` is 1-based in the URL --
- *  friendlier to read/type than the internal 0-based index; omitted on the
- *  first page). */
-function filterParams(f: Filter, sortValue: string, pageIdx: number) {
+/** The URL keys for a filter, sort, page and sub-tab (`p` is 1-based in the
+ *  URL -- friendlier to read/type than the internal 0-based index; omitted
+ *  on the first page). */
+function filterParams(
+  f: Filter,
+  sortValue: string,
+  pageIdx: number,
+  view: Subtab,
+) {
   return {
     file: f.file,
     sev: f.severity,
@@ -284,6 +321,7 @@ function filterParams(f: Filter, sortValue: string, pageIdx: number) {
     code: f.code,
     sort: sortValue,
     p: pageIdx ? pageIdx + 1 : null,
+    view: view === "wordnet" ? "wordnet" : null,
   };
 }
 
@@ -292,7 +330,7 @@ function setFilter(dim: Dim, value: string) {
   // Picking a type invalidates a code chosen under a different type -- clear
   // it rather than leave a stale, now-impossible combination active.
   if (dim === "kind") next.code = "";
-  updateParams(filterParams(next, sort.value, 0));
+  updateParams(filterParams(next, sort.value, 0, subtab.value));
 }
 
 function onSelect(dim: Dim, e: Event) {
@@ -301,11 +339,17 @@ function onSelect(dim: Dim, e: Event) {
 
 function onSortSelect(e: Event) {
   const value = (e.target as HTMLSelectElement).value;
-  updateParams(filterParams(effectiveFilter.value, value, 0));
+  updateParams(filterParams(effectiveFilter.value, value, 0, subtab.value));
 }
 
 function goToPage(pageIdx: number) {
-  updateParams(filterParams(effectiveFilter.value, sort.value, pageIdx));
+  updateParams(
+    filterParams(effectiveFilter.value, sort.value, pageIdx, subtab.value),
+  );
+}
+
+function setView(view: Subtab) {
+  updateParams(filterParams(effectiveFilter.value, sort.value, 0, view));
 }
 
 async function revalidate() {
@@ -385,132 +429,236 @@ onQuery((q) => {
 </script>
 
 <template>
-  <Card>
-    <div class="inline between">
-      <div class="hint">
-        <template v-if="total">
-          <template v-if="filterActive">
-            <b>{{ filteredCount }}</b> of <b>{{ total }}</b> diagnostic{{
-              total === 1 ? "" : "s"
-            }}
-            shown
-          </template>
-          <template v-else>
-            <b>{{ total }}</b> diagnostic{{ total === 1 ? "" : "s" }}
-          </template>
-          <template v-if="errors">
-            ({{ errors }} error{{ errors === 1 ? "" : "s" }} total)</template
-          >
-          — click a <span class="loc">file:line</span> to open it in the editor
-        </template>
-        <template v-else>No diagnostics — the loaded KB is clean.</template>
-      </div>
-      <div class="inline tight">
-        <button
-          class="btn ghost filter-btn"
-          type="button"
-          :aria-expanded="filterOpen"
-          title="Filter diagnostics"
-          @click="toggleFilterPanel"
-        >
-          <svg
-            viewBox="0 0 16 16"
-            width="13"
-            height="13"
-            fill="currentColor"
-            aria-hidden="true"
-          >
-            <path
-              d="M1 2.75A.75.75 0 0 1 1.75 2h12.5a.75.75 0 0 1 .6 1.2L10 9.65v4.6a.75.75 0 0 1-1.14.64l-2.5-1.5A.75.75 0 0 1 6 12.75V9.65L1.15 3.2A.75.75 0 0 1 1 2.75Z"
-            />
-          </svg>
-          Filter<span class="filter-badge">{{ activeCount || "" }}</span>
-        </button>
+  <div class="diag-subtabs" role="tablist" v-if="hasWordNet">
+    <button
+      type="button"
+      role="tab"
+      :aria-selected="subtab === 'diagnostics'"
+      @click="setView('diagnostics')"
+    >
+      Findings
+      <span v-if="total" class="hint">({{ total }})</span>
+    </button>
+    <button
+      type="button"
+      role="tab"
+      :aria-selected="subtab === 'wordnet'"
+      @click="setView('wordnet')"
+    >
+      WordNet
+    </button>
+  </div>
+  <Row v-show="subtab === 'diagnostics'">
+    <Col v-if="!isCompact" :span="4" style="margin-right: 15px">
+      <Card style="position: sticky; top: 10px">
+        <div class="diag-filter-stack">
+          <div v-for="dim in DIAG_DIMS" :key="dim">
+            <label :for="`diag-filter-${dim}`">{{ DIM_LABEL[dim] }}</label>
+            <select
+              :id="`diag-filter-${dim}`"
+              :value="effectiveFilter[dim]"
+              @change="onSelect(dim, $event)"
+            >
+              <option
+                v-for="o in selectOptions[dim]"
+                :key="o.value"
+                :value="o.value"
+              >
+                {{ o.label }}
+              </option>
+            </select>
+          </div>
+          <div>
+            <label for="diag-sort">Sort</label>
+            <select id="diag-sort" :value="sort" @change="onSortSelect">
+              <option v-for="o in SORT_OPTIONS" :key="o.value" :value="o.value">
+                {{ o.label }}
+              </option>
+            </select>
+          </div>
+        </div>
+        <br />
         <BusyButton
           :busy="revalidating"
           label="Re-validate"
           @click="revalidate"
         />
-      </div>
-    </div>
-    <div class="settings" v-show="filterOpen">
-      <div class="diag-filter-stack">
-        <div v-for="dim in DIAG_DIMS" :key="dim">
-          <label :for="`diag-filter-${dim}`">{{ DIM_LABEL[dim] }}</label>
-          <select
-            :id="`diag-filter-${dim}`"
-            :value="effectiveFilter[dim]"
-            @change="onSelect(dim, $event)"
-          >
-            <option
-              v-for="o in selectOptions[dim]"
-              :key="o.value"
-              :value="o.value"
+      </Card>
+    </Col>
+    <Col :span="isCompact ? 12 : 8">
+      <Card>
+        <div class="inline between">
+          <div class="hint">
+            <template v-if="total">
+              <template v-if="filterActive">
+                <b>{{ filteredCount }}</b> of <b>{{ total }}</b> diagnostic{{
+                  total === 1 ? "" : "s"
+                }}
+                shown
+              </template>
+              <template v-else>
+                <b>{{ total }}</b> diagnostic{{ total === 1 ? "" : "s" }}
+              </template>
+              <template v-if="errors">
+                ({{ errors }} error{{
+                  errors === 1 ? "" : "s"
+                }}
+                total)</template
+              >
+            </template>
+            <template v-else>No diagnostics — the loaded KB is clean.</template>
+          </div>
+          <div v-if="isCompact" class="inline tight">
+            <button
+              class="btn ghost filter-btn"
+              type="button"
+              :aria-expanded="filterOpen"
+              title="Filter diagnostics"
+              @click="toggleFilterPanel"
             >
-              {{ o.label }}
-            </option>
-          </select>
+              <svg
+                viewBox="0 0 16 16"
+                width="13"
+                height="13"
+                fill="currentColor"
+                aria-hidden="true"
+              >
+                <path
+                  d="M1 2.75A.75.75 0 0 1 1.75 2h12.5a.75.75 0 0 1 .6 1.2L10 9.65v4.6a.75.75 0 0 1-1.14.64l-2.5-1.5A.75.75 0 0 1 6 12.75V9.65L1.15 3.2A.75.75 0 0 1 1 2.75Z"
+                />
+              </svg>
+              Filter<span class="filter-badge">{{ activeCount || "" }}</span>
+            </button>
+            <BusyButton
+              :busy="revalidating"
+              label="Re-validate"
+              @click="revalidate"
+            />
+          </div>
         </div>
-        <div>
-          <label for="diag-sort">Sort</label>
-          <select id="diag-sort" :value="sort" @change="onSortSelect">
-            <option v-for="o in SORT_OPTIONS" :key="o.value" :value="o.value">
-              {{ o.label }}
-            </option>
-          </select>
+        <div class="settings" v-show="filterOpen" v-if="isCompact">
+          <div class="diag-filter-stack">
+            <div v-for="dim in DIAG_DIMS" :key="dim">
+              <label :for="`diag-filter-${dim}`">{{ DIM_LABEL[dim] }}</label>
+              <select
+                :id="`diag-filter-${dim}`"
+                :value="effectiveFilter[dim]"
+                @change="onSelect(dim, $event)"
+              >
+                <option
+                  v-for="o in selectOptions[dim]"
+                  :key="o.value"
+                  :value="o.value"
+                >
+                  {{ o.label }}
+                </option>
+              </select>
+            </div>
+            <div>
+              <label for="diag-sort">Sort</label>
+              <select id="diag-sort" :value="sort" @change="onSortSelect">
+                <option
+                  v-for="o in SORT_OPTIONS"
+                  :key="o.value"
+                  :value="o.value"
+                >
+                  {{ o.label }}
+                </option>
+              </select>
+            </div>
+          </div>
         </div>
-      </div>
-    </div>
-    <div ref="listRef" class="mt">
-      <div v-if="emptyHint" class="hint">{{ emptyHint }}</div>
-      <div
-        v-for="{ i, d } in pageItems"
-        :key="i"
-        class="diag"
-        :data-i="i"
-        :data-sev="d.severity"
-      >
-        <div class="diag-head">
-          <span class="sev" :class="d.severity">{{ d.severity }}</span>
-          <SourceLoc
-            v-if="d.file"
-            :file="d.file"
-            :line="d.line"
-            variant="loc"
-          />
-          <span v-else class="loc">(no location)</span>
-          <span class="code">[{{ d.kind }}/{{ d.code }}]</span>
-          <span class="msg">{{ d.message }}</span>
+        <div ref="listRef" class="mt">
+          <div v-if="emptyHint" class="hint">{{ emptyHint }}</div>
+          <div
+            v-for="{ i, d } in pageItems"
+            :key="i"
+            class="diag"
+            :data-i="i"
+            :data-sev="d.severity"
+          >
+            <div class="diag-head">
+              <span class="sev" :class="d.severity">{{ d.severity }}</span>
+              <SourceLoc
+                v-if="d.file"
+                :file="d.file"
+                :line="d.line"
+                variant="loc"
+              />
+              <span v-else class="loc">(no location)</span>
+              <span class="code">[{{ d.kind }}/{{ d.code }}]</span>
+              <span class="msg">{{ d.message }}</span>
+            </div>
+          </div>
         </div>
-      </div>
-    </div>
-    <div class="diag-pager" v-if="pager">
-      <button
-        class="btn ghost"
-        type="button"
-        :disabled="pager.page === 0"
-        @click="goToPage(pager.page - 1)"
-      >
-        ‹ Prev
-      </button>
-      <span class="hint">
-        {{ pager.from }}–{{ pager.to }} of {{ pager.total }} · page
-        {{ pager.page + 1 }} of
-        {{ pager.pageCount }}
-      </span>
-      <button
-        class="btn ghost"
-        type="button"
-        :disabled="pager.page >= pager.pageCount - 1"
-        @click="goToPage(pager.page + 1)"
-      >
-        Next ›
-      </button>
-    </div>
-  </Card>
+        <div class="diag-pager" v-if="pager">
+          <button
+            class="btn ghost"
+            type="button"
+            :disabled="pager.page === 0"
+            @click="goToPage(pager.page - 1)"
+          >
+            ‹ Prev
+          </button>
+          <span class="hint">
+            {{ pager.from }}–{{ pager.to }} of {{ pager.total }} · page
+            {{ pager.page + 1 }} of
+            {{ pager.pageCount }}
+          </span>
+          <button
+            class="btn ghost"
+            type="button"
+            :disabled="pager.page >= pager.pageCount - 1"
+            @click="goToPage(pager.page + 1)"
+          >
+            Next ›
+          </button>
+        </div>
+      </Card>
+    </Col>
+  </Row>
+  <WordNetDiagnosticsCard
+    v-if="wordNetDiag"
+    v-show="subtab === 'wordnet'"
+    :diag="wordNetDiag"
+  />
 </template>
 
 <style scoped>
+/* Findings/WordNet mode switch -- a compact segmented pill, not another
+   underlined tab strip (nav.tabs already fills that role one level up;
+   stacking a second one, even relabeled, reads as nested navigation).
+   Shown only when a WordNet report loaded. */
+.diag-subtabs {
+  display: inline-flex;
+  gap: 2px;
+  margin-bottom: 14px;
+  padding: 3px;
+  border-radius: 999px;
+  background: var(--card);
+  border: 1px solid var(--line);
+}
+.diag-subtabs button {
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  background: none;
+  border: none;
+  border-radius: 999px;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 5px 14px;
+}
+.diag-subtabs button[aria-selected="true"] {
+  color: var(--bg);
+  background: var(--accent);
+}
+/* The count span (.hint) would otherwise stay --muted even inside the
+   solid-accent selected pill, which reads too low-contrast there. */
+.diag-subtabs button[aria-selected="true"] .hint {
+  color: inherit;
+  opacity: 0.85;
+}
 .diag {
   border-bottom: 1px solid var(--line);
   border-left: 3px solid transparent;

@@ -15,6 +15,7 @@ use crate::semantics::consts::{
     DOC_RELATION, FORMAT_RELATION, INSTANCE_RELATION, RANGE_RELATION, RANGE_SUB_REL_CLASS,
     SUBINSTANCE_RELATIONS, TERM_RELATION,
 };
+use crate::semantics::taxonomy::TaxRelation;
 use crate::syntactic::pattern::{MatchKey, PatternElement, SentencePattern};
 use crate::syntactic::SyntacticLayer;
 use crate::types::{DocEntry, RelationDomain, RelationRange};
@@ -59,6 +60,9 @@ pub struct SortSig {
     /// True for `(domainSubclass …)` / `(rangeSubclass …)` declarations --
     /// the argument is itself a *class* (not an instance of it).
     pub subclass: bool,
+    /// The `subrelation` ancestor whose own declaration supplies this slot,
+    /// or `None` when the symbol declares it itself.
+    pub inherited_from: Option<String>,
 }
 
 /// One (position, sid) reference to a sentence where the symbol
@@ -113,6 +117,13 @@ pub struct ManPage {
     /// so consumers can display them under a dedicated heading without
     /// mis-reporting an argument position.
     pub ref_nested: Vec<SentenceId>,
+    /// Sentences whose head is one of the documentation / format /
+    /// taxonomy relations ([`EXCLUDED_REF_HEADS`]) in which the symbol
+    /// appears at root level, with the position of its first occurrence.
+    /// Kept apart from `ref_args` so listings that already surface these
+    /// as DOCUMENTATION / PARENTS sections can skip them, while a full
+    /// occurrence list can still show every formula.
+    pub ref_meta: Vec<SentenceRef>,
     /// Total number of root formulas this symbol occurs in (at any
     /// depth), from the syntactic occurrence index.  Includes
     /// documentation / taxonomy / format sentences — the raw
@@ -452,7 +463,7 @@ fn build_manpage<L: TopLayer + Layer>(
     let parents = collect_parents(sem, sym_id);
     let children = collect_children(sem, sym_id);
     let (arity, domains, range) = signature(kb, sym_id);
-    let (ref_args, ref_nested) = collect_refs(store, sym_id);
+    let (ref_args, ref_nested, ref_meta) = collect_refs(store, sym_id);
 
     let appears_in_count = store.axiom_sentences_of(sym_id).len();
     let (antecedent_refs, consequent_count) = antecedent_consequent(store, sym_id);
@@ -474,6 +485,7 @@ fn build_manpage<L: TopLayer + Layer>(
         range,
         ref_args,
         ref_nested,
+        ref_meta,
         appears_in_count,
         antecedent_refs,
         consequent_count,
@@ -544,52 +556,88 @@ fn signature<L: TopLayer + Layer>(
     kb: &KnowledgeBase<L>,
     sym_id: SymbolId,
 ) -> (Option<i32>, Vec<(usize, SortSig)>, Option<SortSig>) {
-    let arity = kb.layer.semantic().arity(sym_id);
-    let range = sort_sig_range(kb, &kb.layer.semantic().range(sym_id));
-    let domains_raw = kb.layer.semantic().domain(sym_id);
-    let domains: Vec<(usize, SortSig)> = domains_raw
+    let sem = kb.layer.semantic();
+    let arity = sem.arity(sym_id);
+    let range = sem.range(sym_id).id().map(|id| {
+        let source = sort_source(sem, sym_id, |r| sem.range_declared(r).id().is_some());
+        sort_sig(
+            kb,
+            id,
+            matches!(sem.range(sym_id), RelationRange::RangeSubclass(_)),
+            source,
+        )
+    });
+    let domains: Vec<(usize, SortSig)> = sem
+        .domain(sym_id)
         .iter()
-        .cloned()
         .enumerate()
         .filter_map(|(i, rd)| {
-            if matches!(rd, RelationDomain::Unknown) {
-                return None;
-            }
-            Some((i + 1, sort_sig(kb, &rd)?))
+            let id = rd.id()?;
+            let source = sort_source(sem, sym_id, |r| {
+                sem.domain_declared(r)
+                    .get(i)
+                    .and_then(RelationDomain::id)
+                    .is_some()
+            });
+            Some((
+                i + 1,
+                sort_sig(
+                    kb,
+                    id,
+                    matches!(rd, RelationDomain::DomainSubclass(_)),
+                    source,
+                ),
+            ))
         })
         .collect();
     (arity, domains, range)
 }
 
-fn sort_sig_range<L: TopLayer + Layer>(
-    kb: &KnowledgeBase<L>,
-    rd: &RelationRange,
-) -> Option<SortSig> {
-    let id = rd.id()?;
-    Some(SortSig {
-        class: kb
-            .layer
-            .semantic()
-            .syntactic
-            .sym_name(id)
-            .map(|s| s.name().to_string())
-            .unwrap_or_default(),
-        subclass: matches!(rd, RelationRange::RangeSubclass(_)),
-    })
+/// The nearest relation at or above `sym_id` in the `subrelation` lattice
+/// whose own declarations satisfy `declares` -- `None` when `sym_id` itself
+/// does (the slot is declared, not inherited). Breadth-first, so a slot
+/// reachable through several parents cites the closest one.
+fn sort_source(
+    sem: &crate::semantics::SemanticLayer,
+    sym_id: SymbolId,
+    declares: impl Fn(SymbolId) -> bool,
+) -> Option<String> {
+    if declares(sym_id) {
+        return None;
+    }
+    let mut seen = std::collections::HashSet::from([sym_id]);
+    let mut frontier = std::collections::VecDeque::from([sym_id]);
+    while let Some(rel) = frontier.pop_front() {
+        for (sup, tax) in sem.parents_of(rel) {
+            if tax != TaxRelation::Subrelation || !seen.insert(sup) {
+                continue;
+            }
+            if declares(sup) {
+                return sem.syntactic.sym_name(sup).map(|s| s.name().to_string());
+            }
+            frontier.push_back(sup);
+        }
+    }
+    None
 }
 
-fn sort_sig<L: TopLayer + Layer>(kb: &KnowledgeBase<L>, rd: &RelationDomain) -> Option<SortSig> {
-    let id = rd.id()?;
-    Some(SortSig {
+fn sort_sig<L: TopLayer + Layer>(
+    kb: &KnowledgeBase<L>,
+    class_id: SymbolId,
+    subclass: bool,
+    inherited_from: Option<String>,
+) -> SortSig {
+    SortSig {
         class: kb
             .layer
             .semantic()
             .syntactic
-            .sym_name(id)
+            .sym_name(class_id)
             .map(|s| s.name().to_string())
             .unwrap_or_default(),
-        subclass: matches!(rd, RelationDomain::DomainSubclass(_)),
-    })
+        subclass,
+        inherited_from,
+    }
 }
 
 // -- Reference collection ----------------------------------------------------
@@ -603,13 +651,20 @@ fn sort_sig<L: TopLayer + Layer>(kb: &KnowledgeBase<L>, rd: &RelationDomain) -> 
 ///   argument slot).
 /// - **`ref_nested`** — the symbol appears only inside a nested
 ///   sub-sentence, never at the root level.
+/// - **`ref_meta`** — the sentence's head is an [`EXCLUDED_REF_HEADS`]
+///   relation (documentation / format / taxonomy) and the symbol appears
+///   at root level; these never enter the first two buckets.
 ///
-/// Both lists are sorted by sid for deterministic output and
+/// All lists are sorted by sid for deterministic output and
 /// deduplicated (one entry per root sid even if the symbol occurs
 /// multiple times in that sentence).
-fn collect_refs(store: &SyntacticLayer, sym_id: SymbolId) -> (Vec<SentenceRef>, Vec<SentenceId>) {
+fn collect_refs(
+    store: &SyntacticLayer,
+    sym_id: SymbolId,
+) -> (Vec<SentenceRef>, Vec<SentenceId>, Vec<SentenceRef>) {
     let mut args: Vec<SentenceRef> = Vec::new();
     let mut nested: Vec<SentenceId> = Vec::new();
+    let mut meta: Vec<SentenceRef> = Vec::new();
     let mut sids: Vec<SentenceId> = store.axiom_sentences_of(sym_id).iter().copied().collect();
     sids.sort_unstable();
 
@@ -617,13 +672,10 @@ fn collect_refs(store: &SyntacticLayer, sym_id: SymbolId) -> (Vec<SentenceRef>, 
         let Some(sent) = store.sentence(sid) else {
             continue;
         };
-        if let Some(head_id) = sent.head_symbol() {
-            if let Some(head_name) = store.sym_name(head_id) {
-                if EXCLUDED_REF_HEADS.contains(&head_name.name().as_ref()) {
-                    continue;
-                }
-            }
-        }
+        let excluded_head = sent
+            .head_symbol()
+            .and_then(|head_id| store.sym_name(head_id))
+            .is_some_and(|head_name| EXCLUDED_REF_HEADS.contains(&head_name.name().as_ref()));
         let root_hit = sent
             .elements
             .iter()
@@ -633,7 +685,14 @@ fn collect_refs(store: &SyntacticLayer, sym_id: SymbolId) -> (Vec<SentenceRef>, 
                 _ => None,
             });
         if let Some(pos) = root_hit {
-            args.push(SentenceRef(pos, sid));
+            if excluded_head {
+                meta.push(SentenceRef(pos, sid));
+            } else {
+                args.push(SentenceRef(pos, sid));
+            }
+            continue;
+        }
+        if excluded_head {
             continue;
         }
         let appears_nested = sent.elements.iter().any(|el| match el {
@@ -645,7 +704,7 @@ fn collect_refs(store: &SyntacticLayer, sym_id: SymbolId) -> (Vec<SentenceRef>, 
         }
     }
 
-    (args, nested)
+    (args, nested, meta)
 }
 
 /// Does the sentence tree rooted at `sid` contain any direct
@@ -682,6 +741,39 @@ mod tests {
         let r = kb.make_session_axiomatic("test.kif");
         assert!(r.is_ok(), "promotion failed: {:?}", r.err());
         kb
+    }
+
+    #[test]
+    fn signature_marks_inherited_slots_with_their_source() {
+        let kb = kb_from(
+            "
+            (instance parent BinaryPredicate)
+            (domain parent 1 Human)
+            (domain parent 2 Human)
+            (range AgeFn Quantity)
+            (subrelation mother parent)
+            (domain mother 1 Woman)
+            (subrelation YearsFn AgeFn)
+            (instance solo BinaryPredicate)
+            (domain solo 1 Entity)
+            ",
+        );
+        let page = kb.manpage("mother").expect("mother");
+        let by_pos = |n: usize| page.domains.iter().find(|(p, _)| *p == n).map(|(_, s)| s);
+        let own = by_pos(1).expect("slot 1");
+        assert_eq!(own.class, "Woman");
+        assert_eq!(own.inherited_from, None, "own declaration is not inherited");
+        let inherited = by_pos(2).expect("slot 2");
+        assert_eq!(inherited.class, "Human");
+        assert_eq!(inherited.inherited_from.as_deref(), Some("parent"));
+
+        let years = kb.manpage("YearsFn").expect("YearsFn");
+        let range = years.range.expect("inherited range");
+        assert_eq!(range.class, "Quantity");
+        assert_eq!(range.inherited_from.as_deref(), Some("AgeFn"));
+
+        let solo = kb.manpage("solo").expect("solo");
+        assert_eq!(solo.domains[0].1.inherited_from, None);
     }
 
     #[test]
@@ -862,6 +954,15 @@ mod tests {
             man.ref_args.iter().any(|r| r.0 == 1),
             "expected the located sentence (arg pos 1), got {:?}",
             man.ref_args
+        );
+        // The excluded ones are still reachable through `ref_meta`, each
+        // with Human at arg-1 of its (subclass / instance / documentation)
+        // sentence.
+        assert_eq!(man.ref_meta.len(), 3, "ref_meta={:?}", man.ref_meta);
+        assert!(
+            man.ref_meta.iter().all(|r| r.0 == 1),
+            "ref_meta={:?}",
+            man.ref_meta
         );
     }
 

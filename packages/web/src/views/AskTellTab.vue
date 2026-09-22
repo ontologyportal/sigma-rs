@@ -7,7 +7,7 @@ import {
   shallowRef,
   watch,
 } from "vue";
-import { formatTest } from "sigmakee/sdk";
+import { AskResult, formatTest } from "sigmakee/sdk";
 import { useTabQuery } from "../composables/useTabQuery";
 import { useStatus } from "../composables/useStatus";
 import { navigate } from "../router";
@@ -50,7 +50,7 @@ const cfgNote = ref("");
 let lastVampireTptp: string | null = null;
 const showDownloadTptp = ref(false);
 
-const result = shallowRef<any | null>(null);
+const result = shallowRef<AskResult | null>(null);
 const resultBackend = ref("");
 const error = ref("");
 
@@ -144,7 +144,7 @@ async function prove() {
   lastVampireTptp = null;
   showDownloadTptp.value = false;
   try {
-    let r: any;
+    let r: AskResult;
     let asserted = assertions.value.trim();
     let asked = tptpMode.value ? "" : query.value;
     if (tptpMode.value) {
@@ -157,7 +157,7 @@ async function prove() {
         remap: prover.useSumo,
       });
       asserted = test.axiomKif;
-      asked = test.queryKif;
+      asked = test.queryKif ?? "";
     }
     ({ result: r } = await call("prove", {
       assertions: asserted,
@@ -364,8 +364,8 @@ async function saveTest() {
   <Card v-if="error || result">
     <div class="inline between">
       <div class="inline tight center">
-        <span class="status" :class="error ? 'InputError' : result.status">{{
-          error ? "Error" : result.status
+        <span class="status" :class="error ? 'InputError' : result?.status">{{
+          error ? "Error" : result?.status
         }}</span>
         <span class="hint">{{ backendBadge }}</span>
         <span class="hint">{{ stepsText }}</span>

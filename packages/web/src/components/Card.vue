@@ -6,11 +6,15 @@ defineProps<{
   /** Muted one-line description under the heading (or the `description`
    *  slot, for markup). */
   description?: string;
+  /** whether to let the card grow to fit its parent */
+  grow?: boolean;
+  /** whether to shrink the card to fit its parent */
+  shrink?: boolean;
 }>();
 </script>
 
 <template>
-  <div class="card">
+  <div :class="{ card: true, grow, shrink }">
     <div
       v-if="title || description || $slots.description || $slots.header"
       class="card-head"
@@ -33,7 +37,15 @@ defineProps<{
   border: 1px solid var(--line);
   border-radius: 10px;
   padding: 14px;
+  width: 100%;
   margin-bottom: 12px;
+}
+.grow {
+  flex-grow: 1;
+}
+
+.shrink {
+  flex-shrink: 1;
 }
 /* Heading row: title + description on the left, an optional header slot
    (buttons, status) pushed right; wraps on narrow screens. */

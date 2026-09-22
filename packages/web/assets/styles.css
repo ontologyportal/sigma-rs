@@ -74,6 +74,13 @@ body {
   flex-direction: column;
   min-height: 100vh;
 }
+:root[data-layout="classic"] main {
+  max-width: 100%;
+}
+
+:root[data-layout="comfortable"] main {
+  max-width: 1000px;
+}
 /* width: 100% (not just max-width) is required here: main/footer's auto
    left/right margins are cross-axis margins in this column flex layout, and
    auto cross-axis margins suppress align-items: stretch per the flexbox
@@ -82,7 +89,6 @@ body {
    "no results" message. */
 main {
   width: 100%;
-  max-width: 1000px;
   margin: 0 auto;
   padding: 20px 20px 64px;
   flex: 1 0 auto;

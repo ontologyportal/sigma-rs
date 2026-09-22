@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use regex::Regex;
 use sigmakee_rs_sdk::manager::{KBManager, ProverOptsFor};
-use sigmakee_rs_sdk::{KnowledgeBase, Parser, ProverStatus, ProvingLayer};
+use sigmakee_rs_sdk::{KnowledgeBase, Parser, ProverStatus, ProvingLayer, DEFAULT_LANGUAGE};
 use sigmakee_rs_sdk::{Session, Source, TestCaseOutcome, TestOutcome};
 
 use crate::cli::proof::{is_quiet_proof_format, print_proof};
@@ -341,7 +341,7 @@ where
         }
     }
     if manager.prose && !quiet && !oc.result.proof_kif.is_empty() {
-        let report = kb.render_proof_prose(None, &oc.result.proof_kif, "EnglishLanguage");
+        let report = kb.render_proof_prose(None, &oc.result.proof_kif, DEFAULT_LANGUAGE);
         println!(
             "\n    {style_bold}Proof (prose):{style_reset}\n\n{}",
             report.rendered

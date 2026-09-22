@@ -183,6 +183,13 @@ pub enum Cmd {
         /// Perform parse-only validation -- skip semantic checks entirely.
         #[arg(long)]
         parse: bool,
+
+        /// Also render the WordNet<->KB diagnostics report (see `sumo
+        /// search --lexicon`) after the SUMO diagnostics above -- requires
+        /// the lexicon to be loaded (`<lexicon>`/`loadLexicons` in
+        /// config.xml). A no-op, with a note, when no lexicon is loaded.
+        #[arg(long)]
+        wordnet: bool,
     },
 
     /// Clausify the knowledge base and print its CNF form as SUO-KIF, one

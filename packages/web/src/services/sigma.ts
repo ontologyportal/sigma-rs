@@ -7,6 +7,22 @@
 
 import { useBootStore } from "../stores/boot";
 import { spawnVampireWorker } from "./vampire-host";
+import type { Handlers } from "../worker/handlers";
+
+/** A command the worker answers. */
+export type Cmd = keyof Handlers;
+/** `cmd`'s argument object. */
+export type CmdArgs<C extends Cmd> = Parameters<Handlers[C]>[0];
+/** What `call(cmd, ...)` resolves to. */
+export type CmdResult<C extends Cmd> = Awaited<ReturnType<Handlers[C]>>;
+
+// Commands whose args object may be omitted -- the handler takes no
+// parameter, or an optional one. Tested by tuple assignability rather than
+// `undefined extends CmdArgs<C>`: this program has `strictNullChecks` off,
+// where that test is true for every type.
+type NullaryCmd = {
+  [C in Cmd]: [] extends Parameters<Handlers[C]> ? C : never;
+}[Cmd];
 
 const worker = new Worker(
   new URL("../worker/sigma.worker.ts", import.meta.url),
@@ -16,7 +32,7 @@ const worker = new Worker(
 let seq = 0;
 const pending = new Map<
   number,
-  { resolve: (value: any) => void; reject: (reason?: unknown) => void }
+  { resolve: (value: unknown) => void; reject: (reason?: unknown) => void }
 >();
 
 /** Site base the Vampire runner asset resolves against; set at boot. */
@@ -43,20 +59,35 @@ worker.onmessage = (e) => {
   else p.resolve(result);
 };
 
-// `T` defaults to `any` rather than modelling every command's response shape:
-// the worker dispatches on `cmd` by string (see sigma.worker.ts), so a real
-// mapping would need a cmd -> response type table. Callers that want checked
-// results can opt in with `call<SomeType>(...)`.
-export const call = <T = any>(
-  cmd: string,
-  args?: unknown,
+/**
+ * Call one of the worker's commands. Args and result are the handler's own
+ * types: the cmd -> shape mapping is derived from `handlers` itself (see
+ * worker/handlers.ts), so it cannot drift from what the worker answers.
+ */
+export function call<C extends NullaryCmd>(
+  cmd: C,
+  args?: CmdArgs<C>,
+  transfer?: Transferable[],
+): Promise<CmdResult<C>>;
+export function call<C extends Cmd>(
+  cmd: C,
+  args: CmdArgs<C>,
+  transfer?: Transferable[],
+): Promise<CmdResult<C>>;
+export function call<C extends Cmd>(
+  cmd: C,
+  args?: CmdArgs<C>,
   transfer: Transferable[] = [],
-): Promise<T> =>
-  new Promise<T>((resolve, reject) => {
+): Promise<CmdResult<C>> {
+  // The one place the cmd -> result mapping is asserted rather than checked:
+  // the reply arrives as JSON with only its `id` to identify it, so the
+  // pending map cannot be keyed by command type.
+  return new Promise<unknown>((resolve, reject) => {
     const id = ++seq;
     pending.set(id, { resolve, reject });
     worker.postMessage({ id, cmd, args }, transfer);
-  });
+  }) as Promise<CmdResult<C>>;
+}
 
 // An uncaught worker error during boot is fatal for the page: surface it
 // on the loading screen. Later ones are logged; the failing call itself

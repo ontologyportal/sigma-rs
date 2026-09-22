@@ -105,6 +105,7 @@ pub use types::{
     OccurrenceKind, OpKind, Sentence, SentenceId, SourceFile, SymbolId,
 };
 
+pub use semantics::consts::{DEFAULT_LANGUAGE, NATURAL_LANGUAGE_CLASS};
 pub use semantics::types::DocEntry;
 pub use semantics::types::{TaxDirection, TaxRelation};
 

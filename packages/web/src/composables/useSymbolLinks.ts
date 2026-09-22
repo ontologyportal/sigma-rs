@@ -20,6 +20,7 @@ export function useSymbolLinks(root: Ref<HTMLElement | null>): void {
     // when the symbol sits inside a citation row.
     e.preventDefault();
     const sym = link.dataset.sym;
+    if (!sym) return;
     if (!link.classList.contains("sym-link")) {
       navigate("browse", { sym });
       return;

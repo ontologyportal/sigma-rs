@@ -108,6 +108,11 @@ pub use session::views::{
 };
 #[cfg(any(feature = "external-prover", feature = "native-prover"))]
 pub use session::views::{AskResultView, AuditResultView, ContradictionView, ProofStepView};
+#[cfg(feature = "lexicon")]
+pub use session::views::{
+    CappedView, WordNetDiagnosticsView, WordNetMappingCountsView, WordNetSynsetRowView,
+    WordNetTaxonomyMismatchView, WordNetUnsynsetTermView,
+};
 
 #[cfg(feature = "native-prover")]
 pub use session::{
@@ -118,7 +123,7 @@ pub use source::Source;
 
 pub use sigmakee_rs_core::{
     Diagnostic, Instant, KnowledgeBase, ManKind, ManPage, ParentEdge, SemanticError, SentenceId,
-    SortSig, TptpLang, TptpOptions,
+    SortSig, TptpLang, TptpOptions, DEFAULT_LANGUAGE, NATURAL_LANGUAGE_CLASS,
 };
 
 // Layer stack: the concrete top layers plus the traits downstream backend
@@ -167,7 +172,9 @@ pub use sigmakee_rs_core::RenderReport;
 pub use sigmakee_rs_core::Strategy;
 #[cfg(any(feature = "external-prover", feature = "native-prover"))]
 pub use sigmakee_rs_core::{AxiomSource, AxiomSourceIndex, CommonProverOpts};
-pub use sigmakee_rs_core::{SearchOpts, SearchSource, TaxConstraint, DEFAULT_CANDIDATE_LIMIT};
+pub use sigmakee_rs_core::{
+    SearchHit, SearchOpts, SearchSource, TaxConstraint, DEFAULT_CANDIDATE_LIMIT,
+};
 
 // The whole prover module (backends, runners, result types) for path-style
 // access (`sigmakee_rs_sdk::prover::external::backends::…`).

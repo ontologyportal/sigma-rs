@@ -25,6 +25,7 @@ import Disclosure from "../components/Disclosure.vue";
 import HomeStats from "../components/browse/HomeStats.vue";
 import ManPage from "../components/browse/ManPage.vue";
 import SearchResults from "../components/browse/SearchResults.vue";
+import { ManPage as ManPageType, SearchHit } from "sigmakee/sdk";
 
 const kb = useKBStore();
 const shell = useShellStore();
@@ -32,16 +33,17 @@ const { query, onQuery, str } = useTabQuery(["browse"]);
 
 const q = computed(() => str(query.value.q).trim());
 const sym = computed(() => str(query.value.sym));
+const view = computed(() => str(query.value.view));
 
 const inputEl = ref<HTMLInputElement | null>(null);
 const input = ref("");
 const wordnetOnly = ref(false);
-const hits = shallowRef<any[] | null>(null);
+const hits = shallowRef<SearchHit[] | null>(null);
 /** Keyboard-highlighted result row, -1 for none. */
 const selected = ref(-1);
 const langNote = ref("");
 const searchError = ref("");
-const page = shallowRef<any | null>(null);
+const page = shallowRef<ManPageType | null>(null);
 const pageMissing = ref("");
 const active = ref(false);
 
@@ -354,8 +356,10 @@ onActivated(() => {
   <ManPage
     v-if="page || pageMissing"
     :page="page"
-    :symbol="pageMissing || page.name"
+    :symbol="pageMissing || page?.name || ''"
+    :view="view"
     @back="backToResults"
+    @update:view="(v) => updateParams({ q, sym, view: v })"
   />
   <template v-else-if="q || sym">
     <Card v-if="searchError" class="hint"
@@ -382,8 +386,9 @@ onActivated(() => {
     <Card>
       <h2 class="welcome-h">SUMO in your browser</h2>
       <p class="hint welcome-p">
-        The <code>sigmakee-rs</code> native prover compiled to WebAssembly.
-        Search above to explore the ontology — try
+        The <code>Sigma Knowledge Engineering Environment (SigmaKEE)</code>
+        for the Suggested Upper Merged Ontology (SUMO). Search above to explore
+        the ontology — try
         <a class="try-q" @click.prevent="tryQuery('Human')">Human</a>,
         <a class="try-q" @click.prevent="tryQuery('Process')">Process</a> or
         <a class="try-q" @click.prevent="tryQuery('part')">part</a> — manage

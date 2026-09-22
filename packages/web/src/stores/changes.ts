@@ -21,9 +21,10 @@
  */
 
 import { defineStore } from "pinia";
-import { EDITS_KEY, SUMO, rawUrl } from "../constants";
+import { EDITS_KEY, rawUrl } from "../constants";
 import type { OriginKind } from "../models/Origin";
-import { githubApi, fetchSumoTree, fromBase64 } from "../api/github";
+import { fetchBlobText, fetchPullRequest, fetchSumoTree } from "../api/github";
+import type { PullRequest } from "../api/github";
 import { useBootStore } from "./boot";
 import { useKBStore } from "./kb";
 
@@ -251,7 +252,7 @@ export const useChangesStore = defineStore("changes", {
       force = false,
     }: { force?: boolean } = {}): Promise<void> {
       if (!Object.keys(this.index).length) return; // nothing tracked, nothing to check
-      let tree: any[];
+      let tree: Awaited<ReturnType<typeof fetchSumoTree>>;
       try {
         tree = await fetchSumoTree({ force });
       } catch {
@@ -286,9 +287,9 @@ export const useChangesStore = defineStore("changes", {
       );
       let changed = false;
       for (const n of numbers) {
-        let pr: any;
+        let pr: PullRequest;
         try {
-          pr = await githubApi(`/repos/${SUMO.owner}/${SUMO.repo}/pulls/${n}`);
+          pr = await fetchPullRequest(n);
         } catch {
           continue;
         }
@@ -452,11 +453,8 @@ export const useChangesStore = defineStore("changes", {
     async fetchUpstreamText(path: string): Promise<string> {
       const sha = this.upstreamSha(path);
       if (sha) {
-        const blob = await githubApi(
-          `/repos/${SUMO.owner}/${SUMO.repo}/git/blobs/${sha}`,
-        );
-        if (blob?.encoding === "base64" && blob.content)
-          return fromBase64(blob.content);
+        const text = await fetchBlobText(sha);
+        if (text !== null) return text;
       }
       const r = await fetch(rawUrl(path));
       if (!r.ok) throw new Error(`${path}: HTTP ${r.status}`);

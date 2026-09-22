@@ -1,11 +1,14 @@
 /** Small formatting helpers shared by every view. Imports nothing. */
 
+const HTML_ENTITIES: Record<string, string> = {
+  "&": "&amp;",
+  "<": "&lt;",
+  ">": "&gt;",
+};
+
 /** HTML-escape `s` for text content (`&`, `<`, `>`). */
 export const esc = (s: unknown): string =>
-  String(s).replace(
-    /[&<>]/g,
-    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c],
-  );
+  String(s).replace(/[&<>]/g, (c) => HTML_ENTITIES[c] ?? c);
 
 /** HTML-escape `s` for a double-quoted attribute value. */
 export const escAttr = (s: unknown): string => esc(s).replace(/"/g, "&quot;");

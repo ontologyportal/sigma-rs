@@ -22,9 +22,20 @@ import initWasm, {
   Config,
   parseTest as wasmParseTest,
   parseTptpTest as wasmParseTptpTest,
+  sumoSymbols as wasmSumoSymbols,
 } from "./sumo_parser_wasm.js";
 
 export { Config };
+
+/**
+ * The SUMO symbol constants this build was compiled with (the engine's
+ * `.cargo/config.toml` `[env]` table), so JS never hardcodes a symbol the
+ * engine may name differently (requires {@link init}).
+ * @returns {{ defaultLanguage: string, naturalLanguageClass: string }}
+ */
+export function sumoSymbols() {
+  return wasmSumoSymbols();
+}
 
 /**
  * Parse a `.kif.tq` test file (requires {@link init}).  Returns
@@ -415,6 +426,20 @@ export class Session {
   }
 
   /**
+   * WordNet<->KB diagnostics report over this session's installed lexicon
+   * and current KB: mapping-kind counts, synsets with no SUMO mapping,
+   * synsets mapped to a term not in the loaded KB, loaded KB terms with no
+   * WordNet synset, and hypernym/taxonomy mismatches. Each itemized report
+   * capped at `limit` rows (default 50). `null` if no lexicon is installed
+   * (see {@link Session#loadWordNet}).
+   * @param {number} [limit]
+   * @returns {import('./sdk').WordNetDiagnostics | null}
+   */
+  wordnetDiagnostics(limit = 50) {
+    return this.#kb.wordnetDiagnostics(limit);
+  }
+
+  /**
    * Load the WordNet-SUMO lexicon from the contents of the four
    * `WordNetMappings30-*.txt` files — the browser fetches the bytes (there
    * is no filesystem here) and passes strings. `indexSense`
@@ -453,9 +478,11 @@ export class Session {
     return this.#kb.naturalLanguages();
   }
 
-  /** Natural-language paraphrase of a single KIF formula in `language`. */
-  renderNl(kif, language) {
-    return this.#kb.renderNl(kif, language);
+  /** Natural-language paraphrase of a single KIF formula in `language`.
+   *  `genericVars` renders variables as generic noun phrases ("an entity")
+   *  instead of `?Var`. */
+  renderNl(kif, language, genericVars = false) {
+    return this.#kb.renderNl(kif, language, !!genericVars);
   }
 
   /** Drop a session's assertions. */

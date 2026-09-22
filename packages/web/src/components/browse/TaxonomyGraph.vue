@@ -3,14 +3,16 @@ import { onBeforeUnmount, onMounted, ref, watch } from "vue";
 import type cytoscape from "cytoscape";
 import type cytoscapeDagre from "cytoscape-dagre";
 import { navigate } from "../../router";
-import { call } from "../../services/sigma";
+import { walkAncestors } from "../../services/taxonomy";
 import { cytoscapeStyle, loadCytoscape } from "../../services/proof-graph";
 import { useShellStore } from "../../stores/shell";
 import { errMsg } from "../../utils/format";
+import TaxRel from "./TaxRel.vue";
+import { ManPage } from "sigmakee/sdk";
 
 const props = defineProps<{
   /** The man page whose ancestor chain and direct children to draw. */
-  page: any;
+  page: ManPage;
 }>();
 
 /** The edge kinds the tree walks, in legend order. */
@@ -55,45 +57,13 @@ async function render() {
   status.value = "tracing taxonomy…";
   tip.value = DEFAULT_TIP;
   rels.value = legendOrder(
-    new Set([...p.parents, ...p.children].map((e: any) => e.relation)),
+    new Set([...p.parents, ...p.children].map((e) => e.relation)),
   );
 
-  // BFS upward, collecting every symbol's parent edges. A whole frontier is
-  // fetched at once: a FIFO queue is level order anyway, and the levels are
-  // deep enough that one round-trip per symbol dominates the walk.
-  const parentEdges = new Map<string, any[]>([[p.name, p.parents]]);
-  const seen = new Set<string>([p.name]);
-  let frontier: string[] = [];
-  for (const e of p.parents) {
-    if (!seen.has(e.parent)) {
-      seen.add(e.parent);
-      frontier.push(e.parent);
-    }
-  }
-  for (let budget = 80; frontier.length && budget > 0;) {
-    const level = frontier.slice(0, budget);
-    budget -= level.length;
-    const fetched = await Promise.all(
-      level.map((sym) =>
-        call("taxonomy", { symbol: sym })
-          .then((r) => r.tax?.parents ?? [])
-          .catch(() => null),
-      ),
-    );
-    if (mine !== seq) return;
-    frontier = [];
-    level.forEach((sym, i) => {
-      const ps = fetched[i];
-      if (!ps) return;
-      parentEdges.set(sym, ps);
-      for (const e of ps) {
-        if (!seen.has(e.parent)) {
-          seen.add(e.parent);
-          frontier.push(e.parent);
-        }
-      }
-    });
-  }
+  const parentEdges = await walkAncestors(p, {
+    cancelled: () => mine !== seq,
+  });
+  if (mine !== seq) return;
 
   // Elements: ancestor nodes + current + (capped) direct children; one edge
   // per taxonomy assertion, tagged with its relation for the color styling.
@@ -205,9 +175,7 @@ onBeforeUnmount(() => {
   <div class="taxtree">
     <div v-if="rels.length" class="tax-legend">
       <span class="hint">edges:</span>
-      <span v-for="r in rels" :key="r" class="tax-rel" :data-rel="r">{{
-        r
-      }}</span>
+      <TaxRel v-for="r in rels" :key="r" :rel="r" />
     </div>
     <div ref="container" class="graph-container tax-graph">
       <div ref="mount" class="tax-mount"></div>
@@ -248,35 +216,6 @@ onBeforeUnmount(() => {
 }
 .tax-legend {
   margin-bottom: 4px;
-}
-/* Edge-kind pills, color-coded per relation. */
-.tax-rel {
-  display: inline-block;
-  font-size: 10px;
-  font-weight: 600;
-  line-height: 1.5;
-  padding: 0 6px;
-  border-radius: 999px;
-  margin-right: 5px;
-  vertical-align: 1px;
-  background: color-mix(in srgb, var(--muted) 16%, transparent);
-  color: var(--muted);
-}
-.tax-rel[data-rel="subclass"] {
-  background: color-mix(in srgb, var(--accent) 15%, transparent);
-  color: var(--accent);
-}
-.tax-rel[data-rel="instance"] {
-  background: color-mix(in srgb, var(--ok) 15%, transparent);
-  color: var(--ok);
-}
-.tax-rel[data-rel="subrelation"] {
-  background: color-mix(in srgb, var(--op) 15%, transparent);
-  color: var(--op);
-}
-.tax-rel[data-rel="subAttribute"] {
-  background: color-mix(in srgb, var(--warn) 20%, transparent);
-  color: var(--warn);
 }
 .graph-tip {
   min-height: 18px;

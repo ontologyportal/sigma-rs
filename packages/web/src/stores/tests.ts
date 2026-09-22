@@ -17,6 +17,7 @@ import {
   Origin,
   OriginJson,
   originId,
+  isPersistedRow,
   parseOrigin,
   serializeOrigin,
 } from "../models/Origin";
@@ -25,6 +26,7 @@ import { fromOrigin } from "../services/sources";
 import { errMsg } from "../utils/format";
 import { useLibraryStore } from "./library";
 import { useProverStore } from "./prover";
+import { AskResult, ParsedTest } from "sigmakee/sdk";
 
 export interface TestOutcome {
   cls: "ok" | "bad" | "mut";
@@ -37,7 +39,7 @@ export interface TestEntry {
   origin: Origin;
   text: string;
   /** The worker's `TestCaseView`. */
-  parsed: any;
+  parsed: ParsedTest;
   outcome: TestOutcome | null;
 }
 
@@ -67,21 +69,19 @@ function testParseRpc(name: string) {
 
 function loadSavedTests(): SavedTest[] {
   try {
-    const raw = JSON.parse(localStorage.getItem(TQ_SETTING) || "[]");
+    const raw: unknown = JSON.parse(localStorage.getItem(TQ_SETTING) || "[]");
     if (!Array.isArray(raw)) return [];
     // Entries saved before the library carried a bare kind string.
-    return raw
-      .filter((t: any) => t && typeof t.name === "string")
-      .map((t: any) => ({
-        name: t.name,
-        origin: serializeOrigin(parseOrigin(t.origin, t.name)),
-      }));
+    return raw.filter(isPersistedRow).map((t) => ({
+      name: t.name,
+      origin: serializeOrigin(parseOrigin(t.origin, t.name)),
+    }));
   } catch {
     return [];
   }
 }
 
-function gradeTest(parsed: any, result: any): TestOutcome {
+function gradeTest(parsed: ParsedTest, result: AskResult): TestOutcome {
   const exp = parsed.expectedProof;
   const conclusiveNo = [
     "Disproved",
@@ -187,14 +187,14 @@ export const useTestsStore = defineStore("tests", {
     async saveCurrent(
       text: string,
       dialect: TestDialect,
-      target: SavedTest | null = this.openTest,
+      target?: SavedTest | null,
     ): Promise<{
       saved: boolean;
       name?: string;
       overwritten?: boolean;
       notices?: string[];
     }> {
-      const open = target;
+      const open = target === undefined ? this.openTest : target;
       const canOverwrite =
         !!open &&
         open.origin.kind === "file" &&
@@ -238,13 +238,16 @@ export const useTestsStore = defineStore("tests", {
 
     /** Prove one test with the prover's settings (its own `(time N)` budget
      *  taking precedence) and grade the result into `t.outcome`. */
-    async run(t: TestEntry) {
+    async run(t: TestEntry): Promise<void> {
+      // Axioms-only test: nothing to prove, and `runAll` skips these too.
+      const query = t.parsed.queryKif;
+      if (!query) return;
       const config = useProverStore().config(
         t.parsed.timeout ? { timeLimitSecs: t.parsed.timeout } : {},
       );
       const { result } = await call("prove", {
         assertions: t.parsed.axiomKif,
-        query: t.parsed.queryKif,
+        query,
         config,
         session: "__tq_test__",
       });
@@ -256,11 +259,11 @@ export const useTestsStore = defineStore("tests", {
      *  aborting the rest. */
     async runAll(
       onProgress?: (t: TestEntry) => void,
-      list: TestEntry[] = this.tests,
+      list?: TestEntry[],
     ): Promise<{ pass: number; ran: number }> {
       let pass = 0;
       let ran = 0;
-      for (const t of list) {
+      for (const t of list ?? this.tests) {
         if (!t.parsed.queryKif) continue;
         onProgress?.(t);
         try {

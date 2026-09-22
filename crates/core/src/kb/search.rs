@@ -65,6 +65,9 @@ pub struct SearchHit {
     /// or whose own name matched the query directly.
     pub symbol: String,
     /// Classification labels for the symbol (mirrors `ManPage::kinds`).
+    /// Empty for a [`SearchSource::WordNet`] hit whose anchor term is not a
+    /// symbol of the loaded KB -- the lexicon knows the word, the KB does
+    /// not (yet) define the term.
     pub kinds: Vec<ManKind>,
     /// Which predicate produced the hit (best-effort -- `Documentation` when
     /// the hit came from the unsourced name-match pass).
@@ -592,9 +595,12 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
     /// Two graceful-degradation points, both silent (never an error):
     ///   - a synset may anchor to a SUMO term the *loaded* KB doesn't
     ///     currently have (e.g. only `Merge.kif` is loaded, but the synset
-    ///     anchors to a `Mid-level-ontology.kif` term) -- `symbol_id` returns
-    ///     `None` and that anchor is skipped, so results are filtered to
-    ///     terms that actually exist in the loaded KB;
+    ///     anchors to a `Mid-level-ontology.kif` term) -- the hit is still
+    ///     reported so the user learns WordNet knows the word, but with
+    ///     empty `kinds` (the symbol has no classification to read) and a
+    ///     rank penalty so loaded anchors sort first (see [`wordnet_rank`]).
+    ///     An explicit `kind` filter excludes such hits, since they have no
+    ///     kind to match;
     ///   - every anchor kind is included regardless of strength (`=`, `+`,
     ///     `@`, or the rare negated forms) -- none are dropped, only ranked
     ///     lower (see [`wordnet_rank`]).
@@ -617,16 +623,14 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
                 if !seen.insert(anchor.term.clone()) {
                     continue;
                 }
-                let Some(sym_id) = self.symbol_id(&anchor.term) else {
-                    continue;
-                };
-                let kinds = self.kinds_of(sym_id);
+                let sym_id = self.symbol_id(&anchor.term);
+                let kinds = sym_id.map(|id| self.kinds_of(id)).unwrap_or_default();
                 if let Some(want) = opts.kind {
                     if !kind_matches(&kinds, want) {
                         continue;
                     }
                 }
-                let rank_breakdown = wordnet_rank(anchor.kind, sense.sense_no);
+                let rank_breakdown = wordnet_rank(anchor.kind, sense.sense_no, sym_id.is_some());
                 if let Some(&i) = existing_idx.get(&anchor.term) {
                     let existing = &mut hits[i];
                     existing.rank += sum_rank(&rank_breakdown);
@@ -747,10 +751,19 @@ fn source_preview_rank(source: SearchSource) -> u8 {
 ///    and a most-frequent-sense bonus decays hyperbolically so `dog#n#1`
 ///    outranks `dog#n#7`.
 ///
+/// An anchor whose SUMO term is not in the loaded KB (`loaded == false`)
+/// carries a penalty large enough that a loaded anchor of the same kind
+/// always sorts first, but not so large that an unloaded `=` drops below
+/// a loaded `+`: equivalence evidence still says more about the word.
+///
 /// NOTE: Exact/prefix *name* matches (100/60) always outrank any
 /// WordNet hit, by design.
 #[cfg(feature = "lexicon")]
-fn wordnet_rank(kind: crate::lexicon::MappingKind, sense_no: usize) -> Vec<RankComponent> {
+fn wordnet_rank(
+    kind: crate::lexicon::MappingKind,
+    sense_no: usize,
+    loaded: bool,
+) -> Vec<RankComponent> {
     use crate::lexicon::MappingKind::*;
     let (label, base) = match kind {
         Equivalent => ("equivalent WordNet anchor", 20.0),
@@ -763,6 +776,10 @@ fn wordnet_rank(kind: crate::lexicon::MappingKind, sense_no: usize) -> Vec<RankC
         RankComponent {
             label: "most-frequent-sense bonus",
             value: 4.0 / sense_no.max(1) as f32,
+        },
+        RankComponent {
+            label: "anchor not in loaded KB",
+            value: if loaded { 0.0 } else { -6.0 },
         },
     ]
 }
@@ -1103,13 +1120,7 @@ mod tests {
         );
         kb.flush_session("__scratch__");
 
-        let opts = SearchOpts {
-            kind: None,
-            language: None,
-            limit: None,
-            taxonomy: Vec::new(),
-            ..SearchOpts::default()
-        };
+        let opts = SearchOpts::default();
         let hits = kb.search("half typed", &opts);
         assert!(
             hits.is_empty(),
@@ -1287,6 +1298,7 @@ mod tests {
                 "02084071 05 n 03 dog 0 domestic_dog 0 Canis_familiaris 0 001 @ 02083346 n 0000 | a domesticated canine &%Canine+\n\
                  02121620 05 n 01 cat 0 001 @ 02120997 n 0000 | feline mammal &%Feline+\n",
                 crate::lexicon::Pos::Noun,
+                "WordNetMappings30-noun.txt",
             )],
             None,
             None,
@@ -1295,8 +1307,7 @@ mod tests {
 
     /// The synonym-expansion payoff: no KB string contains "dog", yet the
     /// query surfaces `Canine` via the lexicon -- while `Feline`, whose
-    /// anchoring synset doesn't match the query, and any anchored term *not
-    /// interned in the KB* stay absent.
+    /// anchoring synset doesn't match the query, stays absent.
     #[cfg(feature = "lexicon")]
     #[test]
     fn wordnet_expansion_surfaces_anchored_terms_present_in_kb() {
@@ -1332,12 +1343,55 @@ mod tests {
         assert_eq!(h.sense, "dog#n#1+");
         assert_eq!(h.text, "a domesticated canine");
         assert_eq!(h.sid, SentenceId::MAX);
+    }
+
+    /// An anchor term the loaded KB does not define is still reported (the
+    /// user learns WordNet maps the word somewhere), but with no `kinds`,
+    /// a rank penalty, and excluded by an explicit `--kind` filter.
+    #[cfg(feature = "lexicon")]
+    #[test]
+    fn wordnet_hits_on_unloaded_anchors_survive_with_empty_kinds() {
+        let kb = kb_from("(subclass Canine Mammal)");
+        let wn = fixture_lexicon();
+        let opts = SearchOpts {
+            lexicon: Some(&wn),
+            ..Default::default()
+        };
 
         // `cat` anchors to `Feline`, which is not interned in this KB.
-        assert!(
-            kb.search("cat", &opts).is_empty(),
-            "an anchored term missing from the KB must not be recommended"
+        let hits = kb.search("cat", &opts);
+        assert_eq!(hits.len(), 1, "got {:?}", hits);
+        let h = &hits[0];
+        assert_eq!(h.symbol, "Feline");
+        assert!(h.kinds.is_empty());
+        assert_eq!(h.source, SearchSource::WordNet);
+        assert_eq!(h.sense, "cat#n#1+");
+        let penalty = h
+            .rank_breakdown
+            .iter()
+            .find(|c| c.label == "anchor not in loaded KB")
+            .expect("penalty component present");
+        assert!(penalty.value < 0.0);
+
+        // A loaded anchor of the same kind lists the component at zero and
+        // outranks the unloaded one.
+        let loaded = &kb.search("dog", &opts)[0];
+        assert_eq!(loaded.symbol, "Canine");
+        assert!(loaded
+            .rank_breakdown
+            .iter()
+            .any(|c| c.label == "anchor not in loaded KB" && c.value == 0.0));
+        assert!(loaded.rank > h.rank);
+
+        // No kind to match => a kind filter drops it.
+        let filtered = kb.search(
+            "cat",
+            &SearchOpts {
+                kind: Some(ManKind::Class),
+                ..opts.clone()
+            },
         );
+        assert!(filtered.is_empty(), "got {:?}", filtered);
     }
 
     /// A symbol already surfaced by the text/name passes must not appear a

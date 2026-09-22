@@ -129,6 +129,23 @@ export function serializeOrigin(o: Origin): OriginJson {
   }
 }
 
+/** A persisted `{ name, origin }` row as it comes back out of localStorage:
+ *  the name is the only field worth trusting, since `parseOrigin` already
+ *  tolerates every historical `origin` shape (including a missing one). */
+export interface PersistedRow {
+  name: string;
+  origin?: OriginJson | OriginKind | null;
+}
+
+/** Whether an untrusted localStorage entry is a usable {@link PersistedRow}. */
+export function isPersistedRow(v: unknown): v is PersistedRow {
+  return (
+    typeof v === "object" &&
+    v !== null &&
+    typeof (v as { name?: unknown }).name === "string"
+  );
+}
+
 /** Rebuild an `Origin` from its persisted form. A bare kind string is the
  *  pre-library saved format and maps to `originForKind`; a `url` origin
  *  without a URL takes `name` as the URL. */

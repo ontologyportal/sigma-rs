@@ -10,6 +10,7 @@ import {
   type MonacoNs,
 } from "../services/monaco";
 import { useShellStore } from "../stores/shell";
+import type { Diagnostic } from "../stores/kb";
 
 const props = withDefaults(
   defineProps<{
@@ -181,7 +182,7 @@ watch(
 );
 
 /** Replace the 'sigma'-owned markers on the editor's model. */
-function setMarkers(diags: any[]): void {
+function setMarkers(diags: Diagnostic[]): void {
   const model = editor.value?.getModel();
   if (!monaco || !model) return;
   monaco.editor.setModelMarkers(model, "sigma", diagsToMarkers(monaco, diags));

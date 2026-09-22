@@ -144,6 +144,16 @@ await step("02-browse-manpage", async () => {
   if (!page.url().includes("sym="))
     throw new Error("URL missing ?sym=: " + page.url());
   await page.waitForTimeout(3000); // the taxonomy graph streams in
+  await page.getByRole("tab", { name: "Formulas" }).click();
+  if (!page.url().includes("view=formulas"))
+    throw new Error("URL missing view=formulas: " + page.url());
+  await page.waitForSelector("ol.refs li", { timeout: 60_000 });
+  await page.getByRole("tab", { name: "Overview" }).click();
+  await page.getByRole("button", { name: "List", exact: true }).click();
+  await page.waitForSelector("h4:has-text('Ancestors')", { timeout: 60_000 });
+  await page.waitForSelector("h4:has-text('Ancestors') ~ ul a.xref", {
+    timeout: 60_000,
+  });
 });
 
 await step("03-browse-back", async () => {

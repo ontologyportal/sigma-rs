@@ -43,6 +43,7 @@ impl CacheBehavior for Documentation {
         use crate::cache::events::EventKind;
         &[
             EventKind::OtherRootsChanged,
+            EventKind::AxiomsPromoted,
             EventKind::SessionReferenced,
             EventKind::SessionRetracted,
         ]
@@ -69,6 +70,18 @@ impl CacheBehavior for Documentation {
                 Event::OtherRootsChanged { .. } => {
                     store.clear();
                     return Vec::new();
+                }
+                // Promotion moves a sentence into `Base`, so a `Base` entry
+                // memoised while it was still transient is now incomplete.
+                Event::AxiomsPromoted { sids } => {
+                    for sid in sids {
+                        for sym in doc_symbols(parent, *sid) {
+                            store.evict_keys(&[Scoped {
+                                scope: Scope::Base,
+                                key: sym,
+                            }]);
+                        }
+                    }
                 }
                 Event::SessionReferenced { session, sids } => {
                     let s = Scope::Session(session_id(session));
@@ -317,6 +330,30 @@ mod tests {
         assert!(layer
             .documentation(animal, Some("FrenchLanguage"))
             .is_empty());
+    }
+
+    #[test]
+    fn base_entry_refreshes_after_promotion() {
+        use crate::cache::events::Event;
+        use crate::layer::Layer;
+        use crate::semantics::SemanticLayer;
+        use crate::syntactic::SyntacticLayer;
+
+        let mut store = SyntacticLayer::default();
+        store.load_kif_assert(
+            r#"(format EnglishLanguage domain "the number %2 argument of %1 is %n an &%instance of %3")"#,
+            "t.kif",
+        );
+        let layer = SemanticLayer::new(store);
+        let domain = layer.syntactic.sym_id("domain").unwrap();
+        assert!(layer.documentation(domain, None).is_empty());
+
+        let _ = layer.cascade(vec![Event::SessionAxiomatized {
+            session: "t.kif".into(),
+        }]);
+        let entries = layer.documentation(domain, Some("EnglishLanguage"));
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].rel, FORMAT_RELATION.id());
     }
 
     #[test]

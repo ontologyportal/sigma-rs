@@ -42,7 +42,10 @@ export const useBootStore = defineStore("boot", {
      *  cannot derive the base themselves. */
     async bootWorker() {
       const baseUrl = new URL(BASE, location.href).href;
-      await call("boot", { baseUrl });
+      const { symbols } = await call("boot");
+      const kb = useKBStore();
+      kb.symbols = symbols;
+      kb.uiLanguage = symbols.defaultLanguage;
       connectVampire(baseUrl);
     },
 
@@ -95,6 +98,12 @@ export const useBootStore = defineStore("boot", {
         else kb.refreshLangSelect();
         tests.restore();
         this.syncChanges();
+        // Not awaited, same reasoning as syncChanges: a per-source network
+        // check (git commit / URL hash) that must never hold up a page
+        // that's already usable.
+        kb.checkForUpdates().catch(() => {
+          /* offline or rate-limited: sources keep their last known state */
+        });
       } catch (e) {
         this.failed = true;
         this.error =

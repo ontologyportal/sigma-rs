@@ -567,9 +567,11 @@ where
     match cmd {
         Cmd::Load { flush: _ } => run_load(session, manager),
 
-        Cmd::Validate { formula, parse } => {
-            run_validate(session, manager, formula, parse, suppress)
-        }
+        Cmd::Validate {
+            formula,
+            parse,
+            wordnet,
+        } => run_validate(session, manager, formula, parse, suppress, wordnet),
 
         #[cfg(feature = "ask")]
         Cmd::Ask {

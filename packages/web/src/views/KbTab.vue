@@ -3,7 +3,6 @@
  *  presets and the Import dialog in its header) and the WordNet panel. */
 import { computed, onActivated, onMounted, ref } from "vue";
 import { GitOrigin } from "../models/Origin";
-import { fetchAllTexts } from "../services/sources";
 import { useKBStore } from "../stores/kb";
 import { useLibraryStore } from "../stores/library";
 import { useStatus } from "../composables/useStatus";
@@ -13,6 +12,7 @@ import DropMenu from "../components/DropMenu.vue";
 import StatusLine from "../components/StatusLine.vue";
 import ConstituentTable from "../components/kb/ConstituentTable.vue";
 import ImportDialog from "../components/kb/ImportDialog.vue";
+import SourcesCard from "../components/kb/SourcesCard.vue";
 import WordNetPanel from "../components/kb/WordNetPanel.vue";
 
 const kb = useKBStore();
@@ -116,24 +116,10 @@ async function loadPreset(key: string) {
     const total = preset.files.length;
     const origin = GitOrigin.default();
     tableLog.set(`Fetching ${preset.label} — 0/${total}…`);
-    const texts = await fetchAllTexts(
+    const { failed } = await kb.loadFiles(
       preset.files.map((name) => ({ name, origin })),
-      6,
-      (n) => {
-        tableLog.set(`Fetching ${preset.label} — ${n}/${total}…`);
-      },
+      (n) => tableLog.set(`Fetching ${preset.label} — ${n}/${total}…`),
     );
-
-    const failed: string[] = [];
-    const add: { name: string; text: string; origin: GitOrigin }[] = [];
-    preset.files.forEach((name, i) => {
-      const text = texts[i];
-      if (text instanceof Error) failed.push(`${name}: ${text.message}`);
-      else add.push({ name, text, origin });
-    });
-    tableLog.set(`Axiomatizing ${add.length} constituent(s)…`);
-    const r = await kb.applyChanges({ add });
-    failed.push(...r.failed);
 
     tableLog.set(
       failed.length
@@ -185,6 +171,8 @@ async function loadPreset(key: string) {
   </Card>
 
   <ImportDialog v-model="importOpen" @imported="(msg) => tableLog.set(msg)" />
+
+  <SourcesCard />
 
   <Card title="WordNet lexicon">
     <template #description>

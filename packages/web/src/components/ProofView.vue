@@ -5,10 +5,11 @@ import { highlightTptp } from "../utils/highlight-tptp";
 import CiteRow from "./CiteRow.vue";
 import Disclosure from "./Disclosure.vue";
 import ProofGraph from "./ProofGraph.vue";
+import { AuditStep } from "sigmakee/sdk";
 
 const props = defineProps<{
   /** The `{index, rule, premises, kif, tptp, file, line}[]` transcript. */
-  steps: any[];
+  steps: AuditStep[];
   /** Whole-proof TPTP material that belongs to no single step, e.g. TFF's
    *  `$i`-monomorphic type-declaration preamble. */
   prologue?: string;
@@ -28,7 +29,7 @@ const showPrologue = computed(
   () => prover.proofLang === "tptp" && !!props.prologue,
 );
 const prologueHtml = computed(() =>
-  showPrologue.value
+  showPrologue.value && props.prologue
     ? highlightTptp(props.prologue, { linkSymbols: true }).replace(/\n$/, "")
     : "",
 );
@@ -37,7 +38,7 @@ const prologueHtml = computed(() =>
  *  preamble first, when present) -- the settings panel's "plain proof". */
 const plainText = computed(() => {
   const lines: string[] = [];
-  if (showPrologue.value) lines.push(props.prologue);
+  if (showPrologue.value && props.prologue) lines.push(props.prologue);
   for (const s of props.steps)
     lines.push(prover.proofLang === "tptp" && s.tptp != null ? s.tptp : s.kif);
   return lines.join("\n");
@@ -46,9 +47,9 @@ const plainText = computed(() => {
 /** Step indices are 0-based on the wire; the list and the graph both label
  *  from 1, so shift for display. `pos` is the fallback when a step carries
  *  no explicit `index`. */
-const stepNumber = (s: any, pos: number) =>
+const stepNumber = (s: AuditStep, pos: number) =>
   (s.index != null ? s.index : pos) + 1;
-const premiseRefs = (s: any) => {
+const premiseRefs = (s: AuditStep) => {
   if (!s.premises || !s.premises.length) return "";
   const label = s.premises.length === 1 ? "step" : "steps";
   return `(from ${label} ${s.premises.map((p: number) => p + 1).join(", ")})`;
@@ -106,8 +107,6 @@ ol.refs {
   list-style: none;
   margin: 4px 0 0;
   padding: 0;
-  max-height: 420px;
-  overflow-y: auto;
 }
 ol.refs li {
   padding: 8px 2px;

@@ -2,9 +2,11 @@
  * SDK-shaped facade over the raw wasm bindings — mirrors `sigmakee-rs-sdk`'s
  * `Session` / `Source` / `Backend` / `Config` for the browser.
  */
-import { Config } from "./sumo_parser_wasm";
+import { Config, Session as WasmSession } from "./sumo_parser_wasm";
 
 export { Config };
+/** The raw wasm binding behind {@link Session.kb}. */
+export type { WasmSession };
 
 /** Outcome of loading a {@link Source}. */
 export interface LoadReport {
@@ -34,6 +36,13 @@ export interface AskResult {
   prose: string;
   /** Symbols the prose showed by bare name (no `format`/`termFormat` in the language). */
   prose_missing: string[];
+  /** Whole-proof TPTP material belonging to no single step (e.g. TFF's
+   *  type-declaration preamble), to show once ahead of the per-step `tptp`.
+   *  Empty for untyped dialects and when `proof` is empty. */
+  proof_tptp_prologue: string;
+  /** The exact problem text handed to the external prover on the last run --
+   *  Vampire backend with `Config.keepTptp` only, absent otherwise. */
+  input_tptp?: string;
 }
 
 /** One step of a cited contradiction derivation (see {@link AuditResult}). */
@@ -42,6 +51,9 @@ export interface AuditStep {
   rule: string;
   premises: number[];
   kif: string;
+  /** This step reconstructed as TPTP (framed `cnf`/`fof`/`tff`/... text), or
+   *  an inline `;` comment explaining why it couldn't be represented. */
+  tptp: string | null;
   /** `null` for derived/anonymous steps that don't trace to an input axiom. */
   file: string | null;
   line: number | null;
@@ -61,6 +73,8 @@ export interface AuditResult {
     prose: string;
     /** Symbols the prose showed by bare name (no `format`/`termFormat`). */
     prose_missing: string[];
+    /** See {@link AskResult.proof_tptp_prologue}. */
+    proof_tptp_prologue: string;
   }>;
 }
 
@@ -139,6 +153,18 @@ export interface ParsedTest {
   extraFiles: string[];
 }
 
+/** The SUMO symbol constants the engine was compiled with (its
+ *  `.cargo/config.toml` `[env]` table). */
+export interface SumoSymbols {
+  /** The language assumed for rendering / documentation lookups when none is named. */
+  defaultLanguage: string;
+  /** The class whose instances are the documentation languages. */
+  naturalLanguageClass: string;
+}
+
+/** The build's {@link SumoSymbols} (requires {@link init}). */
+export function sumoSymbols(): SumoSymbols;
+
 /** Parse a `.kif.tq` test file (requires {@link init}); throws on malformed input. */
 export function parseTest(name: string, text: string): ParsedTest;
 /** TPTP-dialect counterpart to {@link parseTest}: parses a `.p`/`.tptp` problem.
@@ -176,7 +202,7 @@ export interface TellResult {
 }
 
 export interface Diagnostic {
-  severity: "Error" | "Warning" | "Info" | "Hint";
+  severity: "error" | "warning" | "info" | "hint";
   kind: string; // coarse category, e.g. "semantic"
   code: string; // leaf id, e.g. "free-var-in-consequent"
   message: string;
@@ -214,7 +240,7 @@ export interface WordNetMapping {
 }
 export interface SearchHit {
   symbol: string;
-  kinds: string[];
+  kinds: ManKind[];
   source: string;
   language: string;
   text: string;
@@ -267,13 +293,87 @@ export interface WordNetFiles {
   /** `noun.exc` + `verb.exc` contents, concatenated. */
   exceptions?: string;
 }
+/** A capped report list: `items` holds up to the caller's `limit` rows,
+ * `total` is the true count -- so a caller can render "50 of 3,412" instead
+ * of silently truncating. */
+export interface Capped<T> {
+  items: T[];
+  total: number;
+}
+/** One synset row in a {@link WordNetDiagnostics} report: `term`/`suffix`
+ * are empty for an `unmappedSynsets` row (it has no SUMO anchor). `file`/
+ * `line` locate the record in its source `WordNetMappings30-*.txt` (or
+ * local-extension) file. */
+export interface WordNetSynsetRow {
+  words: string;
+  pos: string;
+  term: string;
+  suffix: string;
+  file: string;
+  /** 1-based line number within `file`. */
+  line: number;
+}
+/** A loaded KB term with no WordNet synset mapped to it. */
+export interface WordNetUnsynsetTerm {
+  symbol: string;
+  kinds: ManKind[];
+}
+/** A noun synset's hypernym edge whose SUMO anchors disagree with the KB's
+ * own subclass taxonomy: `hypernymTerm` is not an ancestor of `term`.
+ * `file`/`line` locate `word`'s (the offending, not the hypernym's) synset. */
+export interface WordNetTaxonomyMismatch {
+  word: string;
+  term: string;
+  hypernym_word: string;
+  hypernym_term: string;
+  file: string;
+  /** 1-based line number within `file`. */
+  line: number;
+}
+/** Mapping-kind x part-of-speech counts across the whole lexicon. */
+export interface WordNetMappingCounts {
+  equivalent: number;
+  subsuming: number;
+  instance: number;
+  anti_subsuming: number;
+  anti_instance: number;
+  anti_equivalent: number;
+  nouns: number;
+  verbs: number;
+  adjectives: number;
+  adverbs: number;
+}
+/** WordNet<->KB diagnostics report (see {@link Session.wordnetDiagnostics}):
+ * a port of Java Sigma's WordNet diagnostics page
+ * (ontologyportal/sigma-rs#64). `missingTerms` is the flip side of a
+ * {@link SearchHit} whose {@link SearchHit.kinds} came back empty -- this
+ * report is where that gap becomes an itemized, browsable list. */
+export interface WordNetDiagnostics {
+  counts: WordNetMappingCounts;
+  unmapped_synsets: Capped<WordNetSynsetRow>;
+  missing_terms: Capped<WordNetSynsetRow>;
+  terms_without_synsets: Capped<WordNetUnsynsetTerm>;
+  taxonomy_mismatches: Capped<WordNetTaxonomyMismatch>;
+}
 export interface DocBlock {
   language: string;
   text: string;
 }
+/** Where a signature slot's declaration comes from: on the symbol itself,
+ * inherited from a `subrelation` ancestor, or nowhere. */
+export type SortStatus = "declared" | "inherited" | "undeclared";
+/** One domain/range slot of a relation's signature. `type` is the class
+ * name (`null` only for an `undeclared` argument position within the
+ * arity); `subclass` marks `domainSubclass` / `rangeSubclass` slots;
+ * `inherited_from` names the `subrelation` ancestor whose own declaration
+ * supplies the slot when `status` is `"inherited"`. */
 export interface SortSig {
-  class: string;
+  /** Absent (or `null`) only when `status` is `"undeclared"`. */
+  type?: string | null;
   subclass: boolean;
+  status: SortStatus;
+  /** Present only when `status` is `"inherited"`. */
+  inherited_from?: string | null;
 }
 /** One formula referencing the man-paged symbol. `position` is the symbol's
  * 0-based root-level position in the sentence, or `null` when it only occurs
@@ -291,9 +391,11 @@ export interface ManPageRef {
   kind: string;
   arg_pos: number | null;
 }
+export type ManKind =
+  "class" | "relation" | "function" | "predicate" | "instance" | "individual";
 export interface ManPage {
   name: string;
-  kinds: string[];
+  kinds: ManKind[];
   documentation: DocBlock[];
   /** Every WordNet synset anchored to this symbol — see
    * {@link SearchHit.wordnet}'s doc comment for the shape. Populated
@@ -304,11 +406,62 @@ export interface ManPage {
   parents: Array<{ relation: string; parent: string }>;
   children: Array<{ relation: string; parent: string }>;
   arity: number | null;
-  domains: Array<{ position: number; sort: SortSig }>;
+  /** One entry per argument position, 1-based, up to the declared arity
+   * (or the last declared position when the arity is unknown). */
+  domains: Array<SortSig & { position: number }>;
   range: SortSig | null;
   appears_in_count: number;
   consequent_count: number;
   references: ManPageRef[];
+}
+
+/** Summary counts describing the loaded KB, as `Session.kb.stats()` returns
+ *  them (the raw binding is wasm-bindgen generated, so it is typed `any`
+ *  there). `documented`/`labeled` divide by `symbols` for a coverage
+ *  percentage. */
+export interface KbStats {
+  files: number;
+  symbols: number;
+  axioms: number;
+  rules: number;
+  classes: number;
+  instances: number;
+  relations: number;
+  predicates: number;
+  functions: number;
+  documented: number;
+  labeled: number;
+  doc_languages: Array<{ language: string; documented: number }>;
+  term_languages: Array<{ language: string; documented: number }>;
+}
+
+/** How a file's top-level formulas break down by shape, as part of
+ *  {@link FileStats.axiom_kinds}. Every formula counted in
+ *  `FileStats.axioms` falls into exactly one bucket: `documentation` is a
+ *  `documentation`/`termFormat`/`format` entry, `typing` a taxonomy
+ *  declaration (`instance`/`subclass`/`subrelation`/... ), `conditionals` a
+ *  rule (top-level `=>`/`<=>`), and `facts` everything else. */
+export interface FileAxiomKindCounts {
+  documentation: number;
+  typing: number;
+  conditionals: number;
+  facts: number;
+}
+
+/** One file's edit-relevant KB footprint, as `Session.kb.fileStats(file)`
+ *  returns it (the raw binding is wasm-bindgen generated, so it is typed
+ *  `any` there); `null` when `file` has no root sentences (not loaded, or
+ *  loaded but empty). `terms_unique` counts terms from `terms` that occur in
+ *  no other loaded file. `depends_on` lists other files this one relies on:
+ *  for each term it uses without itself declaring a type for (see
+ *  `axiom_kinds`), the file(s) elsewhere in the KB that do. */
+export interface FileStats {
+  file: string;
+  axioms: number;
+  axiom_kinds: FileAxiomKindCounts;
+  terms: number;
+  terms_unique: number;
+  depends_on: string[];
 }
 
 /** Browser analogue of the SDK's `Session`. */
@@ -316,14 +469,14 @@ export class Session {
   constructor(opts?: { backend?: Backend; config?: Config });
   readonly backend: Backend;
   /** The underlying raw wasm Session binding. */
-  readonly kb: unknown;
+  readonly kb: WasmSession;
   configure(config: Config): this;
   /** `{ promote: false }` ingests only (search/man pages work); call `promote` later. */
   ingest(source: Source, opts?: { promote?: boolean }): Promise<LoadReport>;
   /** Promote an ingested source (by tag) into the axiom base. Native backend only. */
   promote(tag: string): string[];
   /** Freeze the whole KB (promoted axioms included) to a portable byte buffer. Native backend only. */
-  snapshot(): Uint8Array;
+  snapshot(): Uint8Array<ArrayBuffer>;
   /** Thaw a KB frozen by {@link Session.snapshot}, replacing this session in place. Native backend only. */
   restore(bytes: Uint8Array): void;
   /** `tptp` parses `text` as TPTP instead of SUO-KIF. */
@@ -342,6 +495,11 @@ export class Session {
     query: string,
   ): { assertions: Diagnostic[]; query: Diagnostic[] };
   search(query: string, opts?: SearchOpts): SearchHit[];
+  /** WordNet<->KB diagnostics report over this session's installed lexicon
+   * and current KB (see {@link WordNetDiagnostics}). Each itemized report
+   * capped at `limit` rows (default 50). `null` when no lexicon is
+   * installed ({@link Session.loadWordNet}). */
+  wordnetDiagnostics(limit?: number): WordNetDiagnostics | null;
   /** Load the WordNet-SUMO lexicon from already-fetched mapping-file text
    * (the browser fetches; there is no filesystem here). Separate from KIF
    * ingestion — once loaded, `search` gains WordNet synonym hits. Returns
@@ -360,7 +518,9 @@ export class Session {
   };
   /** `NaturalLanguage` instances as `{symbol, label}`, for the UI selector. */
   naturalLanguages(): Array<{ symbol: string; label: string }>;
-  /** Natural-language paraphrase of a single KIF formula in `language`. */
-  renderNl(kif: string, language: string): string;
+  /** Natural-language paraphrase of a single KIF formula in `language`.
+   *  `genericVars` renders variables as generic noun phrases ("an entity")
+   *  instead of `?Var`. */
+  renderNl(kif: string, language: string, genericVars?: boolean): string;
   flushSession(session: string): void;
 }

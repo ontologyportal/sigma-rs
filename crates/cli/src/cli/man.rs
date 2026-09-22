@@ -422,6 +422,10 @@ fn sig_line(label: &str, sig: &SortSig) -> Vec<Span> {
         spans.push(plain(" "));
         spans.push(dim("(subclass-of)"));
     }
+    if let Some(from) = &sig.inherited_from {
+        spans.push(plain(" "));
+        spans.push(dim(format!("(inherited from {from})")));
+    }
     spans
 }
 

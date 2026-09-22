@@ -13,12 +13,10 @@
     "noEmit": true,
     "types": ["vite/client"],
 
-    // This is a mechanical JS -> TS conversion of a previously untyped
-    // codebase: no annotations were added, so full `strict` would surface
-    // hundreds of pre-existing implicit-any / possibly-null findings unrelated
-    // to this change. Tighten incrementally per-file as real types land.
-    "strict": false,
-    "noImplicitAny": false
+    // Pinia's options stores infer `this` correctly only under `strict`:
+    // with it off, every `this.<state>` inside an action silently degrades to
+    // `any` while `state()`'s own annotations still look right.
+    "strict": true
   },
   "include": ["src", "vite.config.ts"],
   // sigma.worker.ts has its own config (tsconfig.worker.json): it runs in

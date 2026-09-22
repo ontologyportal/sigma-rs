@@ -18,7 +18,7 @@ use lsp_types::{
 
 use sigmakee_rs_sdk::{
     KnowledgeBase, ManKind, OpTok, RelationDomain, SearchOpts, TaxConstraint, Token, TokenKind,
-    TopLayer,
+    TopLayer, DEFAULT_LANGUAGE,
 };
 
 use crate::conv::position_to_offset;
@@ -488,7 +488,7 @@ fn suggest_args<L: TopLayer>(
 fn item_for_symbol<L: TopLayer>(kb: &KnowledgeBase<L>, name: &str) -> CompletionItem {
     let kind = classify_completion_kind(kb, name);
     let documentation = kb
-        .documentation(name, Some("EnglishLanguage"))
+        .documentation(name, Some(DEFAULT_LANGUAGE))
         .into_iter()
         .next()
         .map(|d| {

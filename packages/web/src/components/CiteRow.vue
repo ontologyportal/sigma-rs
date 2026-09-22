@@ -5,22 +5,30 @@ import { useKBStore } from "../stores/kb";
 import { highlightKif } from "../utils/highlight-kif";
 import { highlightTptp } from "../utils/highlight-tptp";
 import { useSymbolLinks } from "../composables/useSymbolLinks";
+import { useShellStore } from "../stores/shell.ts";
 import SourceLoc from "./SourceLoc.vue";
+import Row from "./Row.vue";
+import Col from "./Col.vue";
 
 const props = defineProps<{
   /** The formula; the paraphrase is always derived from this, whatever is displayed. */
   kif: string;
-  /** The step's TPTP rendering, displayed when `lang` is `tptp`. */
-  tptp?: string;
+  /** The step's TPTP rendering, displayed when `lang` is `tptp`. `null` when
+   *  the step had no TPTP representation. */
+  tptp?: string | null;
   /** Displayed dialect: `tptp` shows `tptp` (falling back to `kif` when absent), anything else `kif`. */
   lang?: "kif" | "tptp";
-  /** Source constituent of the formula, for the `file:line` + blame footer. */
-  file?: string;
+  /** Source constituent of the formula, for the `file:line` + blame footer.
+   *  `null` for a step with no source origin (a synthetic/CNF sentence). */
+  file?: string | null;
   /** 1-based source line inside `file`. */
-  line?: number;
+  line?: number | null;
   /** The viewed symbol: highlighted rather than linked inside the formula. */
   focusSymbol?: string;
 }>();
+
+const shell = useShellStore();
+const isCompact = computed(() => shell.effectiveLayout == "comfortable");
 
 const kb = useKBStore();
 const root = ref<HTMLElement | null>(null);
@@ -77,22 +85,55 @@ function onToggle(e: Event) {
   isOpen.value = (e.target as HTMLDetailsElement).open;
 }
 
-watch([isOpen, nlKey], ([open]) => {
-  if (open) renderNl();
-});
+const isVisible = computed(() => !isCompact.value || isOpen.value);
+
+watch(
+  [isVisible, nlKey],
+  ([visible]) => {
+    if (visible) renderNl();
+  },
+  { immediate: true },
+);
+
+// A paraphrase rendered mid-promote only sees the already-promoted `format`
+// templates; re-render once the promote window closes.
+watch(
+  () => kb.promoting,
+  (promoting) => {
+    if (promoting || !isVisible.value) return;
+    nlLang.value = "";
+    renderNl();
+  },
+);
 </script>
 
 <template>
   <li ref="root">
-    <details class="cite" @toggle="onToggle">
-      <summary>
-        <div v-if="$slots.header" class="hint"><slot name="header" /></div>
-        <pre class="ref-kif" v-html="highlighted"></pre>
-      </summary>
-      <div class="nl">{{ nlText }}</div>
-    </details>
-    <div v-if="file" class="ref-meta">
-      <SourceLoc :file="file" :line="line" />
+    <div v-if="isCompact">
+      <details class="cite" @toggle="onToggle">
+        <summary>
+          <div v-if="$slots.header" class="hint"><slot name="header" /></div>
+          <pre class="ref-kif" v-html="highlighted"></pre>
+        </summary>
+        <div class="nl">{{ nlText }}</div>
+      </details>
+      <div v-if="file" class="ref-meta">
+        <SourceLoc :file="file" :line="line" />
+      </div>
+    </div>
+    <div v-else>
+      <Row class="split-cite">
+        <Col :span="7" justify-content="center">
+          <div v-if="$slots.header" class="hint"><slot name="header" /></div>
+          <pre class="ref-kif" v-html="highlighted"></pre>
+          <div v-if="file" class="ref-meta">
+            <SourceLoc :file="file" :line="line" />
+          </div>
+        </Col>
+        <Col :span="5" class="cite" justify-content="center">
+          {{ nlText }}
+        </Col>
+      </Row>
     </div>
   </li>
 </template>
@@ -127,6 +168,8 @@ details.cite > .nl {
   font-size: 12px;
   white-space: pre;
   overflow-x: auto;
+  background-color: var(--bg);
+  padding: 8px 5px;
 }
 .ref-meta {
   display: flex;
@@ -134,5 +177,10 @@ details.cite > .nl {
   align-items: baseline;
   flex-wrap: wrap;
   margin-top: 4px;
+}
+
+.split-cite .cite {
+  margin-left: 25px;
+  color: var(--muted);
 }
 </style>

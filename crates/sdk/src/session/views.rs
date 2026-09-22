@@ -13,7 +13,10 @@
 // Field names are part of the wire contract consumed by the web front end --
 // do not rename or add `rename_all` attributes.
 
-use sigmakee_rs_core::{Diagnostic, KnowledgeBase, ManKind, ManPage, SearchHit, TopLayer};
+use sigmakee_rs_core::{
+    Diagnostic, KnowledgeBase, ManKind, ManPage, SearchHit, TopLayer, DEFAULT_LANGUAGE,
+    NATURAL_LANGUAGE_CLASS,
+};
 
 #[cfg(any(feature = "external-prover", feature = "native-prover"))]
 use sigmakee_rs_core::{
@@ -157,6 +160,161 @@ fn wordnet_mappings_for(
         .collect()
 }
 
+// -- WordNet diagnostics ---------------------------------------------------
+
+/// One synset row in a WordNet diagnostics report ([`unmapped_synsets`] /
+/// [`missing_terms`] shapes) -- boundary-safe: `words` is comma-joined with
+/// underscores converted to spaces, `pos` is the one-letter tag.
+///
+/// [`unmapped_synsets`]: WordNetDiagnosticsView::unmapped_synsets
+/// [`missing_terms`]: WordNetDiagnosticsView::missing_terms
+#[cfg(feature = "lexicon")]
+#[derive(serde::Serialize)]
+pub struct WordNetSynsetRowView {
+    pub words: String,
+    pub pos: String,
+    /// The SUMO anchor's term name -- empty for an
+    /// [`WordNetDiagnosticsView::unmapped_synsets`] row, which has none.
+    pub term: String,
+    /// The mapping-kind suffix (`=`, `+`, `@`, ...) -- empty for an
+    /// [`WordNetDiagnosticsView::unmapped_synsets`] row.
+    pub suffix: String,
+    /// The `WordNetMappings30-*.txt` (or local-extension) file this record
+    /// came from, from the synset's [`Span`](sigmakee_rs_core::Span).
+    pub file: String,
+    /// 1-based line number within `file`.
+    pub line: u32,
+}
+
+#[cfg(feature = "lexicon")]
+impl From<&sigmakee_rs_core::lexicon::diagnostics::UnmappedSynset> for WordNetSynsetRowView {
+    fn from(s: &sigmakee_rs_core::lexicon::diagnostics::UnmappedSynset) -> Self {
+        Self {
+            words: s.words.join(", ").replace('_', " "),
+            pos: s.pos.as_char().to_string(),
+            term: String::new(),
+            suffix: String::new(),
+            file: s.span.file.clone(),
+            line: s.span.line,
+        }
+    }
+}
+
+#[cfg(feature = "lexicon")]
+impl From<&sigmakee_rs_core::lexicon::diagnostics::MissingTerm> for WordNetSynsetRowView {
+    fn from(s: &sigmakee_rs_core::lexicon::diagnostics::MissingTerm) -> Self {
+        Self {
+            words: s.words.join(", ").replace('_', " "),
+            pos: s.pos.as_char().to_string(),
+            term: s.term.clone(),
+            suffix: s.kind.suffix().to_string(),
+            file: s.span.file.clone(),
+            line: s.span.line,
+        }
+    }
+}
+
+/// A loaded KB term with no WordNet synset mapped to it.
+#[cfg(feature = "lexicon")]
+#[derive(serde::Serialize)]
+pub struct WordNetUnsynsetTermView {
+    pub symbol: String,
+    pub kinds: Vec<String>,
+}
+
+#[cfg(feature = "lexicon")]
+impl From<&sigmakee_rs_core::lexicon::diagnostics::UnsynsetTerm> for WordNetUnsynsetTermView {
+    fn from(t: &sigmakee_rs_core::lexicon::diagnostics::UnsynsetTerm) -> Self {
+        Self {
+            symbol: t.symbol.clone(),
+            kinds: t.kinds.iter().map(|k| k.as_str().to_string()).collect(),
+        }
+    }
+}
+
+/// A noun synset's hypernym edge whose SUMO anchors disagree with the KB's
+/// own subclass taxonomy.
+#[cfg(feature = "lexicon")]
+#[derive(serde::Serialize)]
+pub struct WordNetTaxonomyMismatchView {
+    pub word: String,
+    pub term: String,
+    pub hypernym_word: String,
+    pub hypernym_term: String,
+    /// The `WordNetMappings30-*.txt` file `word`'s (the offending, not the
+    /// hypernym's) synset came from -- from its
+    /// [`Span`](sigmakee_rs_core::Span).
+    pub file: String,
+    /// 1-based line number within `file`.
+    pub line: u32,
+}
+
+#[cfg(feature = "lexicon")]
+impl From<&sigmakee_rs_core::lexicon::diagnostics::TaxonomyMismatch>
+    for WordNetTaxonomyMismatchView
+{
+    fn from(m: &sigmakee_rs_core::lexicon::diagnostics::TaxonomyMismatch) -> Self {
+        Self {
+            word: m.word.clone(),
+            term: m.term.clone(),
+            hypernym_word: m.hypernym_word.clone(),
+            hypernym_term: m.hypernym_term.clone(),
+            file: m.span.file.clone(),
+            line: m.span.line,
+        }
+    }
+}
+
+/// A capped report list: `items` holds up to the caller's `limit` rows,
+/// `total` is the true count.
+#[cfg(feature = "lexicon")]
+#[derive(serde::Serialize)]
+pub struct CappedView<T> {
+    pub items: Vec<T>,
+    pub total: usize,
+}
+
+#[cfg(feature = "lexicon")]
+impl<T, U: for<'a> From<&'a T>> From<&sigmakee_rs_core::lexicon::diagnostics::Capped<T>>
+    for CappedView<U>
+{
+    fn from(c: &sigmakee_rs_core::lexicon::diagnostics::Capped<T>) -> Self {
+        Self {
+            items: c.items.iter().map(U::from).collect(),
+            total: c.total,
+        }
+    }
+}
+
+/// Mapping-kind x part-of-speech counts across the whole lexicon.
+#[cfg(feature = "lexicon")]
+#[derive(serde::Serialize)]
+pub struct WordNetMappingCountsView {
+    pub equivalent: usize,
+    pub subsuming: usize,
+    pub instance: usize,
+    pub anti_subsuming: usize,
+    pub anti_instance: usize,
+    pub anti_equivalent: usize,
+    pub nouns: usize,
+    pub verbs: usize,
+    pub adjectives: usize,
+    pub adverbs: usize,
+}
+
+/// Boundary-safe WordNet<->KB diagnostics report (see
+/// `sigmakee_rs_core::lexicon::diagnostics` for what each field covers and
+/// `Session::wordnet_diagnostics_view` for how it's produced).
+#[cfg(feature = "lexicon")]
+#[derive(serde::Serialize)]
+pub struct WordNetDiagnosticsView {
+    pub counts: WordNetMappingCountsView,
+    pub unmapped_synsets: CappedView<WordNetSynsetRowView>,
+    pub missing_terms: CappedView<WordNetSynsetRowView>,
+    pub terms_without_synsets: CappedView<WordNetUnsynsetTermView>,
+    pub taxonomy_mismatches: CappedView<WordNetTaxonomyMismatchView>,
+}
+
 /// A boundary-safe search hit (the internal `sid` is dropped).
 #[derive(serde::Serialize)]
 pub struct SearchHitView {
@@ -240,19 +398,50 @@ pub struct EdgeView {
     pub parent: String,
 }
 
-/// A domain/range sort: the class, and whether the argument is the class
-/// itself vs. a subclass position (`domainSubclass` / `rangeSubclass`).
+/// A domain/range slot: the class (`None` for an undeclared argument
+/// position within the arity), whether the argument is the class itself vs.
+/// a subclass position (`domainSubclass` / `rangeSubclass`), and where the
+/// declaration comes from -- `"declared"` on the symbol, `"inherited"` from
+/// the named `subrelation` ancestor, or `"undeclared"`.
 #[derive(serde::Serialize)]
 pub struct SortView {
-    pub class: String,
+    #[serde(rename = "type")]
+    pub class: Option<String>,
     pub subclass: bool,
+    pub status: &'static str,
+    pub inherited_from: Option<String>,
 }
 
-/// One argument-position sort signature entry.
+/// One argument-position sort signature entry: a [`SortView`] plus its
+/// 1-based `position`. The slot fields are repeated rather than nested or
+/// `#[serde(flatten)]`ed: flatten serializes as a map, which
+/// `serde_wasm_bindgen` turns into a JS `Map` instead of a plain object.
 #[derive(serde::Serialize)]
 pub struct DomainView {
     pub position: usize,
-    pub sort: SortView,
+    #[serde(rename = "type")]
+    pub class: Option<String>,
+    pub subclass: bool,
+    pub status: &'static str,
+    pub inherited_from: Option<String>,
+}
+
+impl DomainView {
+    fn new(position: usize, sort: Option<SortView>) -> Self {
+        let sort = sort.unwrap_or(SortView {
+            class: None,
+            subclass: false,
+            status: "undeclared",
+            inherited_from: None,
+        });
+        DomainView {
+            position,
+            class: sort.class,
+            subclass: sort.subclass,
+            status: sort.status,
+            inherited_from: sort.inherited_from,
+        }
+    }
 }
 
 /// One formula that references the man-paged symbol: its rendered KIF text
@@ -271,8 +460,17 @@ pub struct ManPageRefView {
     pub kif: String,
     pub file: Option<String>,
     pub line: Option<u32>,
+    /// `"fact"`, a top-level operator (`"=>"`, `"<=>"`, `"and"`, `"or"`),
+    /// `"doc"` (a documentation / termFormat / format sentence),
+    /// `"taxonomy"` (a subclass / instance / subrelation / subAttribute
+    /// sentence), or `"other"`.
     pub kind: String,
     pub arg_pos: Option<usize>,
+    /// The sentence's head relation, when it has one.
+    pub head: Option<String>,
+    /// For a rule (`=>` / `<=>`): which side(s) the symbol occurs on,
+    /// `"antecedent"` and/or `"consequent"`. Empty for every other kind.
+    pub roles: Vec<String>,
 }
 
 /// The full symbol card, boundary-safe: the human-facing [`ManPage`] fields
@@ -322,6 +520,51 @@ pub struct LangView {
 
 /// Classify a reference formula's top-level shape for the man-page filter.
 /// Returns `(kind, arg_pos)` as documented on [`ManPageRefView`].
+/// Does the sentence tree rooted at `sid` mention `target` at any depth?
+fn subtree_mentions<L: TopLayer>(
+    kb: &KnowledgeBase<L>,
+    sid: sigmakee_rs_core::SentenceId,
+    target: sigmakee_rs_core::SymbolId,
+) -> bool {
+    use sigmakee_rs_core::Element;
+    let Some(sent) = kb.sentence(sid) else {
+        return false;
+    };
+    sent.elements.iter().any(|el| match el {
+        Element::Symbol(s) => s.id() == target,
+        Element::Sub(inner) => subtree_mentions(kb, *inner, target),
+        _ => false,
+    })
+}
+
+/// Which side(s) of a rule (`=>` / `<=>`) mention `target`: the element
+/// after the operator is the antecedent, the one after that the consequent
+/// (a biconditional reports both sides it mentions, the same way Sigma's
+/// browser lists such a rule under both headings).
+fn rule_roles<L: TopLayer>(
+    kb: &KnowledgeBase<L>,
+    sid: sigmakee_rs_core::SentenceId,
+    target: sigmakee_rs_core::SymbolId,
+) -> Vec<String> {
+    use sigmakee_rs_core::Element;
+    let Some(root) = kb.sentence(sid) else {
+        return Vec::new();
+    };
+    let side_mentions = |el: Option<&Element>| match el {
+        Some(Element::Symbol(s)) => s.id() == target,
+        Some(Element::Sub(inner)) => subtree_mentions(kb, *inner, target),
+        _ => false,
+    };
+    let mut roles = Vec::new();
+    if side_mentions(root.elements.get(1)) {
+        roles.push("antecedent".to_string());
+    }
+    if side_mentions(root.elements.get(2)) {
+        roles.push("consequent".to_string());
+    }
+    roles
+}
+
 fn classify_reference<L: TopLayer>(
     kb: &KnowledgeBase<L>,
     sid: sigmakee_rs_core::SentenceId,
@@ -386,16 +629,52 @@ impl ManPageDetail {
                 .collect()
         };
         let sort = |s: &sigmakee_rs_core::SortSig| SortView {
-            class: s.class.clone(),
+            class: Some(s.class.clone()),
             subclass: s.subclass,
+            status: if s.inherited_from.is_some() {
+                "inherited"
+            } else {
+                "declared"
+            },
+            inherited_from: s.inherited_from.clone(),
         };
         let target = kb.symbol_id(&p.name);
+        let head_of = |sid: sigmakee_rs_core::SentenceId| -> Option<String> {
+            kb.sentence(sid)?
+                .head_symbol()
+                .and_then(|id| kb.sym_name(id))
+        };
+        // A per-sid location is a scan of the whole source map; past a few
+        // dozen references the one-off bulk index is cheaper than the scans.
+        let ref_count = p.ref_args.len() + p.ref_nested.len() + p.ref_meta.len();
+        let spans = if ref_count > 64 {
+            Some(sigmakee_rs_core::DiagnosticSource::sentence_locations(kb))
+        } else {
+            None
+        };
         let reference =
             |sid: sigmakee_rs_core::SentenceId, position: Option<usize>| -> ManPageRefView {
-                let span = sigmakee_rs_core::DiagnosticSource::sentence_location(kb, sid);
+                let span = match &spans {
+                    Some(index) => index.get(&sid).cloned(),
+                    None => sigmakee_rs_core::DiagnosticSource::sentence_location(kb, sid),
+                };
+                let head = head_of(sid);
                 let (kind, arg_pos) = match target {
                     Some(t) => classify_reference(kb, sid, t),
                     None => ("other".to_string(), None),
+                };
+                // Documentation / format / taxonomy sentences are facts too,
+                // but readers want them grouped by role rather than shape.
+                let kind = match head.as_deref() {
+                    Some("documentation" | "termFormat" | "format") => "doc".to_string(),
+                    Some("subclass" | "instance" | "subrelation" | "subAttribute") => {
+                        "taxonomy".to_string()
+                    }
+                    _ => kind,
+                };
+                let roles = match (kind.as_str(), target) {
+                    ("=>" | "<=>", Some(t)) => rule_roles(kb, sid, t),
+                    _ => Vec::new(),
                 };
                 ManPageRefView {
                     position,
@@ -404,6 +683,8 @@ impl ManPageDetail {
                     line: span.as_ref().map(|s| s.line),
                     kind,
                     arg_pos,
+                    head,
+                    roles,
                 }
             };
         let mut references: Vec<ManPageRefView> = p
@@ -412,6 +693,11 @@ impl ManPageDetail {
             .map(|sigmakee_rs_core::SentenceRef(pos, sid)| reference(*sid, Some(*pos)))
             .collect();
         references.extend(p.ref_nested.iter().map(|&sid| reference(sid, None)));
+        references.extend(
+            p.ref_meta
+                .iter()
+                .map(|sigmakee_rs_core::SentenceRef(pos, sid)| reference(*sid, Some(*pos))),
+        );
         Self {
             name: p.name.clone(),
             kinds: p.kinds.iter().map(|k| k.as_str().to_string()).collect(),
@@ -422,14 +708,23 @@ impl ManPageDetail {
             parents: edges(&p.parents),
             children: edges(&p.children),
             arity: p.arity,
-            domains: p
-                .domains
-                .iter()
-                .map(|(pos, s)| DomainView {
-                    position: *pos,
-                    sort: sort(s),
-                })
-                .collect(),
+            // One row per argument position up to the declared arity, so an
+            // undeclared slot shows as such rather than vanishing.
+            domains: {
+                let declared_len = p.domains.last().map_or(0, |(pos, _)| *pos);
+                let arity = usize::try_from(p.arity.unwrap_or(0)).unwrap_or(0);
+                (1..=declared_len.max(arity))
+                    .map(|position| {
+                        DomainView::new(
+                            position,
+                            p.domains
+                                .iter()
+                                .find(|(pos, _)| *pos == position)
+                                .map(|(_, s)| sort(s)),
+                        )
+                    })
+                    .collect()
+            },
             range: p.range.as_ref().map(sort),
             appears_in_count: p.appears_in_count,
             consequent_count: p.consequent_count,
@@ -465,6 +760,111 @@ pub struct KbStatsView {
     pub labeled: usize,
     pub doc_languages: Vec<DocLangView>,
     pub term_languages: Vec<DocLangView>,
+}
+
+// -- File stats ------------------------------------------------------------------
+
+/// How a file's top-level formulas break down by shape (see
+/// [`FileStatsView::axiom_kinds`]): `documentation` is a `documentation` /
+/// `termFormat` / `format` entry, `typing` a taxonomy declaration
+/// (`instance`/`subclass`/`subrelation`/`subAttribute`/`domain`/
+/// `domainSubclass`/`range`/`disjoint`/`disjointDecomposition`/`partition`/
+/// `exhaustiveDecomposition`/`inverse`), `conditionals` a rule (top-level
+/// `=>`/`<=>`), and `facts` everything else. Every formula counted in
+/// [`FileStatsView::axioms`] falls into exactly one bucket.
+#[derive(serde::Serialize)]
+pub struct FileAxiomKindCountsView {
+    pub documentation: usize,
+    pub typing: usize,
+    pub conditionals: usize,
+    pub facts: usize,
+}
+
+/// A file's edit-relevant KB footprint, for the Edit tab's file-info panel.
+///
+/// `terms_unique` counts symbols from `terms` that occur in no other loaded
+/// file's formulas. `depends_on` lists other files this one relies on: for
+/// each term the file uses without itself declaring a type for it
+/// (`instance`/`subclass`/... -- see [`FileAxiomKindCountsView`]), the
+/// file(s) elsewhere in the KB that do declare one.
+#[derive(serde::Serialize)]
+pub struct FileStatsView {
+    pub file: String,
+    pub axioms: usize,
+    pub axiom_kinds: FileAxiomKindCountsView,
+    pub terms: usize,
+    pub terms_unique: usize,
+    pub depends_on: Vec<String>,
+}
+
+/// The taxonomy/type-declaration predicates [`classify_axiom_kind`] groups
+/// as `"typing"` -- also what [`Session::file_stats_view`] treats as a
+/// term's "declared here" site for `depends_on`.
+const TYPING_HEADS: &[&str] = &[
+    "instance",
+    "subclass",
+    "subrelation",
+    "subAttribute",
+    "domain",
+    "domainSubclass",
+    "range",
+    "disjoint",
+    "disjointDecomposition",
+    "partition",
+    "exhaustiveDecomposition",
+    "inverse",
+];
+
+const DOC_HEADS: &[&str] = &["documentation", "termFormat", "format"];
+
+/// Classify a root sentence's shape for [`FileStatsView::axiom_kinds`], by
+/// head predicate first and its top-level connective otherwise.
+fn classify_axiom_kind(sent: &sigmakee_rs_core::Sentence) -> &'static str {
+    use sigmakee_rs_core::{Element, OpKind};
+    if let Some(head) = sent.head_symbol_name() {
+        let head = head.as_str();
+        if DOC_HEADS.contains(&head) {
+            return "documentation";
+        }
+        if TYPING_HEADS.contains(&head) {
+            return "typing";
+        }
+    }
+    if matches!(
+        sent.elements.first(),
+        Some(Element::Op(OpKind::Implies | OpKind::Iff))
+    ) {
+        "conditionals"
+    } else {
+        "facts"
+    }
+}
+
+/// Every symbol occurring anywhere in `sid`'s formula, recursing through
+/// nested sub-sentences (`Element::Sub`). `seen` guards against revisiting a
+/// shared sub-sentence twice within the same walk.
+fn deep_symbols<L: TopLayer>(
+    kb: &KnowledgeBase<L>,
+    sid: sigmakee_rs_core::SentenceId,
+    seen: &mut std::collections::HashSet<sigmakee_rs_core::SentenceId>,
+    out: &mut std::collections::HashSet<String>,
+) {
+    use sigmakee_rs_core::Element;
+    if !seen.insert(sid) {
+        return;
+    }
+    let Some(sent) = kb.sentence(sid) else {
+        return;
+    };
+    for el in sent.elements.iter() {
+        match el {
+            Element::Symbol(sym) => {
+                out.insert(sym.as_str().to_string());
+            }
+            Element::Sub(sub_sid) => deep_symbols(kb, *sub_sid, seen, out),
+            _ => {}
+        }
+    }
 }
 
 // -- Test cases ----------------------------------------------------------------
@@ -628,7 +1028,7 @@ impl AskResultView {
             );
             let goal_ast = goal_doc.ast.iter().find_map(|d| d.as_stmt());
             let report =
-                kb.render_proof_prose_with(goal_ast, proof_kif, "EnglishLanguage", &src_idx);
+                kb.render_proof_prose_with(goal_ast, proof_kif, DEFAULT_LANGUAGE, &src_idx);
             (proof, report.rendered, report.missing)
         };
         Self {
@@ -697,7 +1097,7 @@ impl AuditResultView {
                 // the KB itself -- so the prose opens straight into the
                 // derivation.
                 let prose_report =
-                    kb.render_proof_prose_with(None, steps, "EnglishLanguage", src_idx);
+                    kb.render_proof_prose_with(None, steps, DEFAULT_LANGUAGE, src_idx);
                 let tptp = Emitter::Tptp(TptpLang::Auto)
                     .emit(&steps.iter().map(|s| s.formula.clone()).collect::<Vec<_>>());
                 let proof_tptp_prologue = tptp.preamble.join("\n");
@@ -786,6 +1186,35 @@ impl<L: TopLayer> Session<L> {
         hits
     }
 
+    /// WordNet<->KB diagnostics report over this session's installed
+    /// lexicon and current KB (see `sigmakee_rs_core::lexicon::diagnostics`
+    /// for what each report covers). `None` when no lexicon is installed
+    /// (see [`Session::load_lexicon`] / [`Session::set_lexicon`]). Each of
+    /// the four itemized reports is capped at `limit` rows.
+    #[cfg(feature = "lexicon")]
+    pub fn wordnet_diagnostics_view(&self, limit: usize) -> Option<WordNetDiagnosticsView> {
+        let wn = self.lexicon.as_deref()?;
+        let diag = sigmakee_rs_core::lexicon::diagnostics::diagnose(wn, &self.kb, limit);
+        Some(WordNetDiagnosticsView {
+            counts: WordNetMappingCountsView {
+                equivalent: diag.counts.equivalent,
+                subsuming: diag.counts.subsuming,
+                instance: diag.counts.instance,
+                anti_subsuming: diag.counts.anti_subsuming,
+                anti_instance: diag.counts.anti_instance,
+                anti_equivalent: diag.counts.anti_equivalent,
+                nouns: diag.counts.nouns,
+                verbs: diag.counts.verbs,
+                adjectives: diag.counts.adjectives,
+                adverbs: diag.counts.adverbs,
+            },
+            unmapped_synsets: (&diag.unmapped_synsets).into(),
+            missing_terms: (&diag.missing_terms).into(),
+            terms_without_synsets: (&diag.terms_without_synsets).into(),
+            taxonomy_mismatches: (&diag.taxonomy_mismatches).into(),
+        })
+    }
+
     /// Summary counts describing the loaded KB (see [`KbStatsView`]).
     ///
     /// `symbols` counts ontology terms a reader would recognise: KIF
@@ -854,32 +1283,131 @@ impl<L: TopLayer> Session<L> {
         }
     }
 
+    /// One file's edit-relevant KB footprint (see [`FileStatsView`]), for the
+    /// Edit tab's file-info panel. `None` when `file` has no root sentences
+    /// (not loaded, or loaded but empty).
+    ///
+    /// Walks every loaded file's root sentences once to build a term ->
+    /// {declaring files, occurring files} picture, so cost scales with the
+    /// whole KB, not just `file` -- fine for an on-demand info panel, not
+    /// something to call per keystroke.
+    pub fn file_stats_view(&self, file: &str) -> Option<FileStatsView> {
+        let kb = &self.kb;
+        let roots = kb.file_roots(file);
+        if roots.is_empty() {
+            return None;
+        }
+
+        // term -> files it occurs in at all; term -> files that declare its
+        // type (a typing-kind root sentence's own subject, elements[1]).
+        let mut occurs_in: std::collections::HashMap<String, std::collections::HashSet<String>> =
+            std::collections::HashMap::new();
+        let mut typed_in: std::collections::HashMap<String, std::collections::HashSet<String>> =
+            std::collections::HashMap::new();
+        for f in kb.iter_files() {
+            if f.starts_with("__") {
+                continue;
+            }
+            for sid in kb.file_roots(&f) {
+                let Some(sent) = kb.sentence(sid) else {
+                    continue;
+                };
+                let mut seen = std::collections::HashSet::new();
+                let mut syms = std::collections::HashSet::new();
+                deep_symbols(kb, sid, &mut seen, &mut syms);
+                for s in &syms {
+                    occurs_in.entry(s.clone()).or_default().insert(f.clone());
+                }
+                if classify_axiom_kind(&sent) == "typing" {
+                    if let Some(sigmakee_rs_core::Element::Symbol(subject)) = sent.elements.get(1) {
+                        typed_in
+                            .entry(subject.as_str().to_string())
+                            .or_default()
+                            .insert(f.clone());
+                    }
+                }
+            }
+        }
+
+        let mut terms: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut kinds = FileAxiomKindCountsView {
+            documentation: 0,
+            typing: 0,
+            conditionals: 0,
+            facts: 0,
+        };
+        for &sid in &roots {
+            let Some(sent) = kb.sentence(sid) else {
+                continue;
+            };
+            let mut seen = std::collections::HashSet::new();
+            deep_symbols(kb, sid, &mut seen, &mut terms);
+            match classify_axiom_kind(&sent) {
+                "documentation" => kinds.documentation += 1,
+                "typing" => kinds.typing += 1,
+                "conditionals" => kinds.conditionals += 1,
+                _ => kinds.facts += 1,
+            }
+        }
+
+        let terms_unique = terms
+            .iter()
+            .filter(|t| occurs_in.get(*t).is_some_and(|files| files.len() == 1))
+            .count();
+
+        let mut depends_on: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for t in &terms {
+            let declared_in = typed_in.get(t);
+            if declared_in.is_some_and(|files| files.contains(file)) {
+                continue; // declared in this file -- not a dependency on itself
+            }
+            if let Some(files) = declared_in {
+                depends_on.extend(files.iter().filter(|f| f.as_str() != file).cloned());
+            }
+        }
+        let mut depends_on: Vec<String> = depends_on.into_iter().collect();
+        depends_on.sort();
+
+        Some(FileStatsView {
+            file: file.to_string(),
+            axioms: roots.len(),
+            axiom_kinds: kinds,
+            terms: terms.len(),
+            terms_unique,
+            depends_on,
+        })
+    }
+
     /// The `(instance ? NaturalLanguage)` symbols -- including instances of
     /// `NaturalLanguage` subclasses -- restricted to those with at least one
     /// `format`/`termFormat` entry of their own (a declared language with no
-    /// renderable content isn't a usable UI choice), each with the English
-    /// label from its `termFormat` (falling back to the bare symbol name).
-    /// Sorted by label, with `EnglishLanguage` guaranteed present.  Powers a
+    /// renderable content isn't a usable UI choice), each labeled by its own
+    /// `termFormat` (then the [`DEFAULT_LANGUAGE`] one, then the bare
+    /// symbol).  Sorted by label.  A KB with no renderable language at all
+    /// yields a lone [`DEFAULT_LANGUAGE`] placeholder so a selector is never
+    /// empty; a KB that has one never gets a placeholder that could shadow it
+    /// (upstream SUMO names its language `EnglishWrittenLanguage`).  Powers a
     /// UI language selector.
     pub fn natural_languages_view(&self) -> Vec<LangView> {
         let documented = self.kb.documented_languages();
         let mut langs: Vec<LangView> = Vec::new();
-        for symbol in self.kb.instances_of("NaturalLanguage") {
+        for symbol in self.kb.instances_of(NATURAL_LANGUAGE_CLASS) {
             if !documented.iter().any(|l| l == &symbol) {
                 continue;
             }
-            let label = self
-                .kb
-                .term_format(&symbol, Some("EnglishLanguage"))
-                .first()
+            let labels = self.kb.term_format(&symbol, None);
+            let label = labels
+                .iter()
+                .find(|d| d.language == symbol)
+                .or_else(|| labels.iter().find(|d| d.language == DEFAULT_LANGUAGE))
                 .map(|d| d.text.clone())
                 .unwrap_or_else(|| symbol.clone());
             langs.push(LangView { symbol, label });
         }
-        if !langs.iter().any(|l| l.symbol == "EnglishLanguage") {
+        if langs.is_empty() {
             langs.push(LangView {
-                symbol: "EnglishLanguage".into(),
-                label: "English".into(),
+                symbol: DEFAULT_LANGUAGE.into(),
+                label: DEFAULT_LANGUAGE.into(),
             });
         }
         langs.sort_by_key(|a| a.label.to_lowercase());
@@ -1108,6 +1636,7 @@ mod tests {
             [(
                 "02084071 05 n 01 dog 0 001 @ 02083346 n 0000 | a dog &%Canine+\n",
                 Pos::Noun,
+                "WordNetMappings30-noun.txt",
             )],
             None,
             None,
@@ -1156,6 +1685,7 @@ mod tests {
             [(
                 "02084071 05 n 03 dog 0 domestic_dog 0 Canis_familiaris 0 001 @ 02083346 n 0000 | a domesticated canine &%Canine+\n",
                 Pos::Noun,
+                "WordNetMappings30-noun.txt",
             )],
             None,
             None,
@@ -1216,10 +1746,52 @@ mod tests {
     }
 
     #[test]
+    fn file_stats_view_buckets_kinds_terms_and_dependencies() {
+        let mut s = Session::<TranslationLayer>::new("views-test".into());
+        s.ingest(
+            Source::Reader {
+                name: "types.kif".into(),
+                reader: Box::new(std::io::Cursor::new(Vec::from(
+                    "(subclass Dog Mammal)\n\
+                     (documentation Dog EnglishLanguage \"A dog.\")\n",
+                ))),
+            },
+            true,
+        );
+        s.ingest(
+            Source::Reader {
+                name: "rules.kif".into(),
+                reader: Box::new(std::io::Cursor::new(Vec::from(
+                    "(=> (instance ?X Dog) (instance ?X Mammal))\n\
+                     (partOf Rex Rex)\n",
+                ))),
+            },
+            true,
+        );
+
+        let types = s.file_stats_view("types.kif").expect("types.kif loaded");
+        assert_eq!(types.axioms, 2);
+        assert_eq!(types.axiom_kinds.typing, 1);
+        assert_eq!(types.axiom_kinds.documentation, 1);
+        assert!(types.depends_on.is_empty());
+
+        let rules = s.file_stats_view("rules.kif").expect("rules.kif loaded");
+        assert_eq!(rules.axioms, 2);
+        assert_eq!(rules.axiom_kinds.conditionals, 1);
+        assert_eq!(rules.axiom_kinds.facts, 1);
+        // Dog is typed in types.kif, not here -- rules.kif depends on it.
+        assert_eq!(rules.depends_on, vec!["types.kif".to_string()]);
+        // Rex is used but never typed anywhere, so it isn't a dependency.
+        assert!(!rules.depends_on.contains(&"__missing__".to_string()));
+
+        assert!(s.file_stats_view("nope.kif").is_none());
+    }
+
+    #[test]
     fn manpage_detail_projects_references_with_kif_text() {
-        // Taxonomy heads (`instance`/`subclass`) are excluded from the
-        // reference list by design (they render as edges instead), so the
-        // reference fixture is a rule mentioning Dog.
+        // The rule is an ordinary reference; the `subclass` sentence rides
+        // along as a `taxonomy`-kind reference (the core keeps it out of its
+        // own REFERENCES bucket, the detail view lists every occurrence).
         let s =
             session_with("(subclass Dog Mammal)\n(=> (instance ?X Dog) (instance ?X Mammal))\n");
         let d = s.manpage_detail("Dog").expect("Dog has a man page");
@@ -1229,6 +1801,28 @@ mod tests {
             "references should carry rendered KIF; got {:?}",
             d.references.iter().map(|r| &r.kif).collect::<Vec<_>>()
         );
+        let taxonomy: Vec<_> = d
+            .references
+            .iter()
+            .filter(|r| r.kind == "taxonomy")
+            .collect();
+        assert_eq!(taxonomy.len(), 1, "one subclass reference expected");
+        assert_eq!(taxonomy[0].head.as_deref(), Some("subclass"));
+        assert_eq!(taxonomy[0].arg_pos, Some(1));
+        let rule = d
+            .references
+            .iter()
+            .find(|r| r.kind == "=>")
+            .expect("the rule is a reference");
+        // `(=> (instance ?X Dog) (instance ?X Mammal))`: Dog only on the left.
+        assert_eq!(rule.roles, vec!["antecedent".to_string()]);
+        let mammal = s.manpage_detail("Mammal").expect("Mammal has a man page");
+        let rule = mammal
+            .references
+            .iter()
+            .find(|r| r.kind == "=>")
+            .expect("rule");
+        assert_eq!(rule.roles, vec!["consequent".to_string()]);
         assert!(s.manpage_detail("NoSuchSymbol__").is_none());
     }
 
@@ -1242,6 +1836,7 @@ mod tests {
             [(
                 "02084071 05 n 01 dog 0 001 @ 02083346 n 0000 | a domesticated canine &%Canine+\n",
                 Pos::Noun,
+                "WordNetMappings30-noun.txt",
             )],
             None,
             None,
@@ -1331,19 +1926,35 @@ fof(f2,axiom,(
     }
 
     #[test]
-    fn natural_languages_view_always_includes_english() {
+    fn natural_languages_view_falls_back_to_english_when_nothing_is_documented() {
         let s = session_with("(subclass Dog Mammal)\n");
         let langs = s.natural_languages_view();
-        assert!(langs.iter().any(|l| l.symbol == "EnglishLanguage"));
+        let symbols: Vec<&str> = langs.iter().map(|l| l.symbol.as_str()).collect();
+        assert_eq!(symbols, [DEFAULT_LANGUAGE]);
+    }
+
+    #[test]
+    fn natural_languages_view_never_shadows_a_documented_language_with_the_placeholder() {
+        let s = session_with(&format!(
+            "(instance OtherLanguage {cls})\n\
+             (format OtherLanguage subclass \"%1 is %n a subclass of %2\")\n\
+             (termFormat OtherLanguage OtherLanguage \"other language\")\n",
+            cls = NATURAL_LANGUAGE_CLASS
+        ));
+        let langs = s.natural_languages_view();
+        let symbols: Vec<&str> = langs.iter().map(|l| l.symbol.as_str()).collect();
+        assert_eq!(symbols, ["OtherLanguage"]);
+        assert_eq!(langs[0].label, "other language");
     }
 
     #[test]
     fn natural_languages_view_excludes_languages_without_format_or_term_format() {
-        let s = session_with(
-            "(instance FooLanguage NaturalLanguage)\n\
-             (instance BarLanguage NaturalLanguage)\n\
+        let s = session_with(&format!(
+            "(instance FooLanguage {cls})\n\
+             (instance BarLanguage {cls})\n\
              (format BarLanguage subclass \"%1 is %n a subclass of %2\")\n",
-        );
+            cls = NATURAL_LANGUAGE_CLASS
+        ));
         let langs = s.natural_languages_view();
         let symbols: Vec<&str> = langs.iter().map(|l| l.symbol.as_str()).collect();
         assert!(
@@ -1366,5 +1977,41 @@ fof(f2,axiom,(
             assert_eq!(v.line, d.range.line);
             assert_eq!(v.message, d.message);
         }
+    }
+
+    #[test]
+    fn manpage_domains_serialize_as_flat_rows_with_arity_gaps() {
+        let s = session_with(
+            "(instance MeasureFn BinaryFunction)
+             (domain MeasureFn 1 RealNumber)
+             (domain MeasureFn 2 UnitOfMeasure)
+             (range MeasureFn PhysicalQuantity)
+             (instance sparse BinaryPredicate)
+             (domain sparse 2 Entity)
+             (subrelation narrow sparse)",
+        );
+        let json = |name: &str| {
+            let detail = s.manpage_detail(name).expect(name);
+            serde_json::to_value(&detail).expect("serializable")
+        };
+        let measure = json("MeasureFn");
+        let rows = measure["domains"].as_array().expect("array");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["position"], 1);
+        assert_eq!(rows[0]["type"], "RealNumber");
+        assert_eq!(rows[0]["status"], "declared");
+        assert_eq!(rows[0]["inherited_from"], serde_json::Value::Null);
+        assert_eq!(measure["range"]["type"], "PhysicalQuantity");
+
+        let sparse = json("sparse");
+        let rows = sparse["domains"].as_array().expect("array");
+        assert_eq!(rows[0]["status"], "undeclared", "arity gap is a row");
+        assert_eq!(rows[0]["type"], serde_json::Value::Null);
+        assert_eq!(rows[1]["type"], "Entity");
+
+        let narrow = json("narrow");
+        let rows = narrow["domains"].as_array().expect("array");
+        assert_eq!(rows[1]["status"], "inherited");
+        assert_eq!(rows[1]["inherited_from"], "sparse");
     }
 }
