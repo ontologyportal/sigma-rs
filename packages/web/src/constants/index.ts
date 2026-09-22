@@ -38,6 +38,13 @@ export const SEEN_VERSION_KEY = "sumoBrowserSeenVersion";
 /** Persisted on/off for the WordNet synonym-search lexicon -- absent or
  *  anything but the literal string `'false'` means enabled (see state.ts). */
 export const WORDNET_ENABLED_KEY = "sumoBrowserWordNetEnabled";
+/** Per-source update preference (auto-update/auto-check/no-check), keyed by
+ *  origin id -- see `useKBStore.updatePrefs`. */
+export const UPDATE_PREFS_KEY = "sumoBrowserUpdatePrefs";
+/** The upstream commit (git sources) or content hash (URL sources) last
+ *  seen for each source, checked against on the next update pass -- see
+ *  `useKBStore.updateBaselines`. */
+export const UPDATE_BASELINES_KEY = "sumoBrowserUpdateBaselines";
 
 /** Tabs that need the KB axiomatized; greyed while a promote is in flight. */
 export const PROMOTE_TABS: readonly TabName[] = [

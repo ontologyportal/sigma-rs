@@ -25,7 +25,7 @@
 
 import type { Endpoints } from "@octokit/types";
 
-import { SUMO } from "../constants";
+import { APP_REPO, SUMO } from "../constants";
 import type { ProposedInfo } from "../stores/changes";
 import { useAuthStore } from "../stores/auth";
 
@@ -44,6 +44,8 @@ export type TreeEntry =
   Res<"GET /repos/{owner}/{repo}/git/trees/{tree_sha}">["tree"][number];
 /** A pull request, as `fetchPullRequest` reports it. */
 export type PullRequest = Res<"GET /repos/{owner}/{repo}/pulls/{pull_number}">;
+/** A single release, as `fetchAppRelease` reports it. */
+export type Release = Res<"GET /repos/{owner}/{repo}/releases/tags/{tag}">;
 /** A single git ref -- the branch tips `contributeFiles` commits onto. */
 type GitRef = Res<"GET /repos/{owner}/{repo}/git/ref/{ref}">;
 
@@ -506,11 +508,16 @@ let lastCommitPromise: Promise<{
 /** `{ sha, date }` of the latest commit on `SUMO.ref`. Shared by the Browse
  *  stats tile (date) and the KB snapshot cache (sha, the version signal
  *  'sumo'-origin constituents are pinned to). A failed read rejects and
- *  clears the memo so the next caller retries. */
-export function fetchLastCommitInfo(): Promise<{
+ *  clears the memo so the next caller retries. `force` re-reads instead of
+ *  reusing the memo -- an explicit "check again" (the Sources card's
+ *  "Update now") must not just replay whatever was cached at page load. */
+export function fetchLastCommitInfo({
+  force = false,
+}: { force?: boolean } = {}): Promise<{
   sha: string | null;
   date: Date | null;
 }> {
+  if (force) lastCommitPromise = null;
   if (!lastCommitPromise) {
     lastCommitPromise = (async () => {
       const [c] = await githubApi<RepoCommit[]>(
@@ -524,4 +531,61 @@ export function fetchLastCommitInfo(): Promise<{
     });
   }
   return lastCommitPromise;
+}
+
+// Cache the promise, not the resolved value -- same reasoning as
+// `lastCommitPromise`, generalized to any repo (the Sources card's details
+// dialog can be opened for the default SUMO repo or a custom one).
+const repoCommitPromises = new Map<
+  string,
+  Promise<{ sha: string | null; date: Date | null }>
+>();
+
+/** `{ sha, date }` of the latest commit on `owner/repo` at `branch` -- the
+ *  general form of `fetchLastCommitInfo`, for a Sources card entry that
+ *  isn't the default SUMO repo. `GitOrigin.branch` is always a concrete
+ *  branch name (never `SUMO.ref`'s bare `"HEAD"`), so the default-repo case
+ *  is matched against `SUMO.branch`. `force` -- see `fetchLastCommitInfo`. */
+export function fetchRepoLastCommit(
+  owner: string,
+  repo: string,
+  branch: string,
+  { force = false }: { force?: boolean } = {},
+): Promise<{ sha: string | null; date: Date | null }> {
+  if (owner === SUMO.owner && repo === SUMO.repo && branch === SUMO.branch)
+    return fetchLastCommitInfo({ force });
+  const key = `${owner}/${repo}@${branch}`;
+  if (force) repoCommitPromises.delete(key);
+  let p = repoCommitPromises.get(key);
+  if (!p) {
+    p = (async () => {
+      const [c] = await githubApi<RepoCommit[]>(
+        `/repos/${owner}/${repo}/commits?sha=${encodeURIComponent(branch)}&per_page=1`,
+      );
+      const iso = c?.commit?.author?.date;
+      return { sha: c?.sha ?? null, date: iso ? new Date(iso) : null };
+    })().catch((e) => {
+      repoCommitPromises.delete(key);
+      throw e;
+    });
+    repoCommitPromises.set(key, p);
+  }
+  return p;
+}
+
+/**
+ * This app's own release by tag (e.g. `sigmakee-v2.2.0`) -- the source of the
+ * version dialog's "what's new" notes. Public data on `APP_REPO`, so no
+ * token is required; resolves to null rather than throwing when the tag has
+ * no release yet (a build newer than the last published release).
+ */
+export async function fetchAppRelease(tag: string): Promise<Release | null> {
+  try {
+    return await githubApi<Release>(
+      `/repos/${APP_REPO.owner}/${APP_REPO.repo}/releases/tags/${encodeURIComponent(tag)}`,
+    );
+  } catch (e) {
+    if (e instanceof GitHubError && e.status === 404) return null;
+    throw e;
+  }
 }

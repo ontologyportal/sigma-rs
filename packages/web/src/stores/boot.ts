@@ -98,6 +98,12 @@ export const useBootStore = defineStore("boot", {
         else kb.refreshLangSelect();
         tests.restore();
         this.syncChanges();
+        // Not awaited, same reasoning as syncChanges: a per-source network
+        // check (git commit / URL hash) that must never hold up a page
+        // that's already usable.
+        kb.checkForUpdates().catch(() => {
+          /* offline or rate-limited: sources keep their last known state */
+        });
       } catch (e) {
         this.failed = true;
         this.error =

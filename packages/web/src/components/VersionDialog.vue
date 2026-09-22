@@ -9,8 +9,14 @@ const shell = useShellStore();
   <BaseDialog
     v-model="shell.versionDialog.open"
     :title="shell.versionDialog.title"
+    width="min(640px, 92vw)"
   >
-    <p class="hint">{{ shell.versionDialog.body }}</p>
+    <div
+      v-if="shell.versionDialog.notesHtml"
+      class="notes"
+      v-html="shell.versionDialog.notesHtml"
+    />
+    <p v-else class="hint">{{ shell.versionDialog.body }}</p>
     <template #actions>
       <span></span>
       <button
@@ -27,5 +33,26 @@ const shell = useShellStore();
 <style scoped>
 p {
   margin: 0 0 18px;
+}
+.notes {
+  max-height: 60vh;
+  overflow-y: auto;
+  margin: 0 0 18px;
+}
+.notes :deep(img) {
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+}
+.notes :deep(h4) {
+  margin: 16px 0 6px;
+  font-size: 13px;
+}
+.notes :deep(p),
+.notes :deep(ul) {
+  margin: 0 0 10px;
+}
+.notes :deep(:first-child) {
+  margin-top: 0;
 }
 </style>

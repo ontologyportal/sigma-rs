@@ -12,6 +12,11 @@ import {
   AVAILABLE_LAYOUTS,
   NARROW_LAYOUT_QUERY,
 } from "../constants";
+import { fetchAppRelease } from "../api/github";
+import {
+  extractReleaseSection,
+  renderReleaseNotes,
+} from "../utils/releaseNotes";
 
 /** The deployed build's identity, from `version.json`. */
 export interface AppVersion {
@@ -42,8 +47,16 @@ export const useShellStore = defineStore("shell", {
     systemDark: false,
     version: null as AppVersion | null,
     settingsOpen: false,
-    /** Welcome on first visit, notice on upgrade. */
-    versionDialog: { open: false, title: "", body: "" },
+    /** Welcome on first visit, notice on upgrade. `notesHtml` fills in with
+     *  the Web section of the GitHub release's notes when one is found for
+     *  the new version; the dialog falls back to `body` until then (or
+     *  forever, if none is found). */
+    versionDialog: {
+      open: false,
+      title: "",
+      body: "",
+      notesHtml: null as string | null,
+    },
     /** Bumped by `requestSearchFocus`; the Browse view watches it. */
     searchFocusRequest: 0,
     /** The saved layout preference (SettingsDialog); may not be what's
@@ -144,29 +157,50 @@ export const useShellStore = defineStore("shell", {
       }
       if (!v) return;
       this.version = v;
-      this.checkVersionChange(v.version);
+      if (this.checkVersionChange(v.version)) this.loadReleaseNotes(v.version);
     },
 
-    checkVersionChange(version: string) {
+    /** Returns true for a genuine upgrade (as opposed to a first-ever
+     *  visit), the case `loadVersion` fetches release notes for. */
+    checkVersionChange(version: string): boolean {
       let seen: string | null;
       try {
         seen = localStorage.getItem(SEEN_VERSION_KEY);
       } catch {
-        return;
+        return false;
       }
-      if (seen === version) return;
-      if (seen === null) {
-        this.versionDialog.title = "Welcome to SigmaKEE";
-        this.versionDialog.body = "";
-      } else {
+      if (seen === version) return false;
+      const upgraded = seen !== null;
+      if (upgraded) {
         this.versionDialog.title = "New version available";
         this.versionDialog.body = `You are using a new version (v${version}).`;
+      } else {
+        this.versionDialog.title = "Welcome to SigmaKEE";
+        this.versionDialog.body = "";
       }
+      this.versionDialog.notesHtml = null;
       this.versionDialog.open = true;
       try {
         localStorage.setItem(SEEN_VERSION_KEY, version);
       } catch {
         /* private mode */
+      }
+      return upgraded;
+    },
+
+    /** Best-effort fill-in of the version dialog's `notesHtml` from this
+     *  app's GitHub release for `version` -- the dialog already shows the
+     *  generic upgrade notice, so any failure here (no release yet, no
+     *  "Web Updates" section, offline, rate-limited) just leaves it as is. */
+    async loadReleaseNotes(version: string) {
+      try {
+        const release = await fetchAppRelease(`sigmakee-v${version}`);
+        if (!release?.body) return;
+        const section = extractReleaseSection(release.body, "Web Updates");
+        if (!section) return;
+        this.versionDialog.notesHtml = renderReleaseNotes(section);
+      } catch {
+        /* best effort -- see above */
       }
     },
 
