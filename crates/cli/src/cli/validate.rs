@@ -4,6 +4,7 @@ use sigmakee_rs_sdk::{Diagnostic, SdkError, Session};
 use sigmakee_rs_sdk::{KnowledgeBase, ProvingLayer};
 
 use crate::cli::util::read_stdin;
+use crate::style::*;
 
 /// Entry point for `sumo validate`.
 ///
@@ -15,26 +16,30 @@ use crate::cli::util::read_stdin;
 /// `suppress`: `-W`/`--warning` arguments (`"all"` or a specific code/name) —
 /// applied as a post-hoc severity flip via [`apply_severity_overrides`], since
 /// `SemanticError` severity is no longer global mutable state.
+/// `wordnet`: also render the WordNet<->KB diagnostics report (`sumo
+/// validate --wordnet`) after the SUMO diagnostics above.
 pub fn run_validate<L>(
     session: Session<L>,
     _manager: KBManager,
     formula: Option<String>,
     parse_only: bool,
     suppress: &[String],
+    wordnet: bool,
 ) -> bool
 where
     L: ProvingLayer,
 {
     log::debug!(
-        "run_validate: formula={:?}, parse_only={}",
+        "run_validate: formula={:?}, parse_only={}, wordnet={}",
         formula.is_some(),
         parse_only,
+        wordnet,
     );
 
     let formula = formula.or_else(read_stdin);
 
-    match formula {
-        Some(text) => validate_single_formula(session, &text, parse_only, suppress),
+    let hard_error = match formula {
+        Some(text) => validate_single_formula(session, &text, parse_only, suppress, wordnet),
         None => {
             let mut diagnostics = if !parse_only {
                 session.validate()
@@ -53,9 +58,14 @@ where
                 count_phrase(n_err, "error"),
                 count_phrase(n_warn, "warning")
             );
+            if wordnet {
+                print_wordnet_diagnostics(&session);
+            }
             n_err > 0
         }
-    }
+    };
+
+    hard_error
 }
 
 /// `-W`/`--warning` severity-elevation policy, applied as a stateless
@@ -87,20 +97,23 @@ pub fn apply_severity_overrides(diags: &mut [Diagnostic], suppress: &[String]) {
 ///
 /// Asserts `text` into a session, runs semantic validation (unless
 /// `parse_only`), and prints the findings.  Returns `true` if any hard error
-/// was found.
+/// was found. `wordnet`: also render the WordNet<->KB diagnostics report
+/// after the SUMO diagnostics above.
 pub fn validate_single_formula<L>(
     mut session: Session<L>,
     text: &str,
     parse_only: bool,
     suppress: &[String],
+    wordnet: bool,
 ) -> bool
 where
     L: ProvingLayer,
 {
     log::debug!(
-        "validate_single_formula: text={}, parse_only={}",
+        "validate_single_formula: text={}, parse_only={}, wordnet={}",
         text,
         parse_only,
+        wordnet,
     );
 
     let mut open_session = match session.tell(text) {
@@ -110,6 +123,9 @@ where
                     SdkError::Kb(e) => session.kb().pretty_print_error(&e, log::Level::Error),
                     _ => log::error!("{}", e),
                 }
+            }
+            if wordnet {
+                print_wordnet_diagnostics(&session);
             }
             return false;
         }
@@ -139,6 +155,9 @@ where
         count_phrase(n_err, "error"),
         count_phrase(n_warn, "warning")
     );
+    if wordnet {
+        print_wordnet_diagnostics(&session);
+    }
     n_err > 0
 }
 
@@ -194,4 +213,93 @@ where
         }
     }
     (n_err, n_warn)
+}
+
+// -- WordNet diagnostics ------------------------------------------------------
+
+/// Rows shown per report before falling back to a "N more" summary line --
+/// matches Java Sigma's WNdiagnostics page (which hard-caps at 50 and stops
+/// listing entirely past that).
+const WORDNET_DIAG_LIMIT: usize = 50;
+
+/// Render the WordNet<->KB diagnostics report (`sumo validate --wordnet`):
+/// mapping-kind counts, then the four itemized mismatch reports, each
+/// capped at [`WORDNET_DIAG_LIMIT`] rows with a "N more" tail when the true
+/// count exceeds it. A no-op with a one-line note when no lexicon is
+/// installed (`<lexicon>`/`loadLexicons` in config.xml).
+fn print_wordnet_diagnostics<L>(session: &sigmakee_rs_sdk::Session<L>)
+where
+    L: ProvingLayer,
+{
+    let Some(diag) = session.wordnet_diagnostics_view(WORDNET_DIAG_LIMIT) else {
+        println!(
+            "{color_bright_black}WordNet diagnostics: no lexicon loaded (see \
+             <lexicon>/loadLexicons in config.xml).{color_reset}"
+        );
+        return;
+    };
+
+    println!();
+    println!("{style_bold}WordNet diagnostics{style_reset}");
+
+    let c = &diag.counts;
+    println!(
+        "  mappings: {} equivalent, {} subsuming, {} instance, {} anti-subsuming, \
+         {} anti-instance, {} anti-equivalent",
+        c.equivalent, c.subsuming, c.instance, c.anti_subsuming, c.anti_instance, c.anti_equivalent
+    );
+    println!(
+        "  synsets: {} nouns, {} verbs, {} adjectives, {} adverbs",
+        c.nouns, c.verbs, c.adjectives, c.adverbs
+    );
+
+    print_report(
+        "synsets without a SUMO mapping",
+        &diag.unmapped_synsets,
+        |row| format!("{} [{}]", row.words, row.pos),
+    );
+    print_report(
+        "synsets mapped to a term not in the loaded KB",
+        &diag.missing_terms,
+        |row| format!("{} [{}] -> {}{}", row.words, row.pos, row.term, row.suffix),
+    );
+    print_report(
+        "loaded KB terms with no WordNet synset",
+        &diag.terms_without_synsets,
+        |t| {
+            if t.kinds.is_empty() {
+                t.symbol.clone()
+            } else {
+                format!("{} ({})", t.symbol, t.kinds.join(","))
+            }
+        },
+    );
+    print_report(
+        "hypernym/taxonomy mismatches",
+        &diag.taxonomy_mismatches,
+        |m| {
+            format!(
+                "{} ({}) -> {} ({}): {} is not an ancestor of {}",
+                m.word, m.term, m.hypernym_word, m.hypernym_term, m.hypernym_term, m.term
+            )
+        },
+    );
+}
+
+fn print_report<T>(
+    label: &str,
+    report: &sigmakee_rs_sdk::CappedView<T>,
+    render: impl Fn(&T) -> String,
+) {
+    println!("  {color_yellow}{}{color_reset} ({}):", label, report.total);
+    for item in &report.items {
+        println!("    {}", render(item));
+    }
+    let remaining = report.total.saturating_sub(report.items.len());
+    if remaining > 0 {
+        println!(
+            "    {color_bright_black}... {} more (raise the limit to see them){color_reset}",
+            remaining
+        );
+    }
 }

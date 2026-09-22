@@ -25,7 +25,7 @@ const props = defineProps<{
 const emit = defineEmits<{ back: []; "update:view": [view: View] }>();
 
 const shell = useShellStore();
-const isCompact = computed(() => shell.layout == "comfortable");
+const isCompact = computed(() => shell.effectiveLayout == "comfortable");
 
 const root = ref<HTMLElement | null>(null);
 useSymbolLinks(root);

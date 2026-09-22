@@ -39,7 +39,6 @@ const TAB_GROUPS: TabGroup[] = [
     tabs: [
       ["kb", "Knowledge base"],
       ["problems", "Inference Tests"],
-      ["history", "History"],
     ],
   },
 ];

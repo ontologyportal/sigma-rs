@@ -426,6 +426,20 @@ export class Session {
   }
 
   /**
+   * WordNet<->KB diagnostics report over this session's installed lexicon
+   * and current KB: mapping-kind counts, synsets with no SUMO mapping,
+   * synsets mapped to a term not in the loaded KB, loaded KB terms with no
+   * WordNet synset, and hypernym/taxonomy mismatches. Each itemized report
+   * capped at `limit` rows (default 50). `null` if no lexicon is installed
+   * (see {@link Session#loadWordNet}).
+   * @param {number} [limit]
+   * @returns {import('./sdk').WordNetDiagnostics | null}
+   */
+  wordnetDiagnostics(limit = 50) {
+    return this.#kb.wordnetDiagnostics(limit);
+  }
+
+  /**
    * Load the WordNet-SUMO lexicon from the contents of the four
    * `WordNetMappings30-*.txt` files — the browser fetches the bytes (there
    * is no filesystem here) and passes strings. `indexSense`

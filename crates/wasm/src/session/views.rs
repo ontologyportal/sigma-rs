@@ -67,6 +67,18 @@ impl Session {
         to_js(&session_guard.search_view(query, &opts))
     }
 
+    /// WordNet<->KB diagnostics report over this session's installed
+    /// lexicon and current KB: mapping-kind counts, synsets with no SUMO
+    /// mapping, synsets mapped to a term not in the loaded KB, loaded KB
+    /// terms with no WordNet synset, and hypernym/taxonomy mismatches. Each
+    /// itemized report capped at `limit` rows. Returns `null` if no
+    /// lexicon is installed ([`loadWordNet`](Session::load_wordnet)).
+    #[wasm_bindgen(js_name = wordnetDiagnostics)]
+    pub fn wordnet_diagnostics(&self, limit: u32) -> Result<JsValue, JsValue> {
+        let session_guard = self.session.read().expect("kb lock not poisoned");
+        to_js(&session_guard.wordnet_diagnostics_view(limit as usize))
+    }
+
     /// Structured "man page" for a symbol: kinds, documentation, taxonomy
     /// (parents/children), signature (arity/domains/range), and the full
     /// list of referencing formulas. Returns `null` if the symbol is unknown.
@@ -118,5 +130,15 @@ impl Session {
     pub fn stats(&self) -> Result<JsValue, JsValue> {
         let session_guard = self.session.read().expect("kb lock not poisoned");
         to_js(&session_guard.stats_view())
+    }
+
+    /// One file's edit-relevant KB footprint -- axiom count and type
+    /// breakdown (documentation/typing/conditionals/facts), term count,
+    /// terms unique to the file, and the other loaded files it depends on.
+    /// `null` when `file` has no root sentences.
+    #[wasm_bindgen(js_name = fileStats)]
+    pub fn file_stats(&self, file: &str) -> Result<JsValue, JsValue> {
+        let session_guard = self.session.read().expect("kb lock not poisoned");
+        to_js(&session_guard.file_stats_view(file))
     }
 }

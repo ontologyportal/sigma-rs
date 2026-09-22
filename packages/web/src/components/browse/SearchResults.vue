@@ -54,8 +54,13 @@ function rankTooltip(hit: SearchHit): string {
   return lines.join("\n");
 }
 
+/** Kind labels for a result row. A WordNet hit whose SUMO anchor is not a
+ *  symbol of the loaded KB has no kinds to show: WordNet knows the word,
+ *  the loaded constituents do not define the term. */
 function kindsText(hit: SearchHit): string {
-  const kinds = hit.kinds.join(" · ") || hit.source;
+  const kinds =
+    hit.kinds.join(" · ") ||
+    (hit.source === "wn" ? "not in loaded KB" : hit.source);
   return hit.sense ? `${kinds} · ${hit.sense}` : kinds;
 }
 
@@ -97,7 +102,7 @@ function boldifyDoc(text: unknown): string {
 </script>
 
 <template>
-  <Card v-if="shell.layout == 'comfortable'">
+  <Card v-if="shell.effectiveLayout == 'comfortable'">
     <div class="hint count">
       {{ hits.length }} result{{ hits.length === 1 ? "" : "s" }} for
       <code>{{ query }}</code
@@ -126,7 +131,7 @@ function boldifyDoc(text: unknown): string {
     </ul>
   </Card>
 
-  <Row v-else-if="shell.layout == 'classic'">
+  <Row v-else-if="shell.effectiveLayout == 'classic'">
     <Col :span="6">
       <Card style="margin-right: 5px">
         <div class="hint count">

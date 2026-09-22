@@ -21,6 +21,7 @@ import MonacoEditor from "../components/MonacoEditor.vue";
 import StatusLine from "../components/StatusLine.vue";
 import ContributePanel from "../components/edit/ContributePanel.vue";
 import DiffDialog from "../components/edit/DiffDialog.vue";
+import FileInfoDialog from "../components/edit/FileInfoDialog.vue";
 import OpenFileDialog from "../components/edit/OpenFileDialog.vue";
 import ProblemsPanel from "../components/edit/ProblemsPanel.vue";
 import TptpPane from "../components/edit/TptpPane.vue";
@@ -86,6 +87,7 @@ const ghPanelOpen = ref(false);
 const openDialogOpen = ref(false);
 const diffOpen = ref(false);
 const diffRow = ref<ChangeRow | null>(null);
+const infoOpen = ref(false);
 
 // -- Editor -------------------------------------------------------------------
 
@@ -710,6 +712,14 @@ function onJump({ line, col }: { line: number; col: number }) {
               <rect x="9" y="2.5" width="6" height="11" rx="1" />
             </svg>
           </button>
+          <button
+            type="button"
+            title="File info: KB footprint and edit history"
+            aria-label="File info: KB footprint and edit history"
+            @click="infoOpen = true"
+          >
+            &#9432;
+          </button>
         </div>
         <span class="file-name" :title="dirty ? 'Unsaved changes' : ''">{{
           fileLabel
@@ -760,6 +770,8 @@ function onJump({ line, col }: { line: number; col: number }) {
         @taken="onTaken"
         @keep="onKeep"
       />
+
+      <FileInfoDialog v-model="infoOpen" :current="current" />
     </Card>
 
     <Card class="edit-pane" :class="{ split: tptpOpen }">

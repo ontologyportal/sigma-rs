@@ -107,12 +107,15 @@ impl Session {
         exceptions: Option<String>,
     ) -> u32 {
         use sigmakee_rs_core::lexicon::{Pos, WordNet};
+        // No filenames come from the browser caller (it fetches these
+        // itself and hands over bytes, not paths) -- fall back to the same
+        // compiled-in canonical names the SDK's own loaders default to.
         let wn = WordNet::from_texts(
             [
-                (noun, Pos::Noun),
-                (verb, Pos::Verb),
-                (adj, Pos::Adj),
-                (adv, Pos::Adv),
+                (noun, Pos::Noun, env!("WORDNET_NOUN_FILE")),
+                (verb, Pos::Verb, env!("WORDNET_VERB_FILE")),
+                (adj, Pos::Adj, env!("WORDNET_ADJV_FILE")),
+                (adv, Pos::Adv, env!("WORDNET_ADVR_FILE")),
             ],
             index_sense.as_deref(),
             exceptions.as_deref(),

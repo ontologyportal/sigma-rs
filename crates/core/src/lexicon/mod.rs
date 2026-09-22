@@ -24,11 +24,14 @@
 //! **No filesystem access here**: [`WordNet::from_texts`] is the only
 //! constructor
 
+pub mod diagnostics;
 pub mod parse;
 pub mod wsd;
 
 use std::collections::HashMap;
 use std::fmt;
+
+use crate::parse::Span;
 
 pub use wsd::*;
 
@@ -123,6 +126,16 @@ pub struct Synset {
     pub gloss: String,
     /// The SUMO anchors corresponding to this Synset
     pub sumo: Vec<SumoAnchor>,
+    /// Hypernym pointers (`@` / `@i`) -- the synset's WordNet parents.
+    /// Hyponyms are the same edges read backwards and are not stored.
+    pub hypernyms: Vec<SynsetId>,
+    /// Where this record lives in its source mapping file: `file` is the
+    /// `WordNetMappings30-*.txt` (or local-extension) file name passed to
+    /// [`WordNet::from_texts`]/[`WordNet::extend_mixed`], `line` is its
+    /// 1-based line number there. Unrelated to [`Synset::offset`], which is
+    /// WordNet's own synset-identity byte offset, not a text position; no
+    /// byte offset is tracked here since nothing reads it.
+    pub span: Span,
 }
 
 /// Stable synset identity: (part of speech, byte offset in the data file) --

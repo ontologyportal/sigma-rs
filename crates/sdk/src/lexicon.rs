@@ -63,7 +63,7 @@ fn load_with(
     let files = mapping_files(names);
     let mut texts = Vec::with_capacity(files.len());
     for (name, pos) in files {
-        texts.push((fetch(name)?, pos));
+        texts.push((fetch(name)?, pos, name));
     }
     let index_sense = fetch(INDEX_SENSE).ok();
     let mut exc = String::new();
@@ -74,7 +74,7 @@ fn load_with(
         }
     }
     Ok(WordNet::from_texts(
-        texts.iter().map(|(t, p)| (t.as_str(), *p)),
+        texts.iter().map(|(t, p, name)| (t.as_str(), *p, *name)),
         index_sense.as_deref(),
         if exc.is_empty() {
             None

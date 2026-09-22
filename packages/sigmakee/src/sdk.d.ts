@@ -293,6 +293,68 @@ export interface WordNetFiles {
   /** `noun.exc` + `verb.exc` contents, concatenated. */
   exceptions?: string;
 }
+/** A capped report list: `items` holds up to the caller's `limit` rows,
+ * `total` is the true count -- so a caller can render "50 of 3,412" instead
+ * of silently truncating. */
+export interface Capped<T> {
+  items: T[];
+  total: number;
+}
+/** One synset row in a {@link WordNetDiagnostics} report: `term`/`suffix`
+ * are empty for an `unmappedSynsets` row (it has no SUMO anchor). `file`/
+ * `line` locate the record in its source `WordNetMappings30-*.txt` (or
+ * local-extension) file. */
+export interface WordNetSynsetRow {
+  words: string;
+  pos: string;
+  term: string;
+  suffix: string;
+  file: string;
+  /** 1-based line number within `file`. */
+  line: number;
+}
+/** A loaded KB term with no WordNet synset mapped to it. */
+export interface WordNetUnsynsetTerm {
+  symbol: string;
+  kinds: ManKind[];
+}
+/** A noun synset's hypernym edge whose SUMO anchors disagree with the KB's
+ * own subclass taxonomy: `hypernymTerm` is not an ancestor of `term`.
+ * `file`/`line` locate `word`'s (the offending, not the hypernym's) synset. */
+export interface WordNetTaxonomyMismatch {
+  word: string;
+  term: string;
+  hypernym_word: string;
+  hypernym_term: string;
+  file: string;
+  /** 1-based line number within `file`. */
+  line: number;
+}
+/** Mapping-kind x part-of-speech counts across the whole lexicon. */
+export interface WordNetMappingCounts {
+  equivalent: number;
+  subsuming: number;
+  instance: number;
+  anti_subsuming: number;
+  anti_instance: number;
+  anti_equivalent: number;
+  nouns: number;
+  verbs: number;
+  adjectives: number;
+  adverbs: number;
+}
+/** WordNet<->KB diagnostics report (see {@link Session.wordnetDiagnostics}):
+ * a port of Java Sigma's WordNet diagnostics page
+ * (ontologyportal/sigma-rs#64). `missingTerms` is the flip side of a
+ * {@link SearchHit} whose {@link SearchHit.kinds} came back empty -- this
+ * report is where that gap becomes an itemized, browsable list. */
+export interface WordNetDiagnostics {
+  counts: WordNetMappingCounts;
+  unmapped_synsets: Capped<WordNetSynsetRow>;
+  missing_terms: Capped<WordNetSynsetRow>;
+  terms_without_synsets: Capped<WordNetUnsynsetTerm>;
+  taxonomy_mismatches: Capped<WordNetTaxonomyMismatch>;
+}
 export interface DocBlock {
   language: string;
   text: string;
@@ -373,6 +435,35 @@ export interface KbStats {
   term_languages: Array<{ language: string; documented: number }>;
 }
 
+/** How a file's top-level formulas break down by shape, as part of
+ *  {@link FileStats.axiom_kinds}. Every formula counted in
+ *  `FileStats.axioms` falls into exactly one bucket: `documentation` is a
+ *  `documentation`/`termFormat`/`format` entry, `typing` a taxonomy
+ *  declaration (`instance`/`subclass`/`subrelation`/... ), `conditionals` a
+ *  rule (top-level `=>`/`<=>`), and `facts` everything else. */
+export interface FileAxiomKindCounts {
+  documentation: number;
+  typing: number;
+  conditionals: number;
+  facts: number;
+}
+
+/** One file's edit-relevant KB footprint, as `Session.kb.fileStats(file)`
+ *  returns it (the raw binding is wasm-bindgen generated, so it is typed
+ *  `any` there); `null` when `file` has no root sentences (not loaded, or
+ *  loaded but empty). `terms_unique` counts terms from `terms` that occur in
+ *  no other loaded file. `depends_on` lists other files this one relies on:
+ *  for each term it uses without itself declaring a type for (see
+ *  `axiom_kinds`), the file(s) elsewhere in the KB that do. */
+export interface FileStats {
+  file: string;
+  axioms: number;
+  axiom_kinds: FileAxiomKindCounts;
+  terms: number;
+  terms_unique: number;
+  depends_on: string[];
+}
+
 /** Browser analogue of the SDK's `Session`. */
 export class Session {
   constructor(opts?: { backend?: Backend; config?: Config });
@@ -404,6 +495,11 @@ export class Session {
     query: string,
   ): { assertions: Diagnostic[]; query: Diagnostic[] };
   search(query: string, opts?: SearchOpts): SearchHit[];
+  /** WordNet<->KB diagnostics report over this session's installed lexicon
+   * and current KB (see {@link WordNetDiagnostics}). Each itemized report
+   * capped at `limit` rows (default 50). `null` when no lexicon is
+   * installed ({@link Session.loadWordNet}). */
+  wordnetDiagnostics(limit?: number): WordNetDiagnostics | null;
   /** Load the WordNet-SUMO lexicon from already-fetched mapping-file text
    * (the browser fetches; there is no filesystem here). Separate from KIF
    * ingestion — once loaded, `search` gains WordNet synonym hits. Returns

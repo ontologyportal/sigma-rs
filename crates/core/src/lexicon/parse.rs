@@ -2,14 +2,17 @@
 
 use std::collections::HashMap;
 
+use crate::parse::Span;
+
 use super::{MappingKind, Pos, SumoAnchor, Synset, SynsetId, WordNet};
 
 impl WordNet {
-    /// Parse `(data text, pos)` pairs -- the contents of the
-    /// `WordNetMappings30-*.txt` files -- plus the optional `index.sense`
-    /// and exception-list (`noun.exc`/`verb.exc`, concatenated) contents
+    /// Parse `(data text, pos, file name)` triples -- the contents of the
+    /// `WordNetMappings30-*.txt` files, named for [`Synset::span`] -- plus
+    /// the optional `index.sense` and exception-list (`noun.exc`/`verb.exc`,
+    /// concatenated) contents
     pub fn from_texts<'a>(
-        texts: impl IntoIterator<Item = (&'a str, Pos)>,
+        texts: impl IntoIterator<Item = (&'a str, Pos, &'a str)>,
         index_sense: Option<&str>,
         exceptions: Option<&str>,
     ) -> WordNet {
@@ -17,7 +20,7 @@ impl WordNet {
     }
 
     fn build<'a>(
-        texts: impl Iterator<Item = (&'a str, Pos)>,
+        texts: impl Iterator<Item = (&'a str, Pos, &'a str)>,
         index_sense: Option<&str>,
         exceptions: Option<&str>,
     ) -> WordNet {
@@ -27,9 +30,9 @@ impl WordNet {
             sumo_index: HashMap::new(),
             exceptions: HashMap::new(),
         };
-        for (text, pos) in texts {
-            for line in text.lines() {
-                if let Some(s) = parse_data_line(line, Some(pos)) {
+        for (text, pos, file) in texts {
+            for (line_no, line) in (1u32..).zip(text.lines()) {
+                if let Some(s) = parse_data_line(line, Some(pos), file, line_no) {
                     let id = SynsetId {
                         pos: s.pos,
                         offset: s.offset,
@@ -81,10 +84,11 @@ impl WordNet {
     /// the user-extensible channel for domain vocabulary the shipped
     /// mappings lack (`stop_sign` -> a local `&%StopSign=` line).  Local
     /// senses append after the shipped ones (lowest priority) except for
-    /// words the shipped lexicon lacks entirely.
-    pub fn extend_mixed(&mut self, text: &str) {
-        for line in text.lines() {
-            if let Some(s) = parse_data_line(line, None) {
+    /// words the shipped lexicon lacks entirely. `file` names the source of
+    /// `text`, for [`Synset::span`].
+    pub fn extend_mixed(&mut self, text: &str, file: &str) {
+        for (line_no, line) in (1u32..).zip(text.lines()) {
+            if let Some(s) = parse_data_line(line, None, file, line_no) {
                 let id = SynsetId {
                     pos: s.pos,
                     offset: s.offset,
@@ -123,7 +127,10 @@ impl WordNet {
 /// `file_pos` disambiguates adjective satellites: `s` records fold into the
 /// file's own part of speech via [`Pos::from_ss_type`], but a corrupt
 /// `ss_type` never silently reassigns a record to another file's POS.
-fn parse_data_line(line: &str, file_pos: Option<Pos>) -> Option<Synset> {
+///
+/// `file`/`line_no` become the returned [`Synset::span`] (a point span --
+/// see its doc comment for why no byte offset is tracked).
+fn parse_data_line(line: &str, file_pos: Option<Pos>, file: &str, line_no: u32) -> Option<Synset> {
     if !line.as_bytes().first()?.is_ascii_digit() {
         return None;
     }
@@ -148,6 +155,36 @@ fn parse_data_line(line: &str, file_pos: Option<Pos>) -> Option<Synset> {
         words.push(strip_adj_marker(word).to_string());
     }
 
+    // Pointer run: `p_cnt (symbol offset pos source/target)*`. Only
+    // hypernyms (`@`, and instance hypernyms `@i`) are kept. `p_cnt` is
+    // trusted only as an upper bound -- a malformed or short pointer run
+    // (as in this module's own truncated test fixtures) simply stops
+    // collecting hypernyms rather than failing the whole synset.
+    let mut hypernyms = Vec::new();
+    if let Some(p_cnt) = toks.next().and_then(|t| t.parse::<usize>().ok()) {
+        for _ in 0..p_cnt {
+            let Some(symbol) = toks.next() else { break };
+            let Some(target) = toks.next().and_then(|t| t.parse::<u32>().ok()) else {
+                break;
+            };
+            let Some(target_pos) = toks
+                .next()
+                .and_then(|t| Pos::from_ss_type(t.chars().next()?))
+            else {
+                break;
+            };
+            let Some(_source_target) = toks.next() else {
+                break;
+            };
+            if symbol == "@" || symbol == "@i" {
+                hypernyms.push(SynsetId {
+                    pos: target_pos,
+                    offset: target,
+                });
+            }
+        }
+    }
+
     let (gloss, sumo) = match tail.find("&%") {
         Some(i) => (tail[..i].trim(), parse_anchors(&tail[i..])),
         None => (tail.trim(), Vec::new()),
@@ -159,6 +196,8 @@ fn parse_data_line(line: &str, file_pos: Option<Pos>) -> Option<Synset> {
         words,
         gloss: gloss.to_string(),
         sumo,
+        hypernyms,
+        span: Span::point(file.to_string(), line_no, 1, 0),
     })
 }
 
@@ -263,10 +302,10 @@ oxen ox
     fn wn() -> WordNet {
         WordNet::from_texts(
             [
-                (NOUN, Pos::Noun),
-                (VERB, Pos::Verb),
-                (ADJ, Pos::Adj),
-                (ADV, Pos::Adv),
+                (NOUN, Pos::Noun, "WordNetMappings30-noun.txt"),
+                (VERB, Pos::Verb, "WordNetMappings30-verb.txt"),
+                (ADJ, Pos::Adj, "WordNetMappings30-adj.txt"),
+                (ADV, Pos::Adv, "WordNetMappings30-adv.txt"),
             ],
             Some(INDEX_SENSE),
             Some(EXC),
@@ -300,6 +339,33 @@ oxen ox
             }]
         );
         assert_eq!(s.label(), "dog#n#1");
+        assert_eq!(
+            s.synset.hypernyms,
+            vec![SynsetId {
+                pos: Pos::Noun,
+                offset: 2083346,
+            }]
+        );
+        assert_eq!(s.synset.span.file, "WordNetMappings30-noun.txt");
+        assert_eq!(s.synset.span.line, 2, "dog is NOUN's second fixture line");
+    }
+
+    /// A pointer run whose declared count exceeds what the line actually
+    /// contains (this module's own fixtures do this -- real WordNet data
+    /// never truncates, but a malformed source must not be fatal) stops
+    /// collecting hypernyms instead of dropping the whole synset.
+    #[test]
+    fn truncated_pointer_run_does_not_drop_the_synset() {
+        let wn = wn();
+        let senses = wn.senses("cat");
+        assert_eq!(senses.len(), 1, "synset must still parse: {senses:?}");
+        assert_eq!(
+            senses[0].synset.hypernyms,
+            vec![SynsetId {
+                pos: Pos::Noun,
+                offset: 2120997,
+            }]
+        );
     }
 
     #[test]
@@ -343,6 +409,7 @@ oxen ox
             [(
                 "02084071 05 n 01 child 0 000 | a young person &%HumanChild+\n",
                 Pos::Noun,
+                "WordNetMappings30-noun.txt",
             )],
             None,
             Some(EXC),
@@ -373,7 +440,11 @@ oxen ox
     #[test]
     fn comment_lines_and_garbage_are_skipped() {
         let wn = WordNet::from_texts(
-            [(";; header\nnot a record\n00000001 05 n 01\n", Pos::Noun)],
+            [(
+                ";; header\nnot a record\n00000001 05 n 01\n",
+                Pos::Noun,
+                "WordNetMappings30-noun.txt",
+            )],
             None,
             None,
         );
@@ -387,10 +458,13 @@ oxen ox
         wn.extend_mixed(
             "90000001 06 n 01 stop_sign 0 000 | a red traffic sign &%StopSign=\n\
              90000002 00 a 01 octagonal 0 000 | eight-sided &%Octagonal=\n",
+            "local.txt",
         );
         let s = wn.senses("stop sign");
         assert_eq!(s.len(), 1);
         assert_eq!(s[0].synset.sumo[0].term, "StopSign");
+        assert_eq!(s[0].synset.span.file, "local.txt");
+        assert_eq!(s[0].synset.span.line, 1);
         assert_eq!(
             wn.senses("octagonal")[0].synset.pos,
             Pos::Adj,
@@ -401,7 +475,11 @@ oxen ox
     #[test]
     fn wrong_pos_record_rejected() {
         // A verb record inside the noun file must not be indexed as a noun.
-        let wn = WordNet::from_texts([(VERB, Pos::Noun)], None, None);
+        let wn = WordNet::from_texts(
+            [(VERB, Pos::Noun, "WordNetMappings30-noun.txt")],
+            None,
+            None,
+        );
         assert!(wn.is_empty());
     }
 }

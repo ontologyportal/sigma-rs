@@ -20,12 +20,14 @@ import type {
   AskResult,
   AuditResult,
   Diagnostic,
+  FileStats,
   KbStats,
   ManPage,
   ParsedTest,
   SearchHit,
   TaxConstraint,
   SumoSymbols,
+  WordNetDiagnostics,
   WordNetFiles,
 } from "sigmakee/sdk";
 import { WasmLsp } from "sigmakee";
@@ -135,8 +137,26 @@ export const handlers = {
   validate(): { diagnostics: Diagnostic[] } {
     return { diagnostics: active().validate() };
   },
+
+  /**
+   * WordNet<->KB diagnostics report over the active session's installed
+   * lexicon (see boot.ts's loadWordNetIntoWorker) and current KB. `null`
+   * when no lexicon is loaded -- the Diagnostics tab hides its WordNet
+   * card in that case rather than showing an empty one.
+   */
+  wordnetDiagnostics({ limit }: { limit?: number } = {}): {
+    diagnostics: WordNetDiagnostics | null;
+  } {
+    return { diagnostics: active().wordnetDiagnostics(limit ?? 50) };
+  },
   stats(): { stats: KbStats } {
     return { stats: active().kb.stats() };
+  },
+
+  /** One file's edit-relevant KB footprint (see {@link FileStats}), for the
+   *  Edit tab's file-info panel -- `null` when it has no root sentences. */
+  fileStats({ file }: { file: string }): { stats: FileStats | null } {
+    return { stats: active().kb.fileStats(file) };
   },
 
   // Freeze/thaw seam for the page's OPFS boot cache (see src/kb-cache.ts's

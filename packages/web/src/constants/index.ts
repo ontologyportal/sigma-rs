@@ -48,6 +48,13 @@ export const PROMOTE_TABS: readonly TabName[] = [
 ];
 
 export const AVAILABLE_LAYOUTS = <const>["comfortable", "classic"];
+/** Below this width, "classic" mode's multi-column Row/Col grids (Row
+ *  defaults to `wrap: "nowrap"`) no longer have room to render usably, so
+ *  the shell store forces "comfortable" regardless of the saved preference
+ *  (see `useShellStore.effectiveLayout`). Same breakpoint TabNav already
+ *  treats as "phone width" for its own tier switch, so the app agrees on
+ *  one definition of "narrow". */
+export const NARROW_LAYOUT_QUERY = "(max-width: 1000px)";
 
 export const BASE = import.meta.env.BASE_URL;
 
@@ -59,6 +66,5 @@ export const TABS = [
   "prover",
   "audit",
   "edit",
-  "history",
 ] as const;
 export type TabName = (typeof TABS)[number];

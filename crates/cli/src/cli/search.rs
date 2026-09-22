@@ -9,7 +9,7 @@
 
 use crate::style::*;
 use sigmakee_rs_sdk::{manager::KBManager, Session};
-use sigmakee_rs_sdk::{ManKind, SearchOpts, SearchSource, TopLayer};
+use sigmakee_rs_sdk::{ManKind, SearchHit, SearchOpts, SearchSource, TopLayer};
 
 pub fn run_search<L>(
     session: Session<L>,
@@ -64,22 +64,20 @@ where
     // and kind columns get fixed widths; the snippet wraps at terminal
     // width minus the prefix.
     let max_sym = hits.iter().map(|h| h.symbol.len()).max().unwrap_or(0);
-    let max_kind = hits
-        .iter()
-        .map(|h| {
-            h.kinds.iter().map(|k| k.as_str().len()).sum::<usize>()
-                + h.kinds.len().saturating_sub(1)
-        })
-        .max()
-        .unwrap_or(0);
-
-    for hit in &hits {
-        let kinds_str: String = hit
-            .kinds
+    let kinds_col = |h: &SearchHit| -> String {
+        if h.kinds.is_empty() && h.source == SearchSource::WordNet {
+            return "not loaded".to_string();
+        }
+        h.kinds
             .iter()
             .map(|k| k.as_str())
             .collect::<Vec<_>>()
-            .join(",");
+            .join(",")
+    };
+    let max_kind = hits.iter().map(|h| kinds_col(h).len()).max().unwrap_or(0);
+
+    for hit in &hits {
+        let kinds_str = kinds_col(hit);
         let src_label = match hit.source {
             SearchSource::TermFormat => "term  ",
             SearchSource::Documentation => "doc   ",

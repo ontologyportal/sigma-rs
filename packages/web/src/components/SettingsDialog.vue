@@ -55,6 +55,12 @@ async function onClearCache() {
       <label for="appLayout">App Layout</label>
       <select
         id="appLayout"
+        :disabled="shell.layoutNarrow"
+        :title="
+          shell.layoutNarrow
+            ? 'Classic needs more width -- using Comfortable until the window is wider'
+            : undefined
+        "
         @change="shell.changeLayout(shell.layout)"
         v-model="shell.layout"
       >
@@ -62,6 +68,9 @@ async function onClearCache() {
           {{ String(l[0]).toUpperCase() + String(l).slice(1) }}
         </option>
       </select>
+    </div>
+    <div v-if="shell.layoutNarrow" class="hint layout-narrow-note">
+      Layout settings unavailable on smaller screens
     </div>
     <div class="settings-row">
       <label for="genericVarsToggle">Generic paraphrase variables</label>
@@ -120,6 +129,16 @@ async function onClearCache() {
   flex: 1 1 auto;
   min-width: 0;
   max-width: 100%;
+}
+/* Matches nav.tabs/.diag-pager's own disabled treatment elsewhere in the
+   app -- select has no built-in :disabled look worth relying on. */
+.settings-row select:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.layout-narrow-note {
+  margin: -10px 0 18px;
+  font-size: 12px;
 }
 .clear-cache {
   width: 100%;

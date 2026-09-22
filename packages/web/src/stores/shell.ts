@@ -10,6 +10,7 @@ import {
   THEME_KEY,
   LAYOUT_KEY,
   AVAILABLE_LAYOUTS,
+  NARROW_LAYOUT_QUERY,
 } from "../constants";
 
 /** The deployed build's identity, from `version.json`. */
@@ -45,14 +46,27 @@ export const useShellStore = defineStore("shell", {
     versionDialog: { open: false, title: "", body: "" },
     /** Bumped by `requestSearchFocus`; the Browse view watches it. */
     searchFocusRequest: 0,
-    /** The app layout, affects how the app is rendered */
+    /** The saved layout preference (SettingsDialog); may not be what's
+     *  actually applied -- see `effectiveLayout`. */
     layout: "comfortable" as Layout,
+    /** True while the viewport is too narrow for "classic" mode, kept live
+     *  via matchMedia. Drives `effectiveLayout`; never itself written to
+     *  localStorage. */
+    layoutNarrow: false,
   }),
   getters: {
     /** Whether the page currently renders dark: the explicit choice wins,
      *  the OS preference is the fallback. */
     isDark: (state): boolean =>
       state.theme ? state.theme === "dark" : state.systemDark,
+    /** The layout actually applied: `layout` (the saved preference),
+     *  unless the viewport is currently too narrow for "classic" to render
+     *  usably, in which case "comfortable" is forced without touching the
+     *  saved preference -- widening the viewport again reverts to it with
+     *  no further action. Every view branching on comfortable-vs-classic
+     *  reads this, never `layout` directly. */
+    effectiveLayout: (state): Layout =>
+      state.layoutNarrow ? "comfortable" : state.layout,
   },
   actions: {
     /** Read the persisted theme, apply it, and follow the OS preference. */
@@ -71,7 +85,20 @@ export const useShellStore = defineStore("shell", {
         ? (savedLayout as Layout)
         : "comfortable";
       applyTheme(this.theme);
+
+      // Set before the first changeLayout() call so its applyLayout() sees
+      // the right effectiveLayout from the start, not just on the next
+      // resize.
+      const layoutMq = window.matchMedia?.(NARROW_LAYOUT_QUERY);
+      if (layoutMq) {
+        this.layoutNarrow = layoutMq.matches;
+        layoutMq.addEventListener("change", (e) => {
+          this.layoutNarrow = e.matches;
+          applyLayout(this.effectiveLayout);
+        });
+      }
       this.changeLayout(this.layout);
+
       const mq = window.matchMedia?.(DARK_QUERY);
       if (!mq) return;
       this.systemDark = mq.matches;
@@ -102,7 +129,7 @@ export const useShellStore = defineStore("shell", {
       } catch {
         /* private mode */
       }
-      applyLayout(this.layout);
+      applyLayout(this.effectiveLayout);
     },
 
     /** Fetch `version.json` (absent in local dev) and, when the version
