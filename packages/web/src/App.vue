@@ -96,7 +96,7 @@ onBeforeUnmount(() => {
         <div class="head-meta">
           <div class="head-controls">
             <button
-              v-if="!auth.signedIn"
+              v-if="!auth.user"
               class="head-btn"
               type="button"
               @click="auth.openLoginDialog()"

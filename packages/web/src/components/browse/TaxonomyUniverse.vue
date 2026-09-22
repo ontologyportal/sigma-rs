@@ -83,7 +83,7 @@ async function load() {
   try {
     const result = await loadTaxonomy(
       async (symbol) => {
-        const response = await call<{ tax: Taxonomy }>("taxonomy", { symbol });
+        const response = await call("taxonomy", { symbol });
         return response.tax ?? { parents: [], children: [] };
       },
       depth.value,
