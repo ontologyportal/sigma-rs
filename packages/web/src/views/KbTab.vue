@@ -2,6 +2,7 @@
 /** Knowledge base tab: the unified constituent table (with the standard-set
  *  presets and the Import dialog in its header) and the WordNet panel. */
 import { computed, onActivated, onMounted, ref } from "vue";
+import { Constituent } from "../models/Constituent";
 import { GitOrigin } from "../models/Origin";
 import { useKBStore } from "../stores/kb";
 import { useLibraryStore } from "../stores/library";
@@ -47,56 +48,7 @@ const PRESETS: Record<string, { label: string; files: string[] }> = {
   },
   full: {
     label: "Full SUMO",
-    files: [
-      "english_format.kif",
-      "domainEnglishFormat.kif",
-      "ArabicCulture.kif",
-      "Anatomy.kif",
-      "arteries.kif",
-      "Biography.kif",
-      "Cars.kif",
-      "Catalog.kif",
-      "Communications.kif",
-      "ComputerInput.kif",
-      "ComputingBrands.kif",
-      "CountriesAndRegions.kif",
-      "Dining.kif",
-      "Economy.kif",
-      "emotion.kif",
-      "engineering.kif",
-      "Facebook.kif",
-      "FinancialOntology.kif",
-      "Food.kif",
-      "Geography.kif",
-      "Government.kif",
-      "Hotel.kif",
-      "Justice.kif",
-      "Languages.kif",
-      "Law.kif",
-      "Media.kif",
-      "Medicine.kif",
-      "Merge.kif",
-      "Mid-level-ontology.kif",
-      "MilitaryDevices.kif",
-      "Military.kif",
-      "MilitaryPersons.kif",
-      "MilitaryProcesses.kif",
-      "Music.kif",
-      "naics.kif",
-      "People.kif",
-      "pictureList.kif",
-      "pictureList-ImageNet.kif",
-      "QoSontology.kif",
-      "Sports.kif",
-      "TransnationalIssues.kif",
-      "Transportation.kif",
-      "TransportDetail.kif",
-      "UXExperimentalTerms.kif",
-      "VirusProteinAndCellPart.kif",
-      "Weather.kif",
-      "WMD.kif",
-      "capabilities.kif",
-    ],
+    files: Constituent.defaults().map((c) => c.name),
   },
 };
 
