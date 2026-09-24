@@ -45,8 +45,7 @@ function openReview(
 }
 
 function onReviewDone() {
-  kb.acknowledgeReview(reviewFiles.value);
-  if (reviewAlertKey.value) kb.dismissUpdateAlert(reviewAlertKey.value);
+  kb.finishReview(reviewFiles.value, reviewAlertKey.value);
 }
 
 async function updateNow(g: SourceGroup) {

@@ -8,6 +8,8 @@ export interface PopRow {
   value: string;
   extra?: string;
   title?: string;
+  /** Render as a sub-item of the row above. */
+  indent?: boolean;
 }
 
 const props = defineProps<{
@@ -72,7 +74,9 @@ useOutsideClick([pop, () => props.anchor], () => emit("close"), ref(true));
           class="pop-row"
           :title="row.title || undefined"
         >
-          <span class="pop-label">{{ row.label }}</span>
+          <span class="pop-label" :class="{ indent: row.indent }">{{
+            row.label
+          }}</span>
           <span v-if="row.extra" class="pop-n">{{ row.extra }}</span>
           <span v-else></span>
           <span class="pop-n">{{ row.value }}</span>
@@ -144,6 +148,10 @@ useOutsideClick([pop, () => props.anchor], () => emit("close"), ref(true));
 }
 .stat-pop .pop-row .pop-label {
   overflow-wrap: anywhere;
+}
+.stat-pop .pop-row .pop-label.indent {
+  padding-left: 14px;
+  color: var(--muted);
 }
 .stat-pop .pop-row .pop-n {
   font-variant-numeric: tabular-nums;

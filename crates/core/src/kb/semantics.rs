@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
 use crate::layer::{Layer, TopLayer};
-use crate::semantics::consts::{CLASS_SYMBOL, FORMULA_SYMBOL};
+use crate::semantics::consts::{CLASS_SYMBOL, FORMULA_SYMBOL, HIGHER_ORDER_CATEGORIES};
 use crate::semantics::errors::semantic_error;
 use crate::semantics::errors::SemanticError;
 use crate::types::{Element, RelationDomain, RelationRange};
@@ -148,6 +148,25 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
             }
             _ => false,
         })
+    }
+
+    /// Names of the [`HIGHER_ORDER_CATEGORIES`] whose predicates occur
+    /// anywhere in `sid`'s sentence tree, in declaration order.  A sentence
+    /// may fall into several categories, or none.  Does not itself check
+    /// [`Self::is_higher_order`].
+    pub fn higher_order_categories(&self, sid: SentenceId) -> Vec<&'static str> {
+        let syn = &self.layer.semantic().syntactic;
+        let syms = syn.sentence_symbols(sid);
+        HIGHER_ORDER_CATEGORIES
+            .iter()
+            .filter(|(_, preds)| {
+                preds
+                    .split(',')
+                    .filter_map(|p| syn.sym_id(p.trim()))
+                    .any(|id| syms.contains(&id))
+            })
+            .map(|(name, _)| *name)
+            .collect()
     }
 
     /// Axiom sentences in which `sym` occurs.
@@ -745,6 +764,30 @@ mod tests {
             .last()
             .expect("the => rule ingested as the second root");
         assert!(!kb.is_higher_order(sid));
+    }
+
+    #[test]
+    fn higher_order_categories_match_nested_predicates() {
+        let mut kb = KnowledgeBase::new();
+        let r = kb.tell(
+            "(=> (holdsDuring ?T (believes ?A (attribute ?X Happy))) (knows ?A (attribute ?X Happy)))\
+             (=> (instance ?REL Relation) (?REL Fido Fido))\
+             (=> (instance ?X Dog) (instance ?X Mammal))",
+            "s",
+        );
+        assert!(r.ok, "ingest failed: {:?}", r.diagnostics);
+        assert_eq!(
+            kb.higher_order_categories(r.sids[0]),
+            vec!["temporal", "epistemic"]
+        );
+        assert!(kb.higher_order_categories(r.sids[1]).is_empty());
+        assert!(kb.higher_order_categories(r.sids[2]).is_empty());
+    }
+
+    #[test]
+    fn higher_order_categories_empty_for_unknown_sentence() {
+        let kb = KnowledgeBase::new();
+        assert!(kb.higher_order_categories(0).is_empty());
     }
 
     #[test]

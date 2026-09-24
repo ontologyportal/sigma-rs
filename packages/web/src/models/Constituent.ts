@@ -1,7 +1,36 @@
-import { GitOrigin, Origin } from "./Origin";
+import { GitOrigin, Origin, RemoteOrigin } from "./Origin";
 
-/** One loaded KIF file: its worker-session name, where it came from, and the
- *  text last ingested for it. */
+/**
+ * The name a constituent is ingested under in the worker session, and so the
+ * `file` every diagnostic, citation and LSP document refers to it by.
+ *
+ * `sumo` keeps the bare name. Other origins are namespaced by source
+ * (`uploads/Merge.kif`, `example.com/Merge.kif`), so an upload or a URL can
+ * share a repo file's name without colliding with it in the engine. Derived
+ * on every boot and never persisted -- changing this scheme must bump the KB
+ * snapshot cache's fingerprint (`services/kb-cache.ts`), since a snapshot
+ * holds the names it was built with.
+ */
+export function engineFile(name: string, origin: Origin): string {
+  switch (origin.kind) {
+    case "sumo":
+      return name;
+    case "file":
+      return `uploads/${name}`;
+    case "url": {
+      let host = "";
+      try {
+        host = new URL((origin as RemoteOrigin).url || name).host;
+      } catch {
+        /* not an absolute URL */
+      }
+      return `${host || "url"}/${name}`;
+    }
+  }
+}
+
+/** One loaded KIF file: its display name, where it came from, and the text
+ *  last ingested for it. */
 export class Constituent {
   name: string;
   origin: Origin;
@@ -11,6 +40,11 @@ export class Constituent {
     this.name = name;
     this.origin = origin;
     this.text = text;
+  }
+
+  /** See `engineFile`. */
+  get file(): string {
+    return engineFile(this.name, this.origin);
   }
 
   static defaults(): Constituent[] {

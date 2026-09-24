@@ -2,3 +2,4 @@
 worker-dist/
 dist/
 e2e/shots/
+e2e/.old-app/

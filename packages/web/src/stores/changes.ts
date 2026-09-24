@@ -150,7 +150,11 @@ function ownsText(origin: OriginKind): boolean {
 /** Whether `rec.path` names a file in the repo, and so may be compared against
  *  `upstreamShas`. Always true for `sumo`; a local upload or url source only
  *  gets a repo path once `markProposed` has pushed it somewhere. */
-function hasRepoPath(rec: ChangeRecord): boolean {
+export function hasRepoPath(
+  rec: Pick<ChangeRecord, "origin" | "proposed"> & {
+    prClosed?: PrClosedInfo | null;
+  },
+): boolean {
   return rec.origin === "sumo" || Boolean(rec.proposed || rec.prClosed);
 }
 
@@ -272,12 +276,14 @@ export const useChangesStore = defineStore("changes", {
      */
     async refreshUpstreamShas({
       force = false,
-    }: { force?: boolean } = {}): Promise<void> {
+      always = false,
+    }: { force?: boolean; always?: boolean } = {}): Promise<void> {
       // A record without a repo path must not be what sends us to the GitHub
       // API -- an unauthenticated read can come back 401/403 and prompt for a
-      // login the user has no reason to be asked for.
+      // login the user has no reason to be asked for. `always` is for a
+      // caller that needs the tree regardless and is already signed in.
       const tracked = Object.values<ChangeRecord>(this.index);
-      if (!tracked.some(hasRepoPath)) return;
+      if (!always && !tracked.some(hasRepoPath)) return;
       let tree: Awaited<ReturnType<typeof fetchSumoTree>>;
       try {
         tree = await fetchSumoTree({ force });

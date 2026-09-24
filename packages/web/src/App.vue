@@ -6,6 +6,7 @@ import SettingsDialog from "./components/SettingsDialog.vue";
 import LoginDialog from "./components/LoginDialog.vue";
 import LogoutDialog from "./components/LogoutDialog.vue";
 import VersionDialog from "./components/VersionDialog.vue";
+import SourcesChangedDialog from "./components/SourcesChangedDialog.vue";
 import TabNav from "./components/TabNav.vue";
 import { PROMOTE_TABS } from "./constants";
 import { navigate, router, type TabName } from "./router";
@@ -209,6 +210,7 @@ onBeforeUnmount(() => {
     <LoginDialog />
     <LogoutDialog />
     <VersionDialog />
+    <SourcesChangedDialog />
   </template>
 </template>
 

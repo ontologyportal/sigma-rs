@@ -204,6 +204,55 @@ async function waitDialogGone(page) {
   );
 }
 
+/**
+ * A reviewed URL version is not offered again: the recorded baseline is the
+ * hash of `text`, and after a reload a forced "Update now" agrees there is
+ * nothing new rather than reopening the review.
+ */
+async function expectUrlReviewAcknowledged(page, text, label) {
+  const baseline = await page.evaluate(
+    (k) => JSON.parse(localStorage.getItem(k) || "{}")["url:Extra.kif"],
+    UPDATE_BASELINES_KEY,
+  );
+  if (baseline !== blobSha(text))
+    throw new Error(
+      `${label}: baseline ${baseline} is not the reviewed version's hash`,
+    );
+  // Loaded straight onto the tab: the load-time "sources changed" dialog
+  // is modal, and can open before a tab click would land.
+  await page.goto(new URL("kb", base).href, {
+    waitUntil: "domcontentloaded",
+  });
+  await page.waitForSelector("nav.tabs", { timeout: BOOT_TIMEOUT });
+  await page.locator(".src-report button.src-update-now").first().click();
+  await page
+    .locator('.src-alert:has-text("already up to date"), dialog[open]')
+    .first()
+    .waitFor({ timeout: 30_000 });
+  if (await page.locator("dialog[open]").count())
+    throw new Error(`${label}: the reviewed version was offered again`);
+}
+
+/**
+ * The modal the load-time update check opens when upstream moved: it must
+ * list every one of `sources`, and is closed so the page is usable again.
+ * Returns the dialog locator when `keepOpen` is set instead.
+ */
+async function sourcesChangedDialog(page, sources, { keepOpen = false } = {}) {
+  const d = page.locator(
+    'dialog[open]:has-text("Sources changed since your last visit")',
+  );
+  await d.waitFor({ timeout: 60_000 });
+  const text = await d.innerText();
+  for (const s of sources)
+    if (!text.includes(s))
+      throw new Error(`sources-changed dialog does not list ${s}: ${text}`);
+  if (keepOpen) return d;
+  await d.getByRole("button", { name: "Close", exact: true }).click();
+  await waitDialogGone(page);
+  return null;
+}
+
 function expectMarkers(text, { has, lacks }, label) {
   if (has && !text.includes(has))
     throw new Error(`${label}: editor lost the local content (${has})`);
@@ -274,12 +323,12 @@ async function runCase(name, { routes, seed, check }) {
     await page.goto(SEED_URL, { waitUntil: "domcontentloaded" });
     await seed(page);
 
-    await page.goto(base, { waitUntil: "domcontentloaded" });
+    // Loaded straight onto the tab: the load-time "sources changed" dialog
+    // is modal, and can open before a tab click would land.
+    await page.goto(new URL("kb", base).href, {
+      waitUntil: "domcontentloaded",
+    });
     await page.waitForSelector("nav.tabs", { timeout: BOOT_TIMEOUT });
-    await page
-      .locator("nav.tabs button", { hasText: "Knowledge base" })
-      .first()
-      .click();
     await page.waitForSelector(".src-report", { timeout: 60_000 });
 
     await check(page);
@@ -430,6 +479,7 @@ await runCase("new-file-untouched-by-upstream", {
   },
   check: async (page) => {
     await waitForUpdateApplied(page, "updated");
+    await sourcesChangedDialog(page, ["GitHub", "Extra.kif"]);
 
     // The bytes on disk are the real claim; the editor is the corroboration.
     await expectOpfsContent(
@@ -567,6 +617,7 @@ await runCase("sumo-edit-survives-git-update", {
   },
   check: async (page) => {
     await waitForUpdateApplied(page, "updated");
+    await sourcesChangedDialog(page, ["GitHub"]);
 
     await expectOpfsContent(
       page,
@@ -625,13 +676,14 @@ await runCase("sumo-edit-survives-url-update", {
   },
   check: async (page) => {
     urlUpdateVersion.v = 2; // the url source moves out from under the edit
-    await page.reload({ waitUntil: "domcontentloaded" });
+    // Loaded straight onto the tab: the load-time "sources changed" dialog
+    // is modal, and can open before a tab click would land.
+    await page.goto(new URL("kb", base).href, {
+      waitUntil: "domcontentloaded",
+    });
     await page.waitForSelector("nav.tabs", { timeout: BOOT_TIMEOUT });
-    await page
-      .locator("nav.tabs button", { hasText: "Knowledge base" })
-      .first()
-      .click();
     await waitForUpdateApplied(page, "updated");
+    await sourcesChangedDialog(page, ["Extra.kif"]);
 
     await expectOpfsContent(
       page,
@@ -665,16 +717,18 @@ await runCase("url-edit-survives-url-update", {
     await editAndSave(page, "Extra.kif");
 
     urlVsUrlVersion.v = 2; // upstream moves while the edit is unpushed
-    await page.reload({ waitUntil: "domcontentloaded" });
+    // Loaded straight onto the tab: the load-time "sources changed" dialog
+    // is modal, and can open before a tab click would land.
+    await page.goto(new URL("kb", base).href, {
+      waitUntil: "domcontentloaded",
+    });
     await page.waitForSelector("nav.tabs", { timeout: BOOT_TIMEOUT });
-    await page
-      .locator("nav.tabs button", { hasText: "Knowledge base" })
-      .first()
-      .click();
-    // Offered for review, never applied over the edit.
-    const alert = page.locator(".src-alert", { hasText: "Extra.kif" }).first();
-    await alert.waitFor({ timeout: 60_000 });
-    await alert.locator("button.src-alert-review").click();
+    // Offered for review, never applied over the edit -- reviewed here from
+    // the load-time dialog rather than the Sources card.
+    const changed = await sourcesChangedDialog(page, ["Extra.kif"], {
+      keepOpen: true,
+    });
+    await changed.getByRole("button", { name: "Review", exact: true }).click();
 
     const dialog = page.locator('dialog[open]:has-text("Review update")');
     await dialog.waitFor({ timeout: 15_000 });
@@ -709,6 +763,7 @@ await runCase("url-edit-survives-url-update", {
       { has: LOCAL_MARKER, lacks: UPSTREAM_MARKER },
       "url-vs-url",
     );
+    await expectUrlReviewAcknowledged(page, EXTRA_V2, "url-vs-url/skip");
   },
 });
 
@@ -729,13 +784,14 @@ await runCase("url-accepting-upstream-sticks", {
     await editAndSave(page, "Extra.kif");
 
     urlAcceptVersion.v = 2;
-    await page.reload({ waitUntil: "domcontentloaded" });
+    // Loaded straight onto the tab: the load-time "sources changed" dialog
+    // is modal, and can open before a tab click would land.
+    await page.goto(new URL("kb", base).href, {
+      waitUntil: "domcontentloaded",
+    });
     await page.waitForSelector("nav.tabs", { timeout: BOOT_TIMEOUT });
-    await page
-      .locator("nav.tabs button", { hasText: "Knowledge base" })
-      .first()
-      .click();
 
+    await sourcesChangedDialog(page, ["Extra.kif"]);
     const alert = page.locator(".src-alert", { hasText: "Extra.kif" }).first();
     await alert.waitFor({ timeout: 60_000 });
     await alert.locator("button.src-alert-review").click();
@@ -762,6 +818,97 @@ await runCase("url-accepting-upstream-sticks", {
       await editorText(page, "Extra.kif"),
       { has: UPSTREAM_MARKER, lacks: LOCAL_MARKER },
       "url-accept/after-reload",
+    );
+    await expectUrlReviewAcknowledged(page, EXTRA_V2, "url-accept/apply");
+  },
+});
+
+// -- 7. A url edit is not taken for upstream by the first check --------------
+// No baseline yet, so the first check has to pick one -- and the text loaded
+// at boot is the restored EDIT, not what the URL serves. Taking that as the
+// baseline reported a "new version" that was really the original, and let a
+// save of the unchanged buffer count as "back to upstream", deleting the edit.
+const EXTRA_SEEDED_EDIT = `${EXTRA_V1};; ${LOCAL_MARKER}\n`;
+await runCase("url-edit-not-taken-as-baseline", {
+  routes: (page) => urlRoutes(page, { v: 1 }), // upstream does NOT move here
+  seed: async (page) => {
+    await seedLocalStorage(page, {
+      files: [{ name: "Extra.kif", origin: URL_ORIGIN }],
+      edits: {
+        "url:Extra.kif": editRecord(
+          "Extra.kif",
+          "url",
+          EXTRA_V1,
+          EXTRA_SEEDED_EDIT,
+        ),
+      },
+      prefs: { [URL_ORIGIN_ID]: "no-check" },
+    });
+    await seedOpfs(page, [
+      {
+        dir: "edits",
+        name: opfsSafeName(URL_EDIT_ENTRY),
+        text: EXTRA_SEEDED_EDIT,
+      },
+    ]);
+  },
+  check: async (page) => {
+    await page.locator(".src-report button.src-update-now").first().click();
+    // A manual check answers with an alert, or with the review dialog when it
+    // believes the URL changed.
+    await page
+      .locator('.src-alert:has-text("Extra.kif"), dialog[open]')
+      .first()
+      .waitFor({ timeout: 30_000 });
+    if (await page.locator("dialog[open]").count())
+      throw new Error(
+        "url-baseline: a check against an unchanged URL offered an update to review",
+      );
+    const alerts = await page.locator(".src-alert").allInnerTexts();
+    if (!alerts.some((a) => /already up to date/.test(a)))
+      throw new Error(
+        `url-baseline: a check against an unchanged URL reported ${JSON.stringify(alerts)}`,
+      );
+    const baseline = await page.evaluate(
+      (k) => JSON.parse(localStorage.getItem(k) || "{}")["url:Extra.kif"],
+      UPDATE_BASELINES_KEY,
+    );
+    if (baseline !== blobSha(EXTRA_V1))
+      throw new Error(
+        `url-baseline: recorded ${baseline}, not the hash of what the URL serves`,
+      );
+
+    // Save the buffer exactly as it is.
+    expectMarkers(
+      await editorText(page, "Extra.kif"),
+      { has: LOCAL_MARKER },
+      "url-baseline/open",
+    );
+    if (await page.locator("text=/not saved or submitted/").count())
+      throw new Error(
+        "url-baseline: the editor still says a URL file can't be saved",
+      );
+    await page
+      .getByRole("button", {
+        name: "Save to the in-browser knowledge base",
+        exact: true,
+      })
+      .click();
+    await page.locator("text=/Saved /").first().waitFor({ timeout: 30_000 });
+    await expectOpfsContent(
+      page,
+      "edits",
+      URL_EDIT_ENTRY,
+      EXTRA_SEEDED_EDIT,
+      "url-baseline/after-save",
+    );
+
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.waitForSelector("nav.tabs", { timeout: BOOT_TIMEOUT });
+    expectMarkers(
+      await editorText(page, "Extra.kif"),
+      { has: LOCAL_MARKER },
+      "url-baseline/after-reload",
     );
   },
 });

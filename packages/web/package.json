@@ -23,7 +23,8 @@
     "test:e2e:vampire": "node e2e/vampire.mjs",
     "test:e2e:version": "node e2e/version-notes.mjs",
     "test:e2e:kb-updates": "node e2e/kb-update-prefs.mjs",
-    "test:e2e:edit-survival": "node e2e/edit-survival.mjs"
+    "test:e2e:edit-survival": "node e2e/edit-survival.mjs",
+    "test:e2e:upgrade": "node e2e/upgrade.mjs"
   },
   "dependencies": {
     "@sigma/language": "*",

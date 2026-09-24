@@ -423,7 +423,10 @@ export interface ManPage {
  *  percentage. `rules_first_order` + `rules_higher_order` always sum to
  *  `rules` -- a rule is higher-order when a formula (a relation/operator/
  *  predicate-variable application) occurs anywhere as an argument in its
- *  tree, rather than only nested inside a logical operator's own arguments. */
+ *  tree, rather than only nested inside a logical operator's own arguments.
+ *  `rules_higher_order_categories` breaks the higher-order rules down by the
+ *  configured predicate categories (temporal, deontic, epistemic); a rule may
+ *  land in several, and `rules_higher_order_other` counts those in none. */
 export interface KbStats {
   files: number;
   symbols: number;
@@ -431,6 +434,8 @@ export interface KbStats {
   rules: number;
   rules_first_order: number;
   rules_higher_order: number;
+  rules_higher_order_categories: Array<{ category: string; rules: number }>;
+  rules_higher_order_other: number;
   classes: number;
   instances: number;
   relations: number;

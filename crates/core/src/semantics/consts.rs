@@ -52,7 +52,7 @@ define_symbols_from_env! {
 
     // --- Meta Symbol ---
     FORMULA_SYMBOL        => "SUMO_FORMULA_SYMBOL",
-    CLASS_SYMBOL          => "SUMO_CLASS_SYMBOL"
+    CLASS_SYMBOL          => "SUMO_CLASS_SYMBOL",
 }
 
 symbol_set!(
@@ -81,4 +81,21 @@ pub(crate) const ARITY: &[(&str, i32)] = &[
     (env!("SUMO_ARITY_FOUR"), 4),
     (env!("SUMO_ARITY_FIVE"), 5),
     (env!("SUMO_ARITY_VAR"), -1),
+];
+
+/// Comma-separated predicates marking a higher-order rule as temporal.
+pub const HIGHER_TEMPORAL: &str = env!("HIGHER_TEMPORAL");
+
+/// Comma-separated predicates marking a higher-order rule as deontic.
+pub const HIGHER_DEONTIC: &str = env!("HIGHER_DEONTIC");
+
+/// Comma-separated predicates marking a higher-order rule as epistemic.
+pub const HIGHER_EPISTEMIC: &str = env!("HIGHER_EPISTEMIC");
+
+/// Higher-order rule categories as `(name, comma-separated predicates)`, in
+/// display order.  See `KnowledgeBase::higher_order_categories`.
+pub const HIGHER_ORDER_CATEGORIES: &[(&str, &str)] = &[
+    ("temporal", HIGHER_TEMPORAL),
+    ("deontic", HIGHER_DEONTIC),
+    ("epistemic", HIGHER_EPISTEMIC),
 ];

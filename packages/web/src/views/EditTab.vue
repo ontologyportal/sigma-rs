@@ -27,7 +27,10 @@ import ProblemsPanel from "../components/edit/ProblemsPanel.vue";
 import TptpPane from "../components/edit/TptpPane.vue";
 import { useStatus } from "../composables/useStatus";
 import { useTabQuery } from "../composables/useTabQuery";
-import type { Constituent } from "../models/Constituent";
+import { engineFile, type Constituent } from "../models/Constituent";
+
+/** A KB constituent or a test file -- anything the editor can open. */
+type OpenedFile = Pick<Constituent, "name" | "origin" | "text">;
 import { LocalOrigin, serializeOrigin, type Origin } from "../models/Origin";
 import { navigate, updateParams } from "../router";
 import { lspRequest, lspSyncDocument } from "../services/lsp";
@@ -202,7 +205,7 @@ async function validateNow() {
       result = [];
     } else
       result = known
-        ? await lspSyncDocument(known.name, buffer)
+        ? await lspSyncDocument(known.file, buffer)
         : (await call("validateFormula", { kif: buffer })).diagnostics;
   } catch (e) {
     if (text.value !== buffer || current.value !== file) return;
@@ -226,7 +229,7 @@ async function validateNow() {
       `${result.length} diagnostic${result.length === 1 ? "" : "s"}` +
       (errs ? ` (${errs} error${errs === 1 ? "" : "s"})` : "");
     statusLink.value = file
-      ? { file: file.name, line: result[0]?.line || 0 }
+      ? { file: fileParam(file), line: result[0]?.line || 0 }
       : null;
   }
   tptpPane.value?.scheduleRefresh();
@@ -282,7 +285,7 @@ function checkStaleOnOpen() {
   openDiff(row);
 }
 
-function openFile(c: Constituent | null) {
+function openFile(c: OpenedFile | null) {
   current.value = c ? { name: c.name, origin: c.origin } : null;
   text.value = c ? c.text : NEW_FILE_TEXT;
   loadedText = text.value;
@@ -290,12 +293,7 @@ function openFile(c: Constituent | null) {
   diags.value = [];
   ed.value?.setMarkers([]);
   if (editingTest.value) tptpOpen.value = false;
-  const kind = c ? c.origin.kind : "file"; // an unsaved new file is local
-  log.set(
-    kind === "url" && !editingTest.value
-      ? "Loaded from a URL — it can be edited and downloaded here, but not saved or submitted."
-      : "",
-  );
+  log.set("");
   scheduleValidate();
   checkStaleOnOpen();
 }
@@ -306,9 +304,9 @@ onActivated(() => {
   if (t && text.value === loadedText && t.text !== loadedText) openFile(t);
 });
 
-function onPick(c: Constituent) {
+function onPick(c: OpenedFile) {
   openFile(c);
-  updateParams({ file: c.name });
+  updateParams({ file: fileParam(c) });
 }
 
 function onCreate() {
@@ -318,13 +316,20 @@ function onCreate() {
 
 // -- Deep links -----------------------------------------------------------------
 
+/** The `file` query value naming `f`: a test's own name, else the engine name
+ *  diagnostics and citations link with. */
+function fileParam(f: { name: string; origin: Origin }): string {
+  return isTestFile(f.name) ? f.name : engineFile(f.name, f.origin);
+}
+
 const { onQuery, str, num } = useTabQuery(["edit"]);
 
 onQuery(async (q) => {
   const file = str(q.file);
-  if (file && file !== current.value?.name) {
-    // Match on name alone -- a deep link shouldn't have to know the origin.
-    const c = tests.find(file) ?? kb.find(file);
+  if (file && file !== (current.value && fileParam(current.value))) {
+    // Engine name first (what citations link with), then the bare name, which
+    // is all a link from before uploads were namespaced carries.
+    const c = tests.find(file) ?? kb.byFile(file) ?? kb.find(file);
     if (c) openFile(c);
     else log.set(`${file} is not among the loaded files.`, true);
   }

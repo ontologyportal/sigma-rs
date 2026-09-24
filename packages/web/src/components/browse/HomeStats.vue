@@ -20,15 +20,6 @@ const files = computed(() => num(kb.stats?.files));
 const symbols = computed(() => num(kb.stats?.symbols));
 const axioms = computed(() => num(kb.stats?.axioms));
 const rules = computed(() => num(kb.stats?.rules));
-const rulesTooltip = computed(() => {
-  const s = kb.stats;
-  if (!s || !Number.isFinite(s.rules_first_order))
-    return "First-order vs higher-order";
-  return (
-    `${fmtNum(s.rules_first_order)} first-order · ` +
-    `${fmtNum(s.rules_higher_order)} higher-order`
-  );
-});
 const classes = computed(() => num(kb.stats?.classes));
 const instances = computed(() => num(kb.stats?.instances));
 const relations = computed(() => num(kb.stats?.relations));
@@ -92,13 +83,14 @@ watch(
 // anchored beneath the tile. One popover at a time; outside click, Esc, or
 // re-clicking the tile dismisses it.
 
-type PopKind = "doc" | "relations";
+type PopKind = "doc" | "relations" | "rules";
 const popover = ref<{ kind: PopKind; anchor: HTMLElement } | null>(null);
 
 function toggle(kind: PopKind, e: Event) {
   const s = kb.stats;
   if (!s) return;
   if (kind === "relations" && !Number.isFinite(s.relations)) return;
+  if (kind === "rules" && !Number.isFinite(s.rules_first_order)) return;
   if (popover.value?.kind === kind) {
     popover.value = null;
     return;
@@ -150,6 +142,27 @@ const relationRows = computed<PopRow[]>(() => {
     { label: "other relations", value: fmtNum(other) },
   ];
 });
+
+/** Higher-order rules broken down by predicate category; a rule may fall
+ *  into several. Older engines omit the breakdown. */
+const ruleRows = computed<PopRow[]>(() => {
+  const s = kb.stats;
+  if (!s) return [];
+  const rows: PopRow[] = [
+    { label: "first-order", value: fmtNum(s.rules_first_order) },
+    { label: "higher-order", value: fmtNum(s.rules_higher_order) },
+  ];
+  if (s.rules_higher_order_categories) {
+    for (const c of s.rules_higher_order_categories)
+      rows.push({ label: c.category, value: fmtNum(c.rules), indent: true });
+    rows.push({
+      label: "other modal",
+      value: fmtNum(s.rules_higher_order_other ?? 0),
+      indent: true,
+    });
+  }
+  return rows;
+});
 </script>
 
 <template>
@@ -166,7 +179,11 @@ const relationRows = computed<PopRow[]>(() => {
       <div class="stat-n">{{ axioms }}</div>
       <div class="stat-l">axioms</div>
     </div>
-    <div class="stat" :title="rulesTooltip">
+    <div
+      class="stat clickable"
+      title="First-order vs higher-order"
+      @click="toggle('rules', $event)"
+    >
       <div class="stat-n">{{ rules }}</div>
       <div class="stat-l">rules</div>
     </div>
@@ -217,6 +234,13 @@ const relationRows = computed<PopRow[]>(() => {
     :anchor="popover.anchor"
     title="Relations"
     :rows="relationRows"
+    @close="popover = null"
+  />
+  <StatPopover
+    v-else-if="popover?.kind === 'rules'"
+    :anchor="popover.anchor"
+    title="Rules"
+    :rows="ruleRows"
     @close="popover = null"
   />
 </template>

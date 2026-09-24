@@ -6,8 +6,9 @@ import { useKBStore } from "../stores/kb";
 
 const props = withDefaults(
   defineProps<{
-    /** The cited constituent's name; nothing renders without one. `null` for
-     *  a synthetic/CNF sentence with no source origin. */
+    /** The cited constituent's engine name (see `engineFile`); nothing
+     *  renders without one. `null` for a synthetic/CNF sentence with no
+     *  source origin. */
     file?: string | null;
     /** 1-based line inside `file`. */
     line?: number | null;
@@ -28,7 +29,8 @@ const locClass = computed(() =>
 /** Only a loaded constituent can be opened in the editor -- a proof can
  *  cite a synthetic/CNF source, or an axiom from a file the user has since
  *  removed, and neither is openable. */
-const openable = computed(() => !!props.file && kb.isLoaded(props.file));
+const cited = computed(() => (props.file ? kb.byFile(props.file) : undefined));
+const openable = computed(() => !!cited.value);
 
 /**
  * GitHub *blame* deep-link for a SUMO-sourced constituent, else null.
@@ -40,7 +42,7 @@ const openable = computed(() => !!props.file && kb.isLoaded(props.file));
  */
 const blameUrl = computed(() => {
   if (!props.blame || !props.file) return null;
-  if (kb.find(props.file)?.origin.kind !== "sumo") return null;
+  if (cited.value?.origin.kind !== "sumo") return null;
   return `https://github.com/${SUMO.owner}/${SUMO.repo}/blame/${SUMO.ref}/${props.file}#L${props.line}`;
 });
 

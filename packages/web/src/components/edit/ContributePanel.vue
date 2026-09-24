@@ -25,6 +25,7 @@ import { useAuthStore } from "../../stores/auth";
 import {
   useChangesStore,
   isActionable,
+  hasRepoPath,
   type ChangeRow,
 } from "../../stores/changes";
 import { useKBStore } from "../../stores/kb";
@@ -164,6 +165,34 @@ function setPath(r: ChangeRow, e: Event) {
   localPaths.set(rowKey(r), (e.target as HTMLInputElement).value);
 }
 
+/**
+ * Why `picked` cannot go up as one commit without replacing something, or
+ * null. A file not yet in the repo is ADDED, so its path must be free
+ * upstream; two selected files must not share a path either. Compared
+ * case-insensitively, since a checkout on macOS or Windows cannot hold both.
+ * Reads `changes.upstreamShas`, so the caller refreshes the tree first.
+ */
+function pathConflict(picked: ChangeRow[]): string | null {
+  const seen = new Map<string, string>();
+  for (const r of picked) {
+    const p = pathOf(r).trim().toLowerCase();
+    const other = seen.get(p);
+    if (other)
+      return `${other} and ${r.name} would both be written to ${pathOf(r).trim()} — give one a different path.`;
+    seen.set(p, r.name);
+  }
+  const adding = picked.filter((r) => !hasRepoPath(r));
+  if (!adding.length) return null;
+  const upstream = Object.keys(changes.upstreamShas);
+  if (!upstream.length)
+    return "Couldn't read the repository to check for name conflicts — try again.";
+  const taken = new Set(upstream.map((p) => p.toLowerCase()));
+  const clash = adding.find((r) => taken.has(pathOf(r).trim().toLowerCase()));
+  return clash
+    ? `${pathOf(clash).trim()} already exists in the repository — choose another path for ${clash.name}, or open the repository's copy to edit it.`
+    : null;
+}
+
 async function onOpened() {
   status.clear();
   if (!title.value) title.value = defaultTitle(chosen.value);
@@ -233,7 +262,8 @@ async function submit() {
     // Authoritative staleness check: the panel's own check may be minutes old,
     // and this is the last moment before a write.
     status.set("Checking for upstream changes…");
-    await changes.refreshUpstreamShas({ force: true });
+    const adding = picked.some((r) => !hasRepoPath(r));
+    await changes.refreshUpstreamShas({ force: true, always: adding });
     const fresh = chosen.value;
     const landed = picked.filter(
       (c) => !fresh.some((f) => rowKey(f) === rowKey(c)),
@@ -256,6 +286,11 @@ async function submit() {
         true,
       );
       emit("diff", stale);
+      return;
+    }
+    const conflict = pathConflict(picked);
+    if (conflict) {
+      status.set(conflict, true);
       return;
     }
     // Recomputed post-refresh: the file that carried the pull request may have

@@ -29,7 +29,7 @@ const rowKey = (origin: Origin, name: string) => `${origin.kind}:${name}`;
 
 const rows = computed<FileRow[]>(() => {
   const out: FileRow[] = kb.constituents.map((c) => {
-    const core = c.name === MERGE;
+    const core = c.name === MERGE && c.origin.kind === "sumo";
     return {
       key: rowKey(c.origin, c.name),
       name: c.name,

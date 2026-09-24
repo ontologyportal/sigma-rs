@@ -12,7 +12,7 @@ defineProps<{
 const emit = defineEmits<{
   "update:modelValue": [value: boolean];
   /** A loaded constituent was chosen. */
-  pick: [c: Constituent];
+  pick: [c: Pick<Constituent, "name" | "origin" | "text">];
   /** "+ New file": start an unnamed buffer (Save asks for the name). */
   create: [];
 }>();
@@ -24,7 +24,7 @@ function close() {
   emit("update:modelValue", false);
 }
 
-function pick(c: Constituent) {
+function pick(c: Pick<Constituent, "name" | "origin" | "text">) {
   close();
   emit("pick", c);
 }

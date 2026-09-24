@@ -94,6 +94,13 @@ WORDNET_SENSE_IDX      = "index.sense"
 WORDNET_WSD_FILE       = "wordFrequencies_combined.txt"
 WORDNET_GIT_SUBDIR     = "WordNetMappings"
 
+# --------------------------------------------------------------------------
+# Higher order predicates
+# --------------------------------------------------------------------------
+HIGHER_EPISTEMIC       = "believes,knows,desires,says,describes,expects"
+HIGHER_DEONTIC         = "confersNorm,confersObligation,confersRight,deprivesNorm,holdsObligation,holdsRight,permits,prohibits,modalAttribute"
+HIGHER_TEMPORAL        = "holdsDuring"
+
 # getrandom 0.3 (pulled in transitively by graphviz-rust's `tempfile` dep, used
 # only by its non-wasm `exec`/`exec_dot` process-spawning path — core's own
 # graphviz DOT-string rendering never calls it) requires wasm targets to pick

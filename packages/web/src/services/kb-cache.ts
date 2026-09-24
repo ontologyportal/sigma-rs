@@ -40,6 +40,12 @@ const SUMO_CACHE_DIR = "sumo-cache";
 const SUMO_CACHE_META = "meta.json";
 const SUMO_CACHE_SNAPSHOT = "snapshot.bin";
 
+// Folded into the fingerprint. A snapshot holds each constituent under its
+// engine name, which `engineFile` derives rather than `saved` recording -- so
+// a change to that derivation leaves `saved` identical and must bump this, or
+// an upgrade restores a session whose names the new code cannot find.
+const ENGINE_NAMES_VERSION = "engine-names-2";
+
 // A snapshot costs hundreds of ms of WORKER time (blocking every query behind
 // it) plus a multi-MB write, and only ever pays off on the next boot -- so a
 // burst of mutations coalesces into one write instead of one write each.
@@ -90,7 +96,7 @@ function constituentsFingerprint(): string {
     .saved.map((c) => `${originId(c.origin)}:${c.name}`)
     .sort()
     .join("|");
-  return `${files}#${useChangesStore().fingerprint}`;
+  return `${ENGINE_NAMES_VERSION}#${files}#${useChangesStore().fingerprint}`;
 }
 
 /** `false` when any loaded constituent has no stable version signal to cache

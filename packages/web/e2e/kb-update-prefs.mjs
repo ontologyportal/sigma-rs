@@ -106,12 +106,12 @@ async function runCase(name, setup, check) {
       }),
     );
     await setup(page);
-    await page.goto(base, { waitUntil: "domcontentloaded" });
+    // Loaded straight onto the tab: the load-time "sources changed" dialog
+    // is modal, and can open before a tab click would land.
+    await page.goto(new URL("kb", base).href, {
+      waitUntil: "domcontentloaded",
+    });
     await page.waitForSelector("nav.tabs", { timeout: BOOT_TIMEOUT });
-    await page
-      .locator("nav.tabs button", { hasText: "Knowledge base" })
-      .first()
-      .click();
     await page.waitForSelector(".src-report", { timeout: 60_000 });
     await check(page);
     if (problems.length)
@@ -197,12 +197,12 @@ await runCase(
 
     // A reload should keep the cycled-to preference (it's persisted).
     await pref.click(); // -> auto-check
-    await page.reload({ waitUntil: "domcontentloaded" });
+    // Loaded straight onto the tab: the load-time "sources changed" dialog
+    // is modal, and can open before a tab click would land.
+    await page.goto(new URL("kb", base).href, {
+      waitUntil: "domcontentloaded",
+    });
     await page.waitForSelector("nav.tabs", { timeout: BOOT_TIMEOUT });
-    await page
-      .locator("nav.tabs button", { hasText: "Knowledge base" })
-      .first()
-      .click();
     const row2 = sumoRow(page);
     const pref2 = row2.locator("button.src-pref:not(.src-update-now)");
     await pref2.waitFor({ timeout: 10_000 });
@@ -308,8 +308,15 @@ await runCase(
     const alert = page.locator(".src-alert", { hasText: "GitHub" });
     await alert.waitFor({ timeout: 30_000 });
 
-    const review = alert.locator("button.src-alert-review");
-    await review.click();
+    // The same change is announced by the load-time dialog, whose Review
+    // opens the same review the Sources card does.
+    const changed = page.locator(
+      'dialog[open]:has-text("Sources changed since your last visit")',
+    );
+    await changed.waitFor({ timeout: 30_000 });
+    if (!(await changed.innerText()).includes("GitHub"))
+      throw new Error("sources-changed dialog should list the git source");
+    await changed.getByRole("button", { name: "Review", exact: true }).click();
 
     const dialog = page.locator('dialog[open]:has-text("Review update")');
     await dialog.waitFor({ timeout: 15_000 });
@@ -323,9 +330,98 @@ await runCase(
     await dialog.locator("button.btn", { hasText: "Apply" }).click();
     await waitDialogGone(page);
 
-    // The alert that spawned the review is dismissed once acknowledged.
+    // The alert that spawned the review is dismissed once acknowledged, and
+    // with nothing left to review the load-time dialog closes too.
     if (await page.locator(".src-alert", { hasText: "GitHub" }).count())
       throw new Error("reviewed alert should have been dismissed");
+    if (await changed.count())
+      throw new Error("sources-changed dialog should close once reviewed");
+  },
+);
+
+// -- Scenario 3: a third-party repo moves between loads. Under auto-update it
+//    is applied silently, and the load-time dialog is where the user learns
+//    it happened. ----------------------------------------------------------
+const FORK = { owner: "e2e-someone", repo: "fork", branch: "main" };
+const FORK_LABEL = `${FORK.owner}/${FORK.repo}@${FORK.branch}`;
+const FORK_FILE = `${FORK.owner}/${FORK.repo}/Fork.kif`;
+await runCase(
+  "third-party-git-changed-on-load",
+  async (page) => {
+    await page.route(
+      `https://api.github.com/repos/${FORK.owner}/${FORK.repo}/commits?*`,
+      (route) =>
+        route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify([
+            {
+              sha: "4444444444444444444444444444444444444e",
+              commit: { author: { date: new Date().toISOString() } },
+            },
+          ]),
+        }),
+    );
+    // Boot ingests the old text; the background check's re-fetch gets the new.
+    let calls = 0;
+    await page.route(
+      `https://raw.githubusercontent.com/${FORK.owner}/${FORK.repo}/${FORK.branch}/Fork.kif`,
+      (route) => {
+        calls += 1;
+        return route.fulfill({
+          contentType: "text/plain",
+          body: calls === 1 ? MERGE_V1 : MERGE_V2,
+        });
+      },
+    );
+    await page.addInitScript(
+      ([keys, file, origin, originId]) => {
+        localStorage.setItem(keys.wordnet, "false");
+        localStorage.setItem(
+          keys.files,
+          JSON.stringify([{ name: file, origin }]),
+        );
+        localStorage.setItem(
+          keys.prefs,
+          JSON.stringify({ [originId]: "auto-update" }),
+        );
+        localStorage.setItem(
+          keys.baselines,
+          JSON.stringify({
+            [originId]: "0000000000000000000000000000000000000f",
+          }),
+        );
+      },
+      [
+        {
+          wordnet: "sumoBrowserWordNetEnabled",
+          files: "sumoFiles",
+          prefs: UPDATE_PREFS_KEY,
+          baselines: UPDATE_BASELINES_KEY,
+        },
+        FORK_FILE,
+        { kind: "sumo", ...FORK },
+        `github:${FORK_LABEL}`,
+      ],
+    );
+  },
+  async (page) => {
+    const changed = page.locator(
+      'dialog[open]:has-text("Sources changed since your last visit")',
+    );
+    await changed.waitFor({ timeout: 60_000 });
+    const text = await changed.innerText();
+    if (!text.includes(FORK_LABEL) || !/applied/.test(text))
+      throw new Error(
+        `sources-changed dialog should list ${FORK_LABEL} as applied: ${text}`,
+      );
+    await changed.getByRole("button", { name: "Close", exact: true }).click();
+    await waitDialogGone(page);
+
+    // Closing the dialog loses nothing: the Sources card still has the alert.
+    await page
+      .locator(".src-alert", { hasText: FORK_LABEL })
+      .first()
+      .waitFor({ timeout: 10_000 });
   },
 );
 

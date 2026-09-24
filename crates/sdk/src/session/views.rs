@@ -15,7 +15,7 @@
 
 use sigmakee_rs_core::{
     Diagnostic, KnowledgeBase, ManKind, ManPage, SearchHit, TopLayer, DEFAULT_LANGUAGE,
-    NATURAL_LANGUAGE_CLASS,
+    HIGHER_ORDER_CATEGORIES, NATURAL_LANGUAGE_CLASS,
 };
 
 #[cfg(any(feature = "external-prover", feature = "native-prover"))]
@@ -742,13 +742,24 @@ pub struct DocLangView {
     pub documented: usize,
 }
 
+/// Higher-order rules falling into one of the configured
+/// `HIGHER_ORDER_CATEGORIES` (see [`KbStatsView`]).
+#[derive(serde::Serialize)]
+pub struct HigherOrderCategoryView {
+    pub category: String,
+    pub rules: usize,
+}
+
 /// Summary counts describing the loaded KB, for an overview page.  The
 /// vocabulary/coverage fields come from `KnowledgeBase::vocab_stats`;
 /// `documented`/`labeled` divide by `symbols` for a coverage percentage.
 /// `rules_first_order` + `rules_higher_order` always sum to `rules` -- a
 /// rule is higher-order when a formula (a relation/operator/predicate-
 /// variable application) occurs anywhere as an argument in its tree; see
-/// `KnowledgeBase::is_higher_order`.
+/// `KnowledgeBase::is_higher_order`.  `rules_higher_order_categories`
+/// breaks the higher-order rules down by the predicates they mention (a rule
+/// may land in several categories); `rules_higher_order_other` counts those
+/// in none.
 #[derive(serde::Serialize)]
 pub struct KbStatsView {
     pub files: usize,
@@ -757,6 +768,8 @@ pub struct KbStatsView {
     pub rules: usize,
     pub rules_first_order: usize,
     pub rules_higher_order: usize,
+    pub rules_higher_order_categories: Vec<HigherOrderCategoryView>,
+    pub rules_higher_order_other: usize,
     pub classes: usize,
     pub instances: usize,
     pub relations: usize,
@@ -1249,6 +1262,15 @@ impl<L: TopLayer> Session<L> {
         let mut axioms = 0usize;
         let mut rules = 0usize;
         let mut rules_higher_order = 0usize;
+        let mut rules_higher_order_categories: Vec<HigherOrderCategoryView> =
+            HIGHER_ORDER_CATEGORIES
+                .iter()
+                .map(|(category, _)| HigherOrderCategoryView {
+                    category: (*category).to_string(),
+                    rules: 0,
+                })
+                .collect();
+        let mut rules_higher_order_other = 0usize;
         for f in &files {
             for sid in kb.file_roots(f) {
                 axioms += 1;
@@ -1260,6 +1282,16 @@ impl<L: TopLayer> Session<L> {
                         rules += 1;
                         if kb.is_higher_order(sid) {
                             rules_higher_order += 1;
+                            let cats = kb.higher_order_categories(sid);
+                            if cats.is_empty() {
+                                rules_higher_order_other += 1;
+                            }
+                            for view in rules_higher_order_categories
+                                .iter_mut()
+                                .filter(|v| cats.contains(&v.category.as_str()))
+                            {
+                                view.rules += 1;
+                            }
                         }
                     }
                 }
@@ -1284,6 +1316,8 @@ impl<L: TopLayer> Session<L> {
             rules,
             rules_first_order,
             rules_higher_order,
+            rules_higher_order_categories,
+            rules_higher_order_other,
             classes: v.classes,
             instances: v.instances,
             relations: v.relations,
@@ -1774,6 +1808,31 @@ mod tests {
         assert_eq!(v.rules_first_order, 1);
         assert_eq!(v.rules_higher_order, 1);
         assert_eq!(v.rules_first_order + v.rules_higher_order, v.rules);
+    }
+
+    #[test]
+    fn stats_view_breaks_higher_order_rules_into_categories() {
+        let s = session_with(
+            r#"
+            (instance Relation Class)
+            (=> (holdsDuring ?T (attribute ?X Happy)) (holdsDuring ?T (attribute ?X Alive)))
+            (=> (holdsDuring ?T (knows ?A (attribute ?X Happy))) (believes ?A (attribute ?X Happy)))
+            (=> (instance ?REL Relation) (?REL Fido Fido))
+            (=> (holdsDuring ?T (instance ?X Dog)) (instance ?X Mammal))
+        "#,
+        );
+        let v = s.stats_view();
+        let count = |name: &str| {
+            v.rules_higher_order_categories
+                .iter()
+                .find(|c| c.category == name)
+                .map(|c| c.rules)
+        };
+        assert_eq!(v.rules_higher_order, 4);
+        assert_eq!(count("temporal"), Some(3));
+        assert_eq!(count("epistemic"), Some(1));
+        assert_eq!(count("deontic"), Some(0));
+        assert_eq!(v.rules_higher_order_other, 1);
     }
 
     #[test]

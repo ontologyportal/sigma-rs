@@ -202,10 +202,18 @@ export const useKBStore = defineStore("kb", {
     updateBaselines: loadUpdateBaselines() as Record<string, string>,
     /** Update-check results awaiting the user's attention, newest last. */
     updateAlerts: [] as UpdateAlert[],
+    /** The alerts the check run at load produced -- every source whose
+     *  upstream moved since the last load. `SourcesChangedDialog` shows them
+     *  until the user closes it. */
+    changedOnLoad: [] as UpdateAlert[],
   }),
   getters: {
-    isLoaded: (state) => (name: string) =>
-      state.constituents.some((c) => c.name === name),
+    /** The loaded constituent the engine knows as `file` (a diagnostic's or
+     *  citation's `file`), if any. See `engineFile`. */
+    byFile:
+      (state) =>
+      (file: string): Constituent | undefined =>
+        state.constituents.find((c) => c.file === file),
     find:
       (state) =>
       (name: string, kind?: OriginKind): Constituent | undefined =>
@@ -257,13 +265,14 @@ export const useKBStore = defineStore("kb", {
       text: string,
       origin: Origin = GitOrigin.default(),
     ): Promise<{ added: boolean; notices: string[] }> {
-      if (this.isLoaded(name))
+      const c = new Constituent(name, origin, text);
+      if (this.byFile(c.file))
         return { added: false, notices: [`${name}: already loaded`] };
       const { notices } = await call("ingest", {
-        name,
+        name: c.file,
         text,
       });
-      this.constituents.push(new Constituent(name, origin, text));
+      this.constituents.push(c);
       useLibraryStore().ensureEntry(name, origin, text.length);
       if (
         !this.saved.some(
@@ -306,16 +315,17 @@ export const useKBStore = defineStore("kb", {
         await flushKbCacheSave();
         return r;
       }
-      this.constituents[idx] = new Constituent(
+      const updated = new Constituent(
         name,
         this.constituents[idx].origin,
         text,
       );
+      this.constituents[idx] = updated;
       // In-place diff-commit instead of rebuildSession(): the LSP didChange
       // lane reconciles the buffer under the file's own name, so only the
       // changed sentences are processed. reprocess() then re-promotes
       // (no-op for untouched files) and re-validates for whole-KB diagnostics.
-      await lspSyncDocument(name, text);
+      await lspSyncDocument(updated.file, text);
       await this.reprocess();
       await flushKbCacheSave();
       return { added: false, notices: [] };
@@ -327,7 +337,7 @@ export const useKBStore = defineStore("kb", {
       await call("newSession");
       lspReset();
       for (const c of this.constituents)
-        await call("ingest", { name: c.name, text: c.text });
+        await call("ingest", { name: c.file, text: c.text });
       // newSession() drops any installed WordNet lexicon; reinstall it (from
       // the cached fetch, so this never re-downloads).
       await useWordNetStore().install();
@@ -442,7 +452,7 @@ export const useKBStore = defineStore("kb", {
 
     async resetToMerge() {
       const changes = useChangesStore();
-      const merge = this.constituents.find((c) => c.name === MERGE);
+      const merge = this.find(MERGE, "sumo");
       const dropped = this.constituents.filter((c) => c !== merge);
       for (const c of dropped) await changes.forget(c.name, c.origin.kind);
       this.constituents = merge ? [merge] : [];
@@ -498,7 +508,7 @@ export const useKBStore = defineStore("kb", {
     // once, THEN refresh the language list -- promote and validate are the
     // KB-size-bound steps, validation runs exactly once here.
     async promoteAndValidate() {
-      await call("promoteAll", { names: this.constituents.map((c) => c.name) });
+      await call("promoteAll", { names: this.constituents.map((c) => c.file) });
       this.diagnostics = (await call("validate")).diagnostics;
       this.statsStale = true;
       await this.refreshLangSelect();
@@ -571,19 +581,22 @@ export const useKBStore = defineStore("kb", {
       const changes = useChangesStore();
       let changed = false;
       for (const { name, text, origin } of entries) {
-        const idx = this.constituents.findIndex((c) => c.name === name);
+        const idx = this.constituents.findIndex(
+          (c) => c.name === name && c.origin.kind === origin.kind,
+        );
         if (idx === -1) {
           const r = await this.ingest(name, text, origin);
           changed ||= r.added;
           continue;
         }
         if (this.constituents[idx].text === text) continue;
-        this.constituents[idx] = new Constituent(name, origin, text);
+        const updated = new Constituent(name, origin, text);
+        this.constituents[idx] = updated;
         // Taking upstream's copy retires the local edit it replaces -- left
         // tracked, its text would outrank upstream in `fromOrigin` and undo
         // this update on the next boot.
         await changes.forget(name, origin.kind);
-        await lspSyncDocument(name, text);
+        await lspSyncDocument(updated.file, text);
         changed = true;
       }
       if (changed) await this.reprocess();
@@ -666,7 +679,7 @@ export const useKBStore = defineStore("kb", {
       for (const name of group.files) {
         try {
           const incoming = await fromOrigin(name, group.origin);
-          const current = this.find(name)?.text ?? "";
+          const current = this.find(name, "sumo")?.text ?? "";
           if (incoming !== current)
             review.push({
               name,
@@ -724,14 +737,20 @@ export const useKBStore = defineStore("kb", {
           // THAT rather than a fresh network fetch: a fresh fetch could
           // already be a newer upstream version, which would silently
           // adopt it as the baseline and mask a change that happened
-          // before this check ever ran.
+          // before this check ever ran. A tracked edit is the exception: the
+          // loaded text is then the edit (restored at boot), and the upstream
+          // it descends from is the record's base instead.
+          const rec = useChangesStore().record(name, "url");
           const current = this.find(name, "url")?.text;
-          if (current === undefined) continue;
-          const currentHash = await blobSha(current);
-          if (!currentHash) continue; // no SubtleCrypto: freshness can't be judged
-          this.updateBaselines[key] = currentHash;
+          const seed = rec
+            ? rec.baseBlobSha
+            : current === undefined
+              ? null
+              : await blobSha(current);
+          if (!seed) continue; // no SubtleCrypto, or no known base: can't judge
+          this.updateBaselines[key] = seed;
           persistUpdateBaselines(this.updateBaselines);
-          baseline = currentHash;
+          baseline = seed;
         }
         let incoming: string;
         try {
@@ -802,8 +821,11 @@ export const useKBStore = defineStore("kb", {
 
     /** Check every `sumo`/`url` source whose preference isn't `no-check`,
      *  applying or alerting per source as its preference dictates. Run once
-     *  in the background after boot; never blocks the app becoming usable. */
+     *  in the background after boot; never blocks the app becoming usable.
+     *  A background check only alerts on a change, so every alert this run
+     *  adds is collected into `changedOnLoad`. */
     async checkForUpdates() {
+      const earlier = new Set(this.updateAlerts);
       for (const group of this.sourceGroups) {
         if (group.origin.kind === "file") continue;
         const pref = this.prefFor(group.origin);
@@ -812,6 +834,7 @@ export const useKBStore = defineStore("kb", {
           await this.checkGitSource(group, pref);
         else await this.checkUrlSource(group, pref);
       }
+      this.changedOnLoad = this.updateAlerts.filter((a) => !earlier.has(a));
     },
 
     /** Check one source right now, regardless of its stored preference
@@ -846,6 +869,19 @@ export const useKBStore = defineStore("kb", {
       for (const f of files)
         this.updateBaselines[f.baselineKey] = f.baselineValue;
       persistUpdateBaselines(this.updateBaselines);
+    },
+
+    /** A closed `UpdatePreviewDialog`: acknowledge its files, then drop the
+     *  alert it was opened from (null for a manual "Update now"), which the
+     *  decision just made supersedes. */
+    finishReview(files: PendingUpdateFile[], alertKey: string | null) {
+      this.acknowledgeReview(files);
+      if (alertKey) {
+        this.dismissUpdateAlert(alertKey);
+        this.changedOnLoad = this.changedOnLoad.filter(
+          (a) => a.key !== alertKey,
+        );
+      }
     },
   },
 });
