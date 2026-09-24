@@ -134,10 +134,30 @@ async function dir(): Promise<FileSystemDirectoryHandle> {
   return editsDir;
 }
 
-async function writeEdit(name: string, text: string) {
+/** Where a tracked origin's unpushed text lives inside `edits/`. `sumo` keeps
+ *  the bare name it has always used, so existing edits survive; other origins
+ *  are prefixed, which `encodeURIComponent` makes unable to collide with it. */
+function editFileName(name: string, origin: OriginKind): string {
+  return opfsSafeName(origin === "sumo" ? name : `${origin}:${name}`);
+}
+
+/** Origins whose unpushed text `edits/` owns. `file` is excluded: an upload
+ *  already lives in the library's own OPFS directory under its own name. */
+function ownsText(origin: OriginKind): boolean {
+  return origin === "sumo" || origin === "url";
+}
+
+/** Whether `rec.path` names a file in the repo, and so may be compared against
+ *  `upstreamShas`. Always true for `sumo`; a local upload or url source only
+ *  gets a repo path once `markProposed` has pushed it somewhere. */
+function hasRepoPath(rec: ChangeRecord): boolean {
+  return rec.origin === "sumo" || Boolean(rec.proposed || rec.prClosed);
+}
+
+async function writeEdit(name: string, origin: OriginKind, text: string) {
   const handle = await (
     await dir()
-  ).getFileHandle(opfsSafeName(name), { create: true });
+  ).getFileHandle(editFileName(name, origin), { create: true });
   const w = await handle.createWritable();
   await w.write(text);
   await w.close();
@@ -183,7 +203,9 @@ export const useChangesStore = defineStore("changes", {
       const rows: ChangeRow[] = [];
       for (const rec of Object.values(state.index)) {
         if (!loaded.has(key(rec.name, rec.origin))) continue; // no longer in the KB
-        const up = state.upstreamShas[rec.path] ?? null;
+        const up = hasRepoPath(rec)
+          ? (state.upstreamShas[rec.path] ?? null)
+          : null;
         rows.push({
           ...rec,
           upstream: up,
@@ -228,9 +250,9 @@ export const useChangesStore = defineStore("changes", {
 
     /** Drop a record and any text it owns. Does not persist -- callers batch that. */
     async dropRecord(rec: ChangeRecord): Promise<void> {
-      if (rec.origin === "sumo") {
+      if (ownsText(rec.origin)) {
         try {
-          await (await dir()).removeEntry(opfsSafeName(rec.name));
+          await (await dir()).removeEntry(editFileName(rec.name, rec.origin));
         } catch {
           /* nothing written yet, or already gone */
         }
@@ -251,7 +273,11 @@ export const useChangesStore = defineStore("changes", {
     async refreshUpstreamShas({
       force = false,
     }: { force?: boolean } = {}): Promise<void> {
-      if (!Object.keys(this.index).length) return; // nothing tracked, nothing to check
+      // A record without a repo path must not be what sends us to the GitHub
+      // API -- an unauthenticated read can come back 401/403 and prompt for a
+      // login the user has no reason to be asked for.
+      const tracked = Object.values<ChangeRecord>(this.index);
+      if (!tracked.some(hasRepoPath)) return;
       let tree: Awaited<ReturnType<typeof fetchSumoTree>>;
       try {
         tree = await fetchSumoTree({ force });
@@ -263,6 +289,10 @@ export const useChangesStore = defineStore("changes", {
       );
       let dropped = false;
       for (const rec of Object.values<ChangeRecord>(this.index)) {
+        // An unproposed url record's path is just its name; one that happens
+        // to match a repo file would otherwise be dropped here, deleting an
+        // edit that has nothing to do with that file.
+        if (!hasRepoPath(rec)) continue;
         const up = this.upstreamSha(rec.path);
         if (up && up === rec.savedBlobSha) {
           await this.dropRecord(rec);
@@ -309,14 +339,17 @@ export const useChangesStore = defineStore("changes", {
     },
 
     /**
-     * The unpushed text for a `sumo`-origin constituent, or null if it has
-     * none. `fromOrigin` consults this before fetching, which is what keeps
-     * local work alive across a boot that re-fetches everything from upstream.
+     * The unpushed text for a constituent whose origin `edits/` owns, or null
+     * if it has none. `fromOrigin` consults this before fetching, which is what
+     * keeps local work alive across a boot that re-fetches from upstream.
      */
-    async readEdit(name: string): Promise<string | null> {
-      if (!this.index[key(name, "sumo")]) return null; // untracked: never touch OPFS
+    async readEdit(name: string, origin: OriginKind): Promise<string | null> {
+      if (!ownsText(origin)) return null;
+      if (!this.index[key(name, origin)]) return null; // untracked: never touch OPFS
       try {
-        const handle = await (await dir()).getFileHandle(opfsSafeName(name));
+        const handle = await (
+          await dir()
+        ).getFileHandle(editFileName(name, origin));
         return await (await handle.getFile()).text();
       } catch {
         return null;
@@ -333,8 +366,8 @@ export const useChangesStore = defineStore("changes", {
 
     /**
      * Record that `text` was saved as `name`/`origin`, storing the text itself
-     * for `sumo` origin (local uploads already live in OPFS under their own
-     * name).
+     * for the origins `edits/` owns (local uploads already live in OPFS under
+     * their own name).
      *
      * `pristine` is the content the buffer started from, used ONCE to stamp
      * the upstream version this edit descends from; later saves keep the
@@ -359,14 +392,20 @@ export const useChangesStore = defineStore("changes", {
       const rec = this.index[k];
       // Local uploads are only tracked once they have been proposed upstream --
       // before that there is nothing to compare them against.
-      if (origin !== "sumo" && !rec) return null;
+      if (!ownsText(origin) && !rec) return null;
 
       const path = rec?.path || name;
       const sha = await blobSha(text);
       const base =
         rec?.baseBlobSha ??
         (pristine === undefined ? null : await blobSha(pristine));
-      const up = this.upstreamSha(path);
+      // What upstream holds NOW. A url source not yet pushed to the repo has
+      // no repo path, so its version signal is the content hash
+      // `checkUrlSource` records instead.
+      const up =
+        origin === "url" && !(rec && hasRepoPath(rec))
+          ? (useKBStore().updateBaselines[`url:${name}`] ?? null)
+          : this.upstreamSha(path);
       const backToUpstream =
         sha && ((up && sha === up) || (base && sha === base && !rec?.proposed));
       if (backToUpstream) {
@@ -377,7 +416,7 @@ export const useChangesStore = defineStore("changes", {
         return null;
       }
 
-      if (origin === "sumo") await writeEdit(name, text);
+      if (ownsText(origin)) await writeEdit(name, origin, text);
       this.index[k] = {
         name,
         origin,

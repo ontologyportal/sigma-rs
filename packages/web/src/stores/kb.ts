@@ -28,7 +28,10 @@ import { fetchRepoLastCommit } from "../api/github";
 import { call } from "../services/sigma";
 import { fetchAllTexts, fetchText, fromOrigin } from "../services/sources";
 import { lspReset, lspSyncDocument } from "../services/lsp";
-import { scheduleSave as scheduleKbCacheSave } from "../services/kb-cache";
+import {
+  scheduleSave as scheduleKbCacheSave,
+  flushSave as flushKbCacheSave,
+} from "../services/kb-cache";
 import { errMsg } from "../utils/format";
 import { useWordNetStore } from "./wordnet";
 import { blobSha, useChangesStore } from "./changes";
@@ -297,6 +300,10 @@ export const useKBStore = defineStore("kb", {
       if (idx === -1) {
         const r = await this.ingest(name, text, origin);
         await this.reprocess();
+        // An explicit save is rare enough to afford waiting out a real
+        // write instead of the debounce, which a refresh right after
+        // saving can otherwise beat (see flushSave).
+        await flushKbCacheSave();
         return r;
       }
       this.constituents[idx] = new Constituent(
@@ -310,6 +317,7 @@ export const useKBStore = defineStore("kb", {
       // (no-op for untouched files) and re-validates for whole-KB diagnostics.
       await lspSyncDocument(name, text);
       await this.reprocess();
+      await flushKbCacheSave();
       return { added: false, notices: [] };
     },
 
@@ -560,6 +568,7 @@ export const useKBStore = defineStore("kb", {
     async applyUpdates(
       entries: { name: string; text: string; origin: Origin }[],
     ) {
+      const changes = useChangesStore();
       let changed = false;
       for (const { name, text, origin } of entries) {
         const idx = this.constituents.findIndex((c) => c.name === name);
@@ -570,6 +579,10 @@ export const useKBStore = defineStore("kb", {
         }
         if (this.constituents[idx].text === text) continue;
         this.constituents[idx] = new Constituent(name, origin, text);
+        // Taking upstream's copy retires the local edit it replaces -- left
+        // tracked, its text would outrank upstream in `fromOrigin` and undo
+        // this update on the next boot.
+        await changes.forget(name, origin.kind);
         await lspSyncDocument(name, text);
         changed = true;
       }
@@ -742,7 +755,10 @@ export const useKBStore = defineStore("kb", {
           continue;
         }
 
-        if (pref === "auto-update" && !manual) {
+        // An unpushed local edit is never silently replaced: the change falls
+        // through to the review path below, where the user chooses.
+        const edited = Boolean(useChangesStore().record(name, "url"));
+        if (pref === "auto-update" && !manual && !edited) {
           await this.applyUpdates([{ name, text: incoming, origin }]);
           this.updateBaselines[key] = hash;
           persistUpdateBaselines(this.updateBaselines);

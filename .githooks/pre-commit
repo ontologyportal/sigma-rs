@@ -153,8 +153,37 @@ run_step "cargo test lsp" cargo test -p sumo-lsp
 if command -v npm >/dev/null 2>&1 && [ -f "package.json" ] && [ -d "node_modules" ]; then
     run_step "prettier" npm run -s fmt:check
     run_step "eslint"   npm run -s lint
+    run_step "web typecheck" npm run -s typecheck -w @sigma/web
+
+    # Browser e2e (packages/web/e2e). Two prerequisites are builds rather
+    # than checkouts -- the wasm package the demo imports, and Playwright's
+    # browser -- so a missing one warns and skips instead of failing a
+    # commit, the same way a missing cargo/npm does above.
+    if [ ! -d "packages/sigmakee/dist" ]; then
+        echo "⚠️  packages/sigmakee/dist not built — skipping web e2e." >&2
+        echo "   Build it with: npm run build -w sigmakee" >&2
+    elif ! node -e 'const {chromium} = require("playwright");
+                    process.exit(require("fs").existsSync(chromium.executablePath()) ? 0 : 1)' \
+            >/dev/null 2>&1; then
+        echo "⚠️  Playwright's Chromium not installed — skipping web e2e." >&2
+        echo "   Install it with: npx playwright install chromium" >&2
+    else
+        run_step "e2e smoke"         npm run -s test:e2e -w @sigma/web
+        run_step "e2e kb-updates"    npm run -s test:e2e:kb-updates -w @sigma/web
+        run_step "e2e edit-survival" npm run -s test:e2e:edit-survival -w @sigma/web
+        run_step "e2e version-notes" npm run -s test:e2e:version -w @sigma/web
+
+        # The Vampire suite needs the Emscripten build, which is gitignored
+        # and takes minutes to produce -- run it only where it exists.
+        if [ -d "packages/web/public/vampire" ]; then
+            run_step "e2e vampire"   npm run -s test:e2e:vampire -w @sigma/web
+        else
+            echo "⚠️  packages/web/public/vampire not built — skipping the Vampire e2e." >&2
+            echo "   Build it with: npm run build -w @sigma/vampire" >&2
+        fi
+    fi
 else
-    echo "⚠️  npm or node_modules not found — skipping prettier/eslint checks." >&2
+    echo "⚠️  npm or node_modules not found — skipping prettier/eslint/typecheck/e2e checks." >&2
 fi
 
 echo ""

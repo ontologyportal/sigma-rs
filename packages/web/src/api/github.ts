@@ -150,7 +150,7 @@ export function assertFeatureBranch(branch: string, base: string): void {
 
 /** Validate a token and return the authenticated user. */
 export const whoami = (token: string | null, signal?: AbortSignal) =>
-  api<Res<'GET /user'>>(token, "/user", { signal });
+  api<Res<"GET /user">>(token, "/user", { signal });
 
 export interface ContributeFilesOpts {
   token: string;

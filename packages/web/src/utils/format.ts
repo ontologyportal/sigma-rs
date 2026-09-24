@@ -33,9 +33,8 @@ export function formatSize(bytes: number): string {
     : `${Math.round(bytes / 1000)} KB`;
 }
 
-/** Trigger a real browser download of `text` as `name`. */
-export function downloadText(name: string, text: string): void {
-  const blob = new Blob([text], { type: "text/plain" });
+/** Trigger a real browser download of `blob` as `name`. */
+export function downloadBlob(name: string, blob: Blob): void {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -44,6 +43,11 @@ export function downloadText(name: string, text: string): void {
   a.click();
   a.remove();
   URL.revokeObjectURL(url);
+}
+
+/** Trigger a real browser download of `text` as `name`. */
+export function downloadText(name: string, text: string): void {
+  downloadBlob(name, new Blob([text], { type: "text/plain" }));
 }
 
 /** The message of a thrown value, whatever its shape. */

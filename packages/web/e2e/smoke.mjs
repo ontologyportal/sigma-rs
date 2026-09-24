@@ -11,6 +11,7 @@
 // every step land in e2e/shots/ (gitignored).
 
 import { chromium } from "playwright";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -39,7 +40,10 @@ const browser = await chromium.launch({
   executablePath: process.env.PLAYWRIGHT_CHROMIUM || undefined,
 });
 const page = await (
-  await browser.newContext({ viewport: { width: 1200, height: 900 } })
+  await browser.newContext({
+    viewport: { width: 1200, height: 900 },
+    acceptDownloads: true, // the backup step saves the zip it triggers
+  })
 ).newPage();
 
 // Known-noisy warnings that are not regressions: Cytoscape's advisory about
@@ -162,7 +166,9 @@ await step("03-browse-back", async () => {
 });
 
 await step("04-browse-tab-keeps-state", async () => {
-  await tab("History").click();
+  // Any tab other than Browse will do -- the point is that leaving and
+  // coming back keeps the query, not which tab was visited.
+  await tab("Diagnostics").click();
   await page.waitForTimeout(500);
   await tab("Browse").click();
   await page.waitForSelector("ul.results li", { timeout: 60_000 });
@@ -351,11 +357,6 @@ await step("15-problems", async () => {
   await search.fill("");
 });
 
-await step("20-history", async () => {
-  await tab("History").click();
-  await page.waitForTimeout(4000);
-});
-
 await step("30-edit", async () => {
   await tab("Edit").click();
   await page.waitForSelector(".monaco-editor", { timeout: 60_000 });
@@ -432,8 +433,54 @@ await step("70-settings-dialog", async () => {
   await page.keyboard.press("Escape");
 });
 
+// The archive is written by hand (src/services/backup.ts), so "a file
+// downloaded" proves nothing -- it gets unzipped and read back. A backup
+// that only LOOKS like a zip is worse than no backup at all.
+await step("71-backup-data", async () => {
+  await page.locator("button.settings-btn").click();
+  await page.waitForSelector("dialog[open]", { timeout: 5000 });
+
+  const [download] = await Promise.all([
+    page.waitForEvent("download", { timeout: 120_000 }),
+    page.locator("dialog[open] button", { hasText: "Back up data" }).click(),
+  ]);
+  if (
+    !/^sumo-backup-\d{4}-\d{2}-\d{2}\.zip$/.test(download.suggestedFilename())
+  )
+    throw new Error("unexpected backup name: " + download.suggestedFilename());
+
+  const zipPath = path.join(shots, "backup.zip");
+  await download.saveAs(zipPath);
+
+  // `unzip -t` walks the central directory and verifies every entry's CRC,
+  // which is exactly what a hand-written encoder can get wrong.
+  execFileSync("unzip", ["-t", zipPath], { stdio: "pipe" });
+  const listing = execFileSync("unzip", ["-Z1", zipPath], {
+    encoding: "utf8",
+  }).split("\n");
+
+  if (!listing.includes("localStorage.json"))
+    throw new Error("backup has no localStorage.json — it cannot be restored");
+  // The boot snapshot cache is the one directory guaranteed to exist by now.
+  if (!listing.some((f) => f.startsWith("sumo-cache/")))
+    throw new Error("backup contains no OPFS files: " + listing.join(", "));
+
+  const saved = JSON.parse(
+    execFileSync("unzip", ["-p", zipPath, "localStorage.json"], {
+      encoding: "utf8",
+    }),
+  );
+  if (!saved.sumoFiles)
+    throw new Error("localStorage.json is missing the constituent manifest");
+
+  fs.rmSync(zipPath, { force: true });
+  await page.keyboard.press("Escape");
+});
+
 await step("80-slash-shortcut", async () => {
-  await tab("History").click();
+  // Starts away from Browse on purpose: `/` both navigates to Browse and
+  // focuses its search box (App.vue's keydown handler).
+  await tab("Audit").click();
   await page.waitForTimeout(500);
   await page.keyboard.press("/");
   await page.waitForTimeout(500);
@@ -479,9 +526,9 @@ await step("91-rail-nav", async () => {
   );
   if (overflow) throw new Error("page scrolls horizontally on the group rail");
   await page.locator("nav.tab-rail button", { hasText: "Manage" }).click();
-  await page.locator(".dl-menu button", { hasText: "History" }).click();
+  await page.locator(".dl-menu button", { hasText: "Inference Tests" }).click();
   await page.waitForTimeout(300);
-  if (!page.url().includes("/history"))
+  if (!page.url().includes("/problems"))
     throw new Error("group menu did not navigate: " + page.url());
   if (await page.locator(".dl-menu").count())
     throw new Error("group menu stayed open after navigating");

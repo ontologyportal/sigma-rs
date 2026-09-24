@@ -20,6 +20,15 @@ const files = computed(() => num(kb.stats?.files));
 const symbols = computed(() => num(kb.stats?.symbols));
 const axioms = computed(() => num(kb.stats?.axioms));
 const rules = computed(() => num(kb.stats?.rules));
+const rulesTooltip = computed(() => {
+  const s = kb.stats;
+  if (!s || !Number.isFinite(s.rules_first_order))
+    return "First-order vs higher-order";
+  return (
+    `${fmtNum(s.rules_first_order)} first-order · ` +
+    `${fmtNum(s.rules_higher_order)} higher-order`
+  );
+});
 const classes = computed(() => num(kb.stats?.classes));
 const instances = computed(() => num(kb.stats?.instances));
 const relations = computed(() => num(kb.stats?.relations));
@@ -157,7 +166,7 @@ const relationRows = computed<PopRow[]>(() => {
       <div class="stat-n">{{ axioms }}</div>
       <div class="stat-l">axioms</div>
     </div>
-    <div class="stat">
+    <div class="stat" :title="rulesTooltip">
       <div class="stat-n">{{ rules }}</div>
       <div class="stat-l">rules</div>
     </div>

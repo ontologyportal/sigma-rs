@@ -94,6 +94,17 @@ async function runCase(name, setup, check) {
   page.on("pageerror", (e) => problems.push(`[pageerror] ${e.message}`));
 
   try {
+    // Anonymous GitHub API calls are capped at 60/hour, and blowing the quota
+    // makes the app raise a login dialog over the UI -- every assertion below
+    // then fails on an unrelated click timeout. Unmocked reads (the repo file
+    // list) answer with an empty tree; `setup`'s routes are registered after
+    // this one, and Playwright matches newest-first, so they still win.
+    await page.route("https://api.github.com/**", (route) =>
+      route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({ tree: [], truncated: false }),
+      }),
+    );
     await setup(page);
     await page.goto(base, { waitUntil: "domcontentloaded" });
     await page.waitForSelector("nav.tabs", { timeout: BOOT_TIMEOUT });

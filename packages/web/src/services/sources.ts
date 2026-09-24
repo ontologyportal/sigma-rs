@@ -21,13 +21,16 @@ export async function fromOrigin(
       // from the KB snapshot cache for exactly this reason: an upstream commit
       // discards that cache and sends every 'sumo' file back through here,
       // which would otherwise silently restore the pre-edit text.
-      const edited = await useChangesStore().readEdit(name);
+      const edited = await useChangesStore().readEdit(name, "sumo");
       if (edited !== null) return edited;
       const git = origin as GitOrigin;
       return fetchText(git.rawUrl(git.pathOf(name)));
     }
-    case "url":
+    case "url": {
+      const edited = await useChangesStore().readEdit(name, "url");
+      if (edited !== null) return edited;
       return fetchText((origin as RemoteOrigin).url || name);
+    }
     case "file":
       return useLibraryStore().readLocal(name);
   }

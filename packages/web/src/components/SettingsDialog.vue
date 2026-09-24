@@ -2,9 +2,11 @@
 import { computed, ref } from "vue";
 import BaseDialog from "./BaseDialog.vue";
 import { clearCache } from "../services/kb-cache";
+import { downloadBackup } from "../services/backup";
 import { useKBStore } from "../stores/kb";
 import { useShellStore } from "../stores/shell";
 import { AVAILABLE_LAYOUTS } from "../constants/index.ts";
+import { errMsg } from "../utils/format";
 
 const kb = useKBStore();
 const shell = useShellStore();
@@ -33,6 +35,25 @@ async function onClearCache() {
   setTimeout(() => {
     cacheCleared.value = false;
   }, 2000);
+}
+
+const backupBusy = ref(false);
+const backupLabel = ref("");
+
+async function onBackup() {
+  backupBusy.value = true;
+  backupLabel.value = "";
+  try {
+    const n = await downloadBackup();
+    backupLabel.value = `${n} file${n === 1 ? "" : "s"} saved`;
+  } catch (e) {
+    backupLabel.value = errMsg(e);
+  } finally {
+    backupBusy.value = false;
+    setTimeout(() => {
+      backupLabel.value = "";
+    }, 4000);
+  }
 }
 </script>
 
@@ -89,14 +110,26 @@ async function onClearCache() {
         </option>
       </select>
     </div>
-    <button
-      class="btn ghost clear-cache"
-      type="button"
-      title="Clear the cached KB build in this browser — the next load re-fetches and re-builds from scratch"
-      @click="onClearCache"
-    >
-      {{ cacheCleared ? "cache cleared" : "Clear cache" }}
-    </button>
+    <div class="maintenance">
+      <button
+        class="btn ghost clear-cache"
+        type="button"
+        title="Clear the cached KB build in this browser — the next load re-fetches and re-builds from scratch"
+        @click="onClearCache"
+      >
+        {{ cacheCleared ? "cache cleared" : "Clear cache" }}
+      </button>
+      <button
+        class="btn ghost"
+        type="button"
+        :disabled="backupBusy"
+        title="Download everything this browser holds — local edits, uploaded files, the cached KB build, and the settings that index them — as one zip"
+        @click="onBackup"
+      >
+        {{ backupBusy ? "Preparing…" : "Back up data" }}
+      </button>
+      <span v-if="backupLabel" class="hint">{{ backupLabel }}</span>
+    </div>
     <template #actions>
       <span class="version">{{ versionText }}</span>
       <button
@@ -140,9 +173,20 @@ async function onClearCache() {
   margin: -10px 0 18px;
   font-size: 12px;
 }
-.clear-cache {
-  width: 100%;
+.maintenance {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
   margin-bottom: 16px;
+}
+/* Share the row evenly, and stack rather than overflow on a narrow dialog. */
+.maintenance .btn {
+  flex: 1 1 140px;
+}
+.maintenance .hint {
+  flex: 1 0 100%;
+  font-size: 12px;
 }
 .version {
   font-size: 11px;

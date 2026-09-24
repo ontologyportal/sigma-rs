@@ -22,7 +22,8 @@
     "test:e2e": "node e2e/smoke.mjs",
     "test:e2e:vampire": "node e2e/vampire.mjs",
     "test:e2e:version": "node e2e/version-notes.mjs",
-    "test:e2e:kb-updates": "node e2e/kb-update-prefs.mjs"
+    "test:e2e:kb-updates": "node e2e/kb-update-prefs.mjs",
+    "test:e2e:edit-survival": "node e2e/edit-survival.mjs"
   },
   "dependencies": {
     "@sigma/language": "*",
@@ -30,6 +31,7 @@
     "cytoscape-dagre": "^4.0.0",
     "cytoscape-node-html-label": "^1.2.2",
     "dompurify": "^3.2.7",
+    "fflate": "^0.8.3",
     "marked": "^14.0.0",
     "monaco-editor": "^0.55.1",
     "pinia": "^4.0.3",

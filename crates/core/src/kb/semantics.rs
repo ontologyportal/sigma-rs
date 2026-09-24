@@ -8,7 +8,7 @@ use crate::semantics::consts::{CLASS_SYMBOL, FORMULA_SYMBOL};
 use crate::semantics::errors::semantic_error;
 use crate::semantics::errors::SemanticError;
 use crate::types::{Element, RelationDomain, RelationRange};
-use crate::{Diagnostic, SentenceId, SymbolId, ToDiagnostic};
+use crate::{Diagnostic, OpKind, SentenceId, SymbolId, ToDiagnostic};
 
 use super::KnowledgeBase;
 
@@ -98,6 +98,56 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
     /// True if `sym` is a predicate.
     pub fn is_predicate(&self, sym: crate::types::SymbolId) -> bool {
         self.layer.semantic().is_predicate(sym)
+    }
+
+    /// True if `sid` denotes a truth-valued sentence (an operator
+    /// application, a predicate-variable application, or a relation/
+    /// predicate-headed atom) rather than a term.
+    fn sentence_is_logical(&self, sid: SentenceId) -> bool {
+        let Some(sentence) = self.sentence(sid) else {
+            return false;
+        };
+        if sentence.is_operator() {
+            return true;
+        }
+        let head_id = match sentence.elements.first() {
+            Some(Element::Symbol(sym)) => sym.id(),
+            Some(Element::Variable { .. }) => return true,
+            _ => return false,
+        };
+        !self.is_function(head_id)
+    }
+
+    /// True if a formula appears anywhere as an argument to a relation or
+    /// function in `sid`'s sentence tree -- i.e. `sid` is a higher-order
+    /// sentence rather than a first-order one.
+    ///
+    /// A formula nested inside a *logical operator*'s own arguments (an
+    /// `=>`'s antecedent, an `and`'s conjuncts, a quantifier's body, ...) is
+    /// ordinary first-order structure, not higher-order -- operators expect
+    /// formula arguments by definition. It's higher-order when a formula
+    /// occupies an argument slot of a relation or function instead, or when
+    /// a predicate-variable application (`(?REL ?X ?Y)`) occurs anywhere,
+    /// including at the root.
+    pub fn is_higher_order(&self, sid: SentenceId) -> bool {
+        let Some(sentence) = self.sentence(sid) else {
+            return false;
+        };
+        if matches!(sentence.elements.first(), Some(Element::Variable { .. })) {
+            return true;
+        }
+        let is_operator = sentence.is_operator();
+        let args_start = if matches!(sentence.op(), Some(OpKind::ForAll) | Some(OpKind::Exists)) {
+            2
+        } else {
+            1
+        };
+        sentence.elements[args_start..].iter().any(|e| match e {
+            Element::Sub(sub_id) => {
+                (!is_operator && self.sentence_is_logical(*sub_id)) || self.is_higher_order(*sub_id)
+            }
+            _ => false,
+        })
     }
 
     /// Axiom sentences in which `sym` occurs.
@@ -648,6 +698,53 @@ mod tests {
         let dog_id = kb.symbol_id("Dog").expect("Dog interned");
         assert!(kb.is_class_type(class_id));
         assert!(!kb.is_class_type(dog_id));
+    }
+
+    #[test]
+    fn is_higher_order_false_for_first_order_rule() {
+        let mut kb = KnowledgeBase::new();
+        let r = kb.tell("(=> (instance ?X Dog) (instance ?X Mammal))", "s");
+        assert!(r.ok, "ingest failed: {:?}", r.diagnostics);
+        let sid = r.sids[0];
+        assert!(!kb.is_higher_order(sid));
+    }
+
+    #[test]
+    fn is_higher_order_true_for_predicate_variable_argument() {
+        let mut kb = KnowledgeBase::new();
+        let r = kb.tell(
+            "(instance Relation Class)(=> (instance ?REL Relation) (?REL Fido Fido))",
+            "s",
+        );
+        assert!(r.ok, "ingest failed: {:?}", r.diagnostics);
+        let sid = *r
+            .sids
+            .last()
+            .expect("the => rule ingested as the second root");
+        assert!(kb.is_higher_order(sid));
+    }
+
+    #[test]
+    fn is_higher_order_false_for_function_headed_argument() {
+        // A function application nested as a term argument is not itself
+        // logical -- the rule stays first-order. `is_function` only reasons
+        // over promoted (`Base`-scope) axioms, so this needs a file-sourced
+        // load plus an explicit promotion, not a transient `tell`.
+        let mut kb = KnowledgeBase::new();
+        let r = kb.load(
+            crate::types::SourceFile::kif(
+                std::path::PathBuf::from("t.kif"),
+                "(instance AbsoluteValueFn Function)(=> (instance ?X Integer) (greaterThan (AbsoluteValueFn ?X) 0))".to_string(),
+            ),
+            "t.kif",
+        );
+        assert!(r.ok, "ingest failed: {:?}", r.diagnostics);
+        kb.make_session_axiomatic("t.kif").expect("promote");
+        let sid = *r
+            .sids
+            .last()
+            .expect("the => rule ingested as the second root");
+        assert!(!kb.is_higher_order(sid));
     }
 
     #[test]

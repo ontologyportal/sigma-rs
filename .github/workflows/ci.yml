@@ -211,7 +211,74 @@ jobs:
         # production bundle.
         working-directory: packages/vscode
         run: npx --no vsce package --pre-release --no-dependencies
-  
+
+  # -- Web demo: type-check + browser e2e ------------------------------------
+  #
+  # The e2e suites drive a real Chromium against a Vite dev server, which
+  # serves the demo's `sigmakee` workspace dependency -- so unlike the
+  # Node-only vscode job above, this one needs a Rust toolchain to build
+  # packages/sigmakee/dist first. The build script adds the wasm32 target and
+  # installs its own pinned wasm-bindgen, so no extra setup is needed here.
+  #
+  # The Vampire e2e is deliberately not run: it needs an Emscripten build of
+  # Vampire (emsdk + gawk, several minutes) that nothing else in CI produces.
+  web-e2e:
+    name: web-e2e / ubuntu
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: web-e2e-linux
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build the wasm package the demo imports
+        run: npm run build -w sigmakee
+
+      - name: Install Playwright's Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Type-check (vue-tsc + worker tsconfig)
+        run: npm run typecheck -w @sigma/web
+
+      # Boots every tab against the real upstream KB, so it is the slowest
+      # and the only one that needs the network.
+      - name: e2e -- smoke
+        run: npm run test:e2e -w @sigma/web
+
+      - name: e2e -- KB update preferences
+        run: npm run test:e2e:kb-updates -w @sigma/web
+
+      # Local edits (sumo- and url-sourced) must survive a refresh and an
+      # upstream change. Fully mocked -- no live GitHub calls.
+      - name: e2e -- local edits survive upstream updates
+        run: npm run test:e2e:edit-survival -w @sigma/web
+
+      - name: e2e -- version notes dialog
+        run: npm run test:e2e:version -w @sigma/web
+
+      # Every suite screenshots each step, and names a failure's shot
+      # *-FAIL.png -- worth keeping when a run goes red.
+      - name: Upload e2e screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-e2e-shots
+          path: packages/web/e2e/shots/
+          if-no-files-found: ignore
+
   # -- Generalization audit: no LSP leakage into sigmakee-rs-core ---------------------
   audit:
     name: audit / generalization gate

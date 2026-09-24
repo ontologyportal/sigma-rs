@@ -221,6 +221,17 @@ export function scheduleSave(): void {
   saveTimer = setTimeout(save, KB_CACHE_SAVE_DELAY_MS);
 }
 
+/** Write the cache now instead of waiting out the debounce. A deliberate,
+ *  infrequent user action (saving an edit) can afford to await this --
+ *  unlike the debounce this replaces, it can't be lost to a page refresh
+ *  that beats the timer (the `visibilitychange` flush is best-effort: it
+ *  fires `save()` without awaiting it, so it can lose the race against
+ *  teardown too). */
+export async function flushSave(): Promise<void> {
+  clearTimeout(saveTimer);
+  await save();
+}
+
 /** Leaving the page must not lose a pending write -- the whole point of the
  *  cache is the boot after this one. Installs the visibilitychange flush and
  *  returns its remover; the app shell calls this once on mount. */

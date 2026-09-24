@@ -253,13 +253,6 @@ const fileLabel = computed(() => {
   return dirty.value ? `${name} •` : name;
 });
 
-/** Save persists wherever the buffer came from and is offered for both
- *  writable origins -- a `file` upload to OPFS, a `sumo` file to the edit
- *  store. A `url` buffer has nowhere to be saved. */
-const saveHidden = computed(
-  () => !editingTest.value && current.value?.origin.kind === "url",
-);
-
 const rowKey = (r: { name: string; origin: string }) => `${r.origin}:${r.name}`;
 
 // Files the user has already been shown a conflict dialog for; reset when
@@ -391,7 +384,9 @@ async function onSave() {
     const saved =
       origin.kind === "sumo"
         ? `Saved ${name} locally — it stays here until you push it to GitHub.`
-        : `Saved ${name}.`;
+        : origin.kind === "url"
+          ? `Saved ${name} locally — the copy at the source URL is unchanged.`
+          : `Saved ${name}.`;
     saveStatus.set(r.notices.length ? r.notices.join(" | ") : saved);
   } catch (e) {
     saveStatus.fail(e);
@@ -567,7 +562,6 @@ function onJump({ line, col }: { line: number; col: number }) {
             </svg>
           </button>
           <button
-            v-show="!saveHidden"
             type="button"
             :title="
               editingTest

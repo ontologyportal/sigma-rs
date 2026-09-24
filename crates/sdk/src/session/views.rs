@@ -745,12 +745,18 @@ pub struct DocLangView {
 /// Summary counts describing the loaded KB, for an overview page.  The
 /// vocabulary/coverage fields come from `KnowledgeBase::vocab_stats`;
 /// `documented`/`labeled` divide by `symbols` for a coverage percentage.
+/// `rules_first_order` + `rules_higher_order` always sum to `rules` -- a
+/// rule is higher-order when a formula (a relation/operator/predicate-
+/// variable application) occurs anywhere as an argument in its tree; see
+/// `KnowledgeBase::is_higher_order`.
 #[derive(serde::Serialize)]
 pub struct KbStatsView {
     pub files: usize,
     pub symbols: usize,
     pub axioms: usize,
     pub rules: usize,
+    pub rules_first_order: usize,
+    pub rules_higher_order: usize,
     pub classes: usize,
     pub instances: usize,
     pub relations: usize,
@@ -1242,6 +1248,7 @@ impl<L: TopLayer> Session<L> {
 
         let mut axioms = 0usize;
         let mut rules = 0usize;
+        let mut rules_higher_order = 0usize;
         for f in &files {
             for sid in kb.file_roots(f) {
                 axioms += 1;
@@ -1251,10 +1258,14 @@ impl<L: TopLayer> Session<L> {
                         Some(Element::Op(OpKind::Implies | OpKind::Iff))
                     ) {
                         rules += 1;
+                        if kb.is_higher_order(sid) {
+                            rules_higher_order += 1;
+                        }
                     }
                 }
             }
         }
+        let rules_first_order = rules - rules_higher_order;
 
         let doc_langs = |v: Vec<(String, usize)>| -> Vec<DocLangView> {
             v.into_iter()
@@ -1271,6 +1282,8 @@ impl<L: TopLayer> Session<L> {
             symbols,
             axioms,
             rules,
+            rules_first_order,
+            rules_higher_order,
             classes: v.classes,
             instances: v.instances,
             relations: v.relations,
@@ -1742,7 +1755,25 @@ mod tests {
         assert_eq!(v.files, 1);
         assert_eq!(v.axioms, 2);
         assert_eq!(v.rules, 1);
+        assert_eq!(v.rules_first_order, 1);
+        assert_eq!(v.rules_higher_order, 0);
         assert!(v.symbols >= 2, "Dog and Mammal at least; got {}", v.symbols);
+    }
+
+    #[test]
+    fn stats_view_splits_first_order_and_higher_order_rules() {
+        let s = session_with(
+            r#"
+            (instance Relation Class)
+            (=> (instance ?X Dog) (instance ?X Mammal))
+            (=> (instance ?REL Relation) (?REL Fido Fido))
+        "#,
+        );
+        let v = s.stats_view();
+        assert_eq!(v.rules, 2);
+        assert_eq!(v.rules_first_order, 1);
+        assert_eq!(v.rules_higher_order, 1);
+        assert_eq!(v.rules_first_order + v.rules_higher_order, v.rules);
     }
 
     #[test]

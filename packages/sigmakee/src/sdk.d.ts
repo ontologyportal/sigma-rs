@@ -420,12 +420,17 @@ export interface ManPage {
 /** Summary counts describing the loaded KB, as `Session.kb.stats()` returns
  *  them (the raw binding is wasm-bindgen generated, so it is typed `any`
  *  there). `documented`/`labeled` divide by `symbols` for a coverage
- *  percentage. */
+ *  percentage. `rules_first_order` + `rules_higher_order` always sum to
+ *  `rules` -- a rule is higher-order when a formula (a relation/operator/
+ *  predicate-variable application) occurs anywhere as an argument in its
+ *  tree, rather than only nested inside a logical operator's own arguments. */
 export interface KbStats {
   files: number;
   symbols: number;
   axioms: number;
   rules: number;
+  rules_first_order: number;
+  rules_higher_order: number;
   classes: number;
   instances: number;
   relations: number;
