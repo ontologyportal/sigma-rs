@@ -1,101 +1,95 @@
-// The synchronous bridge the wasm engine's Vampire runner calls
-// (`globalThis.__sigmaRunVampireSync`, see crates/wasm/src/vampire.rs).
-//
-// Rust's `ProverRunner::prove` is a synchronous call inside the engine's
-// autoscaling loop, while the Emscripten Vampire is an async JS API -- so the
-// run happens in a page-owned worker (vampire.worker.ts, spawned by
-// services/vampire-host.ts) reached over a MessagePort, and this worker parks
-// on `Atomics.wait` until it signals. That needs SharedArrayBuffer, i.e.
-// cross-origin isolation, which the pthreads-built vampire.wasm already
-// requires (see public/_headers). Blocking this worker for the run matches
-// the native backend, whose `ask` is a synchronous Rust loop on this same
-// worker.
+/** Synchronous bridge shared by the browser's external provers. */
+type Backend = "vampire" | "e";
+const ports: Partial<Record<Backend, MessagePort>> = {};
 
-interface BridgeResult {
-  stdout: string;
-  stderr: string;
-  code: number;
+/** Adopt a replacement port after a timed-out worker has been restarted. */
+export function setVampirePort(
+  port: MessagePort,
+  backend: Backend = "vampire",
+) {
+  ports[backend] = port;
 }
 
-/** Transcript the engine classifies as a timeout (`vampire_proof::is_timeout`). */
-function timeoutTranscript(timeoutMs: number): BridgeResult {
-  return {
-    stdout: "% SZS status Timeout for input\n% Time limit reached!\n",
-    stderr:
-      `bridge: Vampire did not finish within ${timeoutMs} ms; ` +
-      "the Vampire worker was restarted",
-    code: -1,
-  };
-}
-
-let port: MessagePort | null = null;
-
-/** Adopt the port to the page-owned Vampire worker (at boot, and again
- *  after the page restarts that worker). */
-export function setVampirePort(p: MessagePort) {
-  port = p;
-}
-
-/** Ask the page to terminate and respawn the Vampire worker; a fresh port
- *  arrives through {@link setVampirePort} before the next RPC is handled. */
-function requestRestart() {
-  port = null;
-  self.postMessage({ type: "vampire-restart" });
-}
-
-function runSync(tptp: string, args: string, timeoutMs: number): BridgeResult {
+function runSync(
+  backend: Backend,
+  program: string,
+  tptp: string,
+  args: string,
+  timeoutMs: number,
+) {
   if (typeof SharedArrayBuffer === "undefined") {
     throw new Error(
-      "the Vampire (WASM) backend needs cross-origin isolation " +
-        "(COOP/COEP headers) for SharedArrayBuffer, which this deployment " +
-        "does not send. Use the Native backend instead.",
+      "External provers require cross-origin isolation (COOP/COEP headers)",
     );
   }
-  if (!port) {
-    throw new Error(
-      "the Vampire worker is not connected (restarting after a timeout?); " +
-        "try again",
-    );
-  }
+  const port = ports[backend];
+  if (!port) throw new Error("Prover worker is restarting; try again");
+  const restart = () => {
+    delete ports[backend];
+    self.postMessage({ type: "vampire-restart", backend });
+  };
+  const timeout = () => {
+    restart();
+    return {
+      stdout: "% SZS status Timeout for input\n",
+      stderr: "Worker deadline reached",
+      code: -1,
+    };
+  };
   const ctrl = new Int32Array(new SharedArrayBuffer(8));
-  port.postMessage({ type: "run", tptp, args, ctrl: ctrl.buffer });
-
+  port.postMessage({ type: "run", program, tptp, args, ctrl: ctrl.buffer });
   const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : Infinity;
-  // Park until ctrl[0] reaches `state`; false on deadline.
-  const waitFor = (state: number): boolean => {
+  const waitFor = (state: number) => {
     for (;;) {
-      const cur = Atomics.load(ctrl, 0);
-      if (cur === state) return true;
-      const left = deadline - Date.now();
-      if (left <= 0) return false;
-      Atomics.wait(ctrl, 0, cur, Math.min(left, 2_000_000_000));
+      const current = Atomics.load(ctrl, 0);
+      if (current === state) return true;
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return false;
+      Atomics.wait(ctrl, 0, current, Math.min(remaining, 2_000_000_000));
     }
   };
-
-  if (!waitFor(1)) {
-    requestRestart();
-    return timeoutTranscript(timeoutMs);
+  if (!waitFor(1)) return timeout();
+  const length = Atomics.load(ctrl, 1);
+  if (length < 0 || length > 256 * 1024 * 1024) {
+    restart();
+    throw new Error("Prover output exceeded the bridge limit");
   }
-  const len = Atomics.load(ctrl, 1);
-  const data = new SharedArrayBuffer(len);
+  const data = new SharedArrayBuffer(length);
   port.postMessage({ type: "buffer", data });
-  if (!waitFor(2)) {
-    requestRestart();
-    return timeoutTranscript(timeoutMs);
+  if (!waitFor(2)) return timeout();
+  const result = JSON.parse(
+    new TextDecoder().decode(new Uint8Array(data).slice()),
+  );
+  if (result.error) {
+    restart();
+    throw new Error(result.error);
   }
-  // TextDecoder rejects views over shared memory: copy first.
-  const bytes = new Uint8Array(data).slice();
-  const out = JSON.parse(new TextDecoder().decode(bytes));
-  if (out.error) {
-    // A failed instantiation leaves the worker in an unknown state.
-    requestRestart();
-    throw new Error(out.error);
-  }
-  return { stdout: out.stdout, stderr: out.stderr, code: out.code };
+  return result;
 }
 
-export function installVampireBridge(p: MessagePort) {
-  setVampirePort(p);
-  (globalThis as unknown as Record<string, unknown>).__sigmaRunVampireSync =
-    runSync;
+/** Install the backend's synchronous runner globals in the sigma worker. */
+export function installVampireBridge(
+  port: MessagePort,
+  backend: Backend = "vampire",
+) {
+  setVampirePort(port, backend);
+  const global = globalThis as unknown as Record<string, unknown>;
+  if (backend === "e") {
+    global.__sigmaRunEproverSync = (
+      text: string,
+      args: string,
+      timeout: number,
+    ) => runSync("e", "eprover", text, args, timeout);
+    global.__sigmaRunAxfilterSync = (
+      text: string,
+      args: string,
+      timeout: number,
+    ) => runSync("e", "e_axfilter", text, args, timeout);
+  } else {
+    global.__sigmaRunVampireSync = (
+      text: string,
+      args: string,
+      timeout: number,
+    ) => runSync("vampire", "vampire", text, args, timeout);
+  }
 }

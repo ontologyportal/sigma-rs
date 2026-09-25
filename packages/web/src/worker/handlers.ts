@@ -45,8 +45,12 @@ export interface ProverConfig {
   wantProof?: boolean;
   profile?: boolean;
   selectionTolerancePct?: number;
-  backend?: "native" | "vampire";
+  backend?: "native" | "vampire" | "e";
   vampireArgs?: string;
+  selectionBudget?: number;
+  auditAxfilter?: boolean;
+  auditSubsetLimit?: number;
+  selectionTimeLimitSecs?: number;
 }
 
 let session: Session | null = null;
@@ -91,7 +95,12 @@ function makeConfig(o: ProverConfig = {}): Config {
   // The problem text is kept so the page can offer it as a download.
   if (o.backend) cfg.backend = o.backend;
   if (o.vampireArgs != null) cfg.vampireArgs = o.vampireArgs;
-  cfg.keepTptp = o.backend === "vampire";
+  cfg.keepTptp = o.backend === "vampire" || o.backend === "e";
+  if (o.selectionBudget != null) cfg.selectionBudget = o.selectionBudget;
+  if (o.auditAxfilter != null) cfg.auditAxfilter = o.auditAxfilter;
+  if (o.auditSubsetLimit != null) cfg.auditSubsetLimit = o.auditSubsetLimit;
+  if (o.selectionTimeLimitSecs != null)
+    cfg.selectionTimeLimitSecs = o.selectionTimeLimitSecs;
   return cfg;
 }
 

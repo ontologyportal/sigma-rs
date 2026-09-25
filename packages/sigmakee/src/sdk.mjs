@@ -97,6 +97,8 @@ export const Backend = Object.freeze({
    *  {@link installVampireBridge}; the `sigmakee/node` module builds a
    *  `spawnSync` one). */
   Vampire: "vampire",
+  /** E through the page-installed external worker bridge. */
+  E: "e",
   /** Parse / translate / lookup only; proving ops throw. */
   TranslationOnly: "translation",
 });
@@ -270,7 +272,8 @@ export class Session {
    *  the raw `Config.backend` can still pick the prover per call. Returns
    *  `this`. */
   configure(config) {
-    if (this.#backend === Backend.Vampire) config.backend = "vampire";
+    if (this.#backend === Backend.Vampire || this.#backend === Backend.E)
+      config.backend = this.#backend;
     this.#kb.configure?.(config);
     return this;
   }

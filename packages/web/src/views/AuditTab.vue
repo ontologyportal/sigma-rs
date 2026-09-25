@@ -21,6 +21,13 @@ const error = ref("");
 const result = shallowRef<AuditResult | null>(null);
 const backendLabel = ref("");
 
+const subsetSummary = computed(
+  () =>
+    result.value?.raw_output
+      ?.split("\n")
+      .find((line) => line.startsWith("% Subset audit:"))
+      ?.slice(2) || "",
+);
 const badgeClass = computed(() => `audit-status ${result.value?.status || ""}`);
 const backendText = computed(() =>
   backendLabel.value ? `via ${backendLabel.value}` : "",
@@ -53,7 +60,7 @@ const heading = (c: AuditResult["contradictions"][0], i: number) =>
   `Contradiction #${i + 1} — ${c.steps.length} step${c.steps.length === 1 ? "" : "s"}`;
 
 async function runAudit() {
-  const vampire = prover.vampireSelected;
+  const backend = prover.backendLabel;
   auditing.value = true;
   error.value = "";
   try {
@@ -65,7 +72,7 @@ async function runAudit() {
       limit: Math.max(1, Number(auditLimit.value) || 5),
     });
     result.value = res.result;
-    backendLabel.value = vampire ? "Vampire" : "SUPr";
+    backendLabel.value = backend;
   } catch (e) {
     error.value = errMsg(e);
   } finally {
@@ -122,6 +129,7 @@ async function runAudit() {
             <span class="hint">{{ stepsText }}</span>
           </div>
           <div class="hint verdict">{{ verdict }}</div>
+          <p v-if="subsetSummary" class="hint">{{ subsetSummary }}</p>
           <Disclosure summary="raw engine output">
             <pre>{{ rawOutput }}</pre>
           </Disclosure>

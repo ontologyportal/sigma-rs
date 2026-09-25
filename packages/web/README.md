@@ -1,6 +1,44 @@
 # SigmaKEE Web Application
 
-**COMING SOON**
+## E in Ask/Tell and Audit
+
+Open prover settings and choose **E (WASM)**. Set **axiom target** to a
+positive count to select relevant query premises without automatic widening;
+0 keeps the percentage/default selection. Required assertions and seed axioms
+are retained, so the target is not a hard size cap.
+
+For Audit, enable **Audit e_axfilter subsets** to generate symbol-seeded,
+overlapping subsets, then run E on each. Set the maximum audit subsets,
+filter time limit, prover time limit (per subset), and maximum contradictions.
+Repeated proofs with the same supporting premises are deduplicated. Proofs
+retain links to their original KB sentences. Results report attempted and
+pending subsets; a run is not resumable across button clicks.
+
+Finding a contradiction establishes inconsistency. Finding none in selected
+subsets does not establish whole-KB consistency or exhaustive coverage, even
+with a long timeout. Without subset mode, an unscoped audit checks the entire
+KB; the axiom target only affects queries and focused audits.
+
+Build the browser assets with emsdk activated:
+
+```bash
+npm run build --workspace @sigma/eprover
+npm run web
+```
+
+The web startup mirrors E assets automatically and attempts an optional E
+build. `SKIP_EPROVER=1` skips that build and uses existing assets if available.
+Cargo builds native E executables; the browser assets need the separate
+Emscripten build. Cross-origin isolation is required, as for Vampire.
+
+Regression checks:
+
+```bash
+npm test --workspace @sigma/eprover
+npm run test:e2e:eprover --workspace @sigma/web
+```
+
+The browser test requires Playwright Chromium (`npx playwright install chromium`).
 
 ## 3D hierarchy
 

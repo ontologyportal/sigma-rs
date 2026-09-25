@@ -20,6 +20,7 @@
     "lint:fix": "eslint . --fix",
     "lint": "eslint .",
     "test:e2e": "node e2e/smoke.mjs",
+    "test:e2e:eprover": "node e2e/eprover.mjs",
     "test:e2e:vampire": "node e2e/vampire.mjs",
     "test:e2e:version": "node e2e/version-notes.mjs",
     "test:e2e:kb-updates": "node e2e/kb-update-prefs.mjs"

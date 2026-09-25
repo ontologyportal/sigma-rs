@@ -20,6 +20,7 @@ let baseUrl = self.location.href;
 
 interface RunMessage {
   type: "run";
+  program?: "vampire" | "eprover" | "e_axfilter";
   tptp: string;
   args: string;
   ctrl: SharedArrayBuffer;
@@ -36,19 +37,28 @@ async function run(m: RunMessage) {
     // `@vite-ignore`: the runner is a static passthrough asset (mirrored from
     // @sigma/vampire) that is legitimately absent from builds that skipped
     // the Emscripten step; a bundler-resolved import would fail the build.
-    const url = new URL("vampire/vampire-runner.js", baseUrl).href;
-    const { runVampire } = await import(/* @vite-ignore */ url);
-    const r = await runVampire(m.tptp, m.args, {});
-    out = { stdout: r.stdout ?? "", stderr: r.stderr ?? "", code: r.code ?? 0 };
+    if (m.program === "eprover" || m.program === "e_axfilter") {
+      const url = new URL("eprover/runner.mjs", baseUrl).href;
+      const { runE } = await import(/* @vite-ignore */ url);
+      out = await runE(m.tptp, m.args, m.program, url);
+    } else {
+      const url = new URL("vampire/vampire-runner.js", baseUrl).href;
+      const { runVampire } = await import(/* @vite-ignore */ url);
+      const r = await runVampire(m.tptp, m.args, {});
+      out = {
+        stdout: r.stdout ?? "",
+        stderr: r.stderr ?? "",
+        code: r.code ?? 0,
+      };
+    }
   } catch (err) {
     const msg = (err as Error)?.message || String(err);
     out = {
       stdout: "",
       stderr: "",
       code: -1,
-      error: /vampire-runner|Failed to fetch|import/.test(msg)
-        ? "The Vampire (WASM) backend is not included in this deployment " +
-          "(@sigma/vampire output missing). Use the Native backend instead."
+      error: /runner|Failed to fetch|import/.test(msg)
+        ? `The ${m.program || "vampire"} WASM assets could not be loaded. Build the corresponding prover package. ${msg}`
         : msg,
     };
   }

@@ -1546,12 +1546,14 @@ impl<T: sigmakee_rs_core::HasTranslation + 'static>
     /// [`AuditResultView`]).
     pub fn audit_view(&self, opts: sigmakee_rs_core::ExternalOpts) -> AuditResultView {
         let result = self.kb.audit_consistency(&[], opts, 1);
-        let proofs: Vec<Vec<KifProofStep>> =
-            if result.status == ProverStatus::Inconsistent && !result.proof_kif.is_empty() {
-                vec![result.proof_kif]
-            } else {
-                result.contradiction_proofs
-            };
+        let proofs: Vec<Vec<KifProofStep>> = if result.contradiction_proofs.is_empty()
+            && result.status == ProverStatus::Inconsistent
+            && !result.proof_kif.is_empty()
+        {
+            vec![result.proof_kif]
+        } else {
+            result.contradiction_proofs
+        };
         AuditResultView::project(
             &self.kb,
             result.status,

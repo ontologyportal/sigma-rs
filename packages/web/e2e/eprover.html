@@ -1,0 +1,28 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>E integration test</title>
+  </head>
+  <body>
+    <main id="settings"></main>
+    <script type="module">
+      import { createApp, h } from "vue";
+      import { createPinia, setActivePinia } from "pinia";
+      import ProverSettings from "../src/components/ProverSettings.vue";
+      import { useProverStore } from "../src/stores/prover";
+      import * as rpc from "../src/services/sigma";
+      const pinia = createPinia();
+      setActivePinia(pinia);
+      createApp({ render: () => h(ProverSettings) })
+        .use(pinia)
+        .mount("#settings");
+      const store = useProverStore();
+      store.settingsOpen = true;
+      window.prover = store;
+      window.rpc = rpc;
+      rpc.connectVampire(new URL("../", location.href).href);
+      window.ready = rpc.call("boot");
+    </script>
+  </body>
+</html>

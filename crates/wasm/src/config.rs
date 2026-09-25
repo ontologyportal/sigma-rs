@@ -5,7 +5,7 @@ use wasm_bindgen::prelude::*;
 
 // -- Config --------------------------------------------------------------------
 
-/// Native-prover configuration exposed to JavaScript.
+/// Prover configuration exposed to JavaScript.
 ///
 /// A wasm-bindgen property surface over the SDK's
 /// [`NativeProverConfig`] (the serde-able subset of
@@ -34,16 +34,23 @@ pub struct Config {
     backend: Backend,
     vampire_args: String,
     keep_tptp: bool,
+    pub(crate) selection_budget: u32,
+    pub(crate) audit_axfilter: bool,
+    pub(crate) audit_subset_limit: u32,
+    pub(crate) selection_time_limit_secs: u32,
 }
 
 /// Which prover a [`Session`](crate::Session) ask runs against.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Backend {
     /// The in-process saturation prover.
+    #[default]
     Native,
     /// The Emscripten Vampire, through the page-installed bridge (see
     /// [`crate::vampire`]).
     Vampire,
+    /// E through the browser worker bridge.
+    E,
 }
 
 impl Config {
@@ -69,6 +76,10 @@ impl Config {
         if let Some(pct) = self.selection_tolerance_pct {
             opts.selection = sigmakee_rs_core::SineParams::auto_pct(axiom_count, pct);
         }
+        if self.selection_budget > 0 {
+            opts.selection = sigmakee_rs_core::SineParams::auto(self.selection_budget as usize);
+            opts.selection.autoscale = false;
+        }
         opts
     }
 
@@ -83,6 +94,10 @@ impl Config {
         let mut opts = self.inner.to_native_opts();
         if let Some(pct) = self.selection_tolerance_pct {
             opts.selection = sigmakee_rs_core::SineParams::auto_pct(axiom_count, pct);
+        }
+        if self.selection_budget > 0 {
+            opts.selection = sigmakee_rs_core::SineParams::auto(self.selection_budget as usize);
+            opts.selection.autoscale = false;
         }
         opts
     }
@@ -107,17 +122,22 @@ impl Config {
             backend: Backend::Native,
             vampire_args: String::new(),
             keep_tptp: false,
+            selection_budget: 0,
+            audit_axfilter: false,
+            audit_subset_limit: 20,
+            selection_time_limit_secs: 10,
         }
     }
 
     /// Which prover `ask` / `auditConsistency` run: `"native"` (default) or
-    /// `"vampire"` (the Emscripten Vampire behind the page's bridge).  Any
+    /// `"vampire"` or `"e"` (through the page's worker bridge). Any
     /// other value is rejected.
     #[wasm_bindgen(getter)]
     pub fn backend(&self) -> String {
         match self.backend {
             Backend::Native => "native".into(),
             Backend::Vampire => "vampire".into(),
+            Backend::E => "e".into(),
         }
     }
     #[wasm_bindgen(setter)]
@@ -125,13 +145,55 @@ impl Config {
         self.backend = match v {
             "native" => Backend::Native,
             "vampire" => Backend::Vampire,
+            "e" => Backend::E,
             other => {
                 return Err(JsValue::from_str(&format!(
-                    "unknown backend {other:?}: expected \"native\" or \"vampire\""
+                    "unknown backend {other:?}: expected \"native\", \"vampire\", or \"e\""
                 )))
             }
         };
         Ok(())
+    }
+
+    /// Axiom selection target. Zero keeps the percentage/default setting.
+    /// A positive target disables automatic widening. Required premises remain included.
+    #[wasm_bindgen(getter = selectionBudget)]
+    pub fn selection_budget_js(&self) -> u32 {
+        self.selection_budget
+    }
+    #[wasm_bindgen(setter = selectionBudget)]
+    pub fn set_selection_budget(&mut self, value: u32) {
+        self.selection_budget = value;
+    }
+
+    /// Use symbol-seeded e_axfilter subsets for E consistency audits.
+    #[wasm_bindgen(getter = auditAxfilter)]
+    pub fn audit_axfilter_js(&self) -> bool {
+        self.audit_axfilter
+    }
+    #[wasm_bindgen(setter = auditAxfilter)]
+    pub fn set_audit_axfilter(&mut self, value: bool) {
+        self.audit_axfilter = value;
+    }
+
+    /// Maximum number of distinct generated subsets to audit.
+    #[wasm_bindgen(getter = auditSubsetLimit)]
+    pub fn audit_subset_limit_js(&self) -> u32 {
+        self.audit_subset_limit
+    }
+    #[wasm_bindgen(setter = auditSubsetLimit)]
+    pub fn set_audit_subset_limit(&mut self, value: u32) {
+        self.audit_subset_limit = value.clamp(1, 1000);
+    }
+
+    /// Wall-clock deadline for e_axfilter, in seconds.
+    #[wasm_bindgen(getter = selectionTimeLimitSecs)]
+    pub fn selection_time_limit_secs_js(&self) -> u32 {
+        self.selection_time_limit_secs
+    }
+    #[wasm_bindgen(setter = selectionTimeLimitSecs)]
+    pub fn set_selection_time_limit_secs(&mut self, value: u32) {
+        self.selection_time_limit_secs = value.clamp(1, 3600);
     }
 
     /// Extra Vampire CLI text appended after the fixed arguments (Vampire
@@ -145,8 +207,8 @@ impl Config {
         self.vampire_args = v;
     }
 
-    /// Keep the exact problem text handed to Vampire on the last run and
-    /// return it as the result's `input_tptp` (Vampire backend only).
+    /// Keep the problem text handed to the external backend on the last run.
+    /// Filtered audits retain the input used to generate subsets.
     #[wasm_bindgen(getter = keepTptp)]
     pub fn keep_tptp_js(&self) -> bool {
         self.keep_tptp
@@ -222,7 +284,7 @@ impl Config {
     /// own default budget (a fixed axiom count, not a percentage -- see
     /// `SineParams::default`) instead of a KB-relative one; `100` emits the
     /// whole KB with no selection. Applies to BOTH the
-    /// native backend and Vampire, as the autoscaling loop's starting
+    /// native backend, Vampire, and E, as the autoscaling loop's starting
     /// budget (it may still widen from there).
     #[wasm_bindgen(getter = selectionTolerancePct)]
     pub fn selection_tolerance_pct(&self) -> Option<f64> {
@@ -231,5 +293,34 @@ impl Config {
     #[wasm_bindgen(setter = selectionTolerancePct)]
     pub fn set_selection_tolerance_pct(&mut self, v: Option<f64>) {
         self.selection_tolerance_pct = v;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explicit_selection_target_overrides_percentage_for_all_backends() {
+        let mut config = Config::new();
+        config.set_selection_tolerance_pct(Some(100.0));
+        config.set_selection_budget(7);
+        config.set_backend("e").unwrap();
+        assert_eq!(config.selected_backend(), Backend::E);
+        let external = config.to_external_opts(100);
+        let native = config.to_native_opts(100);
+        assert_eq!(external.selection.auto_budget, Some(7));
+        assert_eq!(native.selection.auto_budget, Some(7));
+        assert!(!external.selection.autoscale);
+        assert!(!native.selection.autoscale);
+    }
+
+    #[test]
+    fn filter_limits_are_bounded() {
+        let mut config = Config::new();
+        config.set_audit_subset_limit(0);
+        config.set_selection_time_limit_secs(u32::MAX);
+        assert_eq!(config.audit_subset_limit, 1);
+        assert_eq!(config.selection_time_limit_secs, 3600);
     }
 }

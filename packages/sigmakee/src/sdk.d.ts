@@ -84,6 +84,7 @@ export const Backend: {
   /** Vampire through the engine's external prover layer and the
    *  `__sigmaRunVampireSync` bridge (see {@link installVampireBridge}). */
   readonly Vampire: "vampire";
+  readonly E: "e";
   readonly TranslationOnly: "translation";
 };
 export type Backend = (typeof Backend)[keyof typeof Backend];

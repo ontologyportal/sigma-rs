@@ -90,15 +90,27 @@ Then clone this repository:
 git clone https://github.com/ontologyportal/sigma-rs && cd sigma-rs
 ```
 
-Compile everything (Cargo fetches the Vampire C++ bindings directly from their git repo as an 
-ordinary dependency):
+Compile the CLI and its native provers (Cargo fetches Vampire's C++ bindings,
+and the default bundled-eprover feature fetches and builds pinned E sources):
 
 ```bash
 cargo build --release --bin sumo
 ```
 
-For **Windows**, you have to exclude the `integrated-prover`
-feature:
+On Linux, macOS, and WSL, this also places `eprover` and `e_axfilter` beside
+`sumo` in `target/release/`. The CLI discovers sibling prover executables
+automatically. The first E build needs git, a C compiler (`cc`), GNU make,
+Python 3, and tar, plus network access to fetch the source. Later builds reuse
+cached outputs. No npm or Emscripten installation is needed for this native build.
+
+Use `SKIP_EPROVER=1 cargo build --release --bin sumo` to use an independently
+installed E instead. Cross-compilation also requires this opt-out and an E
+binary built separately for the target. If copying `sumo` to another machine
+or directory, copy `eprover`, `e_axfilter`, and `eprover-COPYING` alongside it;
+`cargo install` does not install these companion files automatically.
+
+For **Windows**, you have to exclude the `integrated-prover` and
+`bundled-eprover` features:
 
 ```powershell
 cargo build --release --bin sumo --no-default-features --features ask,parallel,alloc-mi
@@ -255,6 +267,7 @@ for the `core` crate.
 | `packages/sigmakee` (`sigmakee`) | yes | The publishable wasm package: `crates/wasm` built with `wasm-bindgen`, plus the SDK-shaped `./sdk` facade |
 | `packages/web` (`@sigma/web`) | no | The SUMO browser demo site (Vite); consumes `sigmakee` as a workspace dependency |
 | `packages/vampire` (`@sigma/vampire`) | no | Emscripten build of the Vampire prover, for the optional in-browser "Vampire (WASM)" backend |
+| `packages/eprover` (`@sigma/eprover`) | no | Native and Emscripten builds of E and e_axfilter, including browser subset audits |
 | `packages/language` (`@sigma/language`) | no | Editor-neutral SUO-KIF / TPTP language assets shared by the web app and the VSCode extension |
 | `packages/vscode` (`sigmakee-vscode`) | not yet | VSCode integration for SigmaKEE
 

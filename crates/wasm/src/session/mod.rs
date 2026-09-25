@@ -21,7 +21,7 @@ use std::sync::Arc;
 use sigmakee_rs_sdk::{ExternalProverLayer, KnowledgeBase, Prover, ProverLayer, TranslationLayer};
 use wasm_bindgen::prelude::*;
 
-use crate::vampire::WasmVampireRunner;
+use crate::vampire::WasmExternalRunner;
 use crate::Config;
 
 /// The layer stack behind the wasm facade: the external layer (driving the
@@ -46,7 +46,7 @@ pub struct Session {
     config: Config,
     /// The runner installed in the external layer, kept here so the last
     /// problem text can be read back after an ask.
-    pub(crate) vampire: Arc<WasmVampireRunner>,
+    pub(crate) runner: Arc<WasmExternalRunner>,
 }
 
 #[wasm_bindgen]
@@ -63,18 +63,18 @@ impl Session {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
         let config = Config::new();
-        let vampire = Arc::new(WasmVampireRunner::default());
+        let runner = Arc::new(WasmExternalRunner::default());
         Self {
             // Explicit session name: `from_kb(.., None)` generates one from
             // `SystemTime::now()`, which panics on wasm32-unknown-unknown.
             session: std::sync::Arc::new(std::sync::RwLock::new(
                 sigmakee_rs_sdk::Session::from_kb(
-                    KnowledgeBase::new_external_native(Prover::Custom(vampire.clone())),
+                    KnowledgeBase::new_external_native(Prover::Custom(runner.clone())),
                     Some(WASM_SESSION.to_string()),
                 ),
             )),
             config,
-            vampire,
+            runner,
         }
     }
 
@@ -91,13 +91,10 @@ impl Session {
     /// the external layer -- after a config change, and after a restore
     /// (which rebuilds the stack with no runner).
     pub(crate) fn install_runner(&mut self) {
-        self.vampire = Arc::new(WasmVampireRunner::new(
-            self.config.vampire_args().to_string(),
-            self.config.keep_tptp(),
-        ));
+        self.runner = Arc::new(WasmExternalRunner::new(&self.config));
         self.session
             .write()
             .expect("kb lock not poisoned")
-            .set_runner(Prover::Custom(self.vampire.clone()));
+            .set_runner(Prover::Custom(self.runner.clone()));
     }
 }

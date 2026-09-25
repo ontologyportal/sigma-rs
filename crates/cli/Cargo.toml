@@ -22,7 +22,10 @@ path = "src/lib.rs"
 # every `span()` is a no-op, so this flag carries no cost in
 # non-profiling runs. Also enables JSON RPC API used for language
 # server
-default = ["parallel", "integrated-prover", "alloc-mi"]
+default = ["parallel", "integrated-prover", "bundled-eprover", "alloc-mi"]
+
+# Build native E and e_axfilter beside sumo on the build host.
+bundled-eprover = ["ask"]
 
 # Pure-Rust path with subprocess prover: translate / validate / load
 # PLUS ask / test, running against an external `vampire` binary.

@@ -216,7 +216,16 @@ impl<T: HasTranslation + 'static> ProvingLayer for ExternalProverLayer<T> {
         opts: &Self::Opts,
         ctx: &crate::ProveCtx,
     ) -> super::result::ProverResult {
-        self.ext_check_consistency(opts, ctx)
+        self.ext_check_consistency(&[], opts, ctx)
+    }
+    fn audit_consistency(
+        &self,
+        focus: &[SentenceId],
+        opts: &Self::Opts,
+        _limit: usize,
+        ctx: &ProveCtx,
+    ) -> ProverResult {
+        self.ext_check_consistency(focus, opts, ctx)
     }
 }
 

@@ -13,6 +13,7 @@ const prover = useProverStore();
         <select id="proverBackend" v-model="prover.backend">
           <option value="native">SUPr</option>
           <option value="vampire">Vampire</option>
+          <option value="e">E</option>
         </select>
         <div class="hint sub">{{ prover.backendHint }}</div>
       </div>
@@ -38,7 +39,7 @@ const prover = useProverStore();
         />
         <div class="hint sub">0 = no wall-clock limit</div>
       </div>
-      <div v-if="!prover.vampireSelected">
+      <div v-if="!prover.externalSelected">
         <label for="cfgMaxSteps">max steps</label>
         <input
           id="cfgMaxSteps"
@@ -49,7 +50,7 @@ const prover = useProverStore();
         />
         <div class="hint sub">given-clause loop budget</div>
       </div>
-      <div v-if="!prover.vampireSelected">
+      <div v-if="!prover.externalSelected">
         <label for="cfgMaxLits">max literals</label>
         <input
           id="cfgMaxLits"
@@ -72,6 +73,57 @@ const prover = useProverStore();
         />
         <div class="hint sub">{{ prover.selectionPctLabel }}</div>
       </div>
+      <div>
+        <label for="cfgSelectionBudget">axiom target</label>
+        <input
+          id="cfgSelectionBudget"
+          type="number"
+          min="0"
+          step="100"
+          v-model.number="prover.cfg.selectionBudget"
+        />
+        <div class="hint sub">
+          0 uses the percentage/default. A positive target disables widening.
+          Required assertions and seed axioms are retained, so this is not a
+          hard cap. Unscoped audits still check the whole KB unless E subset
+          auditing is enabled.
+        </div>
+      </div>
+      <div v-if="prover.backend === 'e'">
+        <label class="check"
+          ><input
+            id="cfgAuditAxfilter"
+            type="checkbox"
+            v-model="prover.cfg.auditAxfilter"
+          />
+          Audit e_axfilter subsets</label
+        >
+        <div class="hint sub">
+          Checks overlapping symbol-seeded subsets. Finding none does not
+          establish whole-KB consistency.
+        </div>
+      </div>
+      <div v-if="prover.backend === 'e' && prover.cfg.auditAxfilter">
+        <label for="cfgSubsetLimit">maximum audit subsets</label>
+        <input
+          id="cfgSubsetLimit"
+          type="number"
+          min="1"
+          max="1000"
+          v-model.number="prover.cfg.auditSubsetLimit"
+        />
+        <label for="cfgSelectionTime">filter time limit (s)</label>
+        <input
+          id="cfgSelectionTime"
+          type="number"
+          min="1"
+          max="3600"
+          v-model.number="prover.cfg.selectionTimeLimitSecs"
+        />
+        <div class="hint sub">
+          The prover time limit applies separately to each subset.
+        </div>
+      </div>
       <div v-if="prover.vampireSelected">
         <label for="cfgVampireArgs">extra CLI args</label>
         <input
@@ -86,7 +138,7 @@ const prover = useProverStore();
         </div>
       </div>
     </div>
-    <div v-if="!prover.vampireSelected" class="settings-checks">
+    <div v-if="!prover.externalSelected" class="settings-checks">
       <label class="check"
         ><input
           id="cfgForwardClose"

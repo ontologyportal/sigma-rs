@@ -19,9 +19,13 @@ export interface ProverConfig {
   profile?: boolean;
   selectionTolerancePct?: number;
   /** Which prover runs the query; the worker's Config carries it. */
-  backend?: "native" | "vampire";
+  backend?: "native" | "vampire" | "e";
   /** Raw extra CLI text for the Vampire backend. */
   vampireArgs?: string;
+  selectionBudget?: number;
+  auditAxfilter?: boolean;
+  auditSubsetLimit?: number;
+  selectionTimeLimitSecs?: number;
 }
 
 /** The Config knobs with every field present. */
@@ -33,6 +37,10 @@ export interface ProverKnobs {
   wantProof: boolean;
   profile: boolean;
   selectionTolerancePct: number;
+  selectionBudget: number;
+  auditAxfilter: boolean;
+  auditSubsetLimit: number;
+  selectionTimeLimitSecs: number;
 }
 
 // One descriptor per Config knob, driving the form, the summary and the
@@ -49,6 +57,10 @@ const CFG_KNOBS = [
   // searches the whole KB, same as the old standalone "disable axiom
   // selection" toggle.
   { key: "selectionTolerancePct", dflt: 0 },
+  { key: "selectionBudget", dflt: 0 },
+  { key: "auditAxfilter", dflt: false },
+  { key: "auditSubsetLimit", dflt: 20 },
+  { key: "selectionTimeLimitSecs", dflt: 10 },
 ] as const;
 
 const CFG_DEFAULTS = Object.fromEntries(
@@ -60,7 +72,7 @@ export const useProverStore = defineStore("prover", {
     /** The Config knobs; the settings form v-models straight onto these. */
     cfg: { ...CFG_DEFAULTS } as ProverKnobs,
     /** Which backend Ask/Tell and Audit prove against. */
-    backend: "native" as "native" | "vampire",
+    backend: "native" as "native" | "vampire" | "e",
     /** Vampire's raw extra CLI args (advanced knob; the native-backend knobs
      *  sit beside it in the panel but don't apply to it). */
     vampireArgs: "",
@@ -87,6 +99,13 @@ export const useProverStore = defineStore("prover", {
   }),
   getters: {
     vampireSelected: (state) => state.backend === "vampire",
+    externalSelected: (state) => state.backend !== "native",
+    backendLabel: (state) =>
+      state.backend === "e"
+        ? "E"
+        : state.backend === "vampire"
+          ? "Vampire"
+          : "SUPr",
     /** One-line summary next to the cog, so non-default settings are visible
      *  without opening the panel. */
     cfgSummary: (state) => {
@@ -101,16 +120,16 @@ export const useProverStore = defineStore("prover", {
     selectionPctLabel: (state) => {
       const pct = Number(state.cfg.selectionTolerancePct);
       return pct === 0
-        ? "engine default — % of axioms a query-relevant selection may admit (also applies to Vampire; 100% searches the whole KB)"
-        : `${pct}% of axioms admitted into a query-relevant selection (also applies to Vampire; 100% searches the whole KB)`;
+        ? "engine default — % of axioms a query-relevant selection may admit (applies to all provers; 100% searches the whole KB)"
+        : `${pct}% of axioms admitted into a query-relevant selection (applies to all provers; 100% searches the whole KB)`;
     },
     /** Vampire is a fixed-strategy refutation search, not a tunable
      *  given-clause loop -- most of the native backend's knobs are silently
      *  ignored if sent to it, so the panel greys them out and shows Vampire's
      *  own knob (raw CLI args) instead. */
     backendHint: (state) =>
-      state.backend === "vampire"
-        ? "Vampire is a fixed refutation search — only time limit, selection budget, and extra CLI args apply."
+      state.backend !== "native"
+        ? "External provers use the time limit and selection budget. Native given-clause controls do not apply."
         : "given-clause knobs below apply to the native backend only",
   },
   actions: {
@@ -143,6 +162,8 @@ export const useProverStore = defineStore("prover", {
      *  proof, use-SUMO) to its default -- the panel's "Reset to defaults". */
     reset() {
       Object.assign(this.cfg, CFG_DEFAULTS);
+      this.backend = "native";
+      this.vampireArgs = "";
       this.proofLang = "kif";
       this.plainProof = false;
       this.useSumo = false;

@@ -74,3 +74,24 @@ if (vampireOk && vampireComplete) {
     "==> @sigma/vampire output is incomplete or stale; not mirroring it",
   );
 }
+
+// E and its axiom filter share the same optional static-asset lifecycle.
+const eDist = join(REPO_ROOT, "packages", "eprover", "dist");
+const ePublic = join(WEB_DIR, "public", "eprover");
+const eOk = process.env.SKIP_EPROVER === "1" || build("@sigma/eprover");
+const eFiles = [
+  "eprover.js",
+  "eprover.wasm",
+  "e_axfilter.js",
+  "e_axfilter.wasm",
+  "runner.mjs",
+  "COPYING",
+];
+rmSync(ePublic, { recursive: true, force: true });
+if (eOk && eFiles.every((file) => existsSync(join(eDist, file)))) {
+  cpSync(eDist, ePublic, { recursive: true });
+} else {
+  console.warn(
+    "==> E WASM assets are unavailable; the other backends remain available.",
+  );
+}

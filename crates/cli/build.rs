@@ -19,9 +19,9 @@
 // without changing the threat model: a tampered binary can always
 // lie about its provenance.  This is for ergonomics, not security.
 
-use std::env;
+use std::{env, error::Error, path::PathBuf, process::Command};
 
-fn main() {
+fn main() -> Result<(), Box<dyn Error>> {
     // The release CI exports SUMO_BUILD_KIND=release before
     // invoking `cargo build`.  Everything else (developer machines,
     // CI test runs, `cargo install --path .`) leaves it unset and
@@ -73,4 +73,39 @@ fn main() {
     // this is always set, never an Option.
     let target = env::var("TARGET").expect("Cargo always sets TARGET for build scripts");
     println!("cargo:rustc-env=SUMO_BUILD_TARGET={}", target);
+    println!("cargo:rerun-if-env-changed=SKIP_EPROVER");
+    println!("cargo:rerun-if-env-changed=EPROVER_REBUILD");
+    println!("cargo:rerun-if-env-changed=EPROVER_JOBS");
+    println!("cargo:rerun-if-changed=../../packages/eprover/build.sh");
+    if env::var_os("CARGO_FEATURE_BUNDLED_EPROVER").is_some()
+        && env::var("SKIP_EPROVER").as_deref() != Ok("1")
+    {
+        if env::var("HOST")? != target || env::var("CARGO_CFG_TARGET_FAMILY")? != "unix" {
+            return Err("bundled-eprover requires a native Unix build; set SKIP_EPROVER=1 and provide E separately for this target".into());
+        }
+        let manifest =
+            PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").ok_or("missing manifest directory")?);
+        let out = PathBuf::from(env::var_os("OUT_DIR").ok_or("missing Cargo output directory")?);
+        let bin_dir = out
+            .ancestors()
+            .nth(3)
+            .ok_or("unexpected Cargo output layout")?;
+        let status = Command::new("bash")
+            .arg(manifest.join("../../packages/eprover/build.sh"))
+            .arg("--native")
+            .arg(bin_dir)
+            .status()?;
+        if !status.success() {
+            return Err("native E build failed (requires git, a C compiler, make, Python 3, and tar); use SKIP_EPROVER=1 to opt out".into());
+        }
+        for binary in [
+            "eprover",
+            "e_axfilter",
+            "eprover-COPYING",
+            ".eprover-built-key",
+        ] {
+            println!("cargo:rerun-if-changed={}", bin_dir.join(binary).display());
+        }
+    }
+    Ok(())
 }

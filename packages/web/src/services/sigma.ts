@@ -41,14 +41,18 @@ let vampireBaseUrl = location.href;
 /** Spawn the Vampire worker and hand the sigma worker its port. */
 export function connectVampire(baseUrl: string) {
   vampireBaseUrl = baseUrl;
-  const port = spawnVampireWorker(baseUrl);
-  worker.postMessage({ cmd: "vampirePort", args: { port } }, [port]);
+  for (const backend of ["vampire", "e"] as const) {
+    const port = spawnVampireWorker(baseUrl, backend);
+    worker.postMessage({ cmd: "vampirePort", args: { port, backend } }, [port]);
+  }
 }
 
 worker.onmessage = (e) => {
   // The sigma worker's bridge gave up on a Vampire run: replace the worker.
   if (e.data?.type === "vampire-restart") {
-    connectVampire(vampireBaseUrl);
+    const backend = e.data.backend === "e" ? "e" : "vampire";
+    const port = spawnVampireWorker(vampireBaseUrl, backend);
+    worker.postMessage({ cmd: "vampirePort", args: { port, backend } }, [port]);
     return;
   }
   const { id, result, error } = e.data;

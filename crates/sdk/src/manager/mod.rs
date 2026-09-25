@@ -1416,7 +1416,7 @@ fn parse_bool(v: &str) -> bool {
 /// * unset (empty) → fall back to `default_name` (the conventional binary name);
 /// * absolute → it must exist as given;
 /// * relative (including a bare name) → try `<systems_dir>/<path>` first (when
-///   `systems_dir` is set), then search each `$PATH` entry.
+///   `systems_dir` is set), then beside the running executable, then `$PATH`.
 ///
 /// Returns the first existing candidate, or `None` if nothing resolves.
 fn resolve_executable(
@@ -1434,11 +1434,19 @@ fn resolve_executable(
         return target.is_file().then(|| target.to_path_buf());
     }
 
-    // Relative: systemsDir first (when configured), then $PATH.
+    // Relative: systemsDir, bundled sibling binaries, then PATH.
     if !systems_dir.as_os_str().is_empty() {
         let candidate = systems_dir.join(target);
         if candidate.is_file() {
             return Some(candidate);
+        }
+    }
+    if let Ok(executable) = std::env::current_exe() {
+        if let Some(dir) = executable.parent() {
+            let candidate = dir.join(target);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
         }
     }
     let path_var = std::env::var_os("PATH")?;
@@ -2342,6 +2350,37 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(m.resolve_vampire().unwrap(), bin);
+    }
+
+    #[test]
+    fn executable_resolves_beside_running_binary() {
+        let executable = std::env::current_exe().unwrap();
+        let name = executable.file_name().unwrap().to_str().unwrap();
+        assert_eq!(
+            resolve_executable(Path::new(""), name, Path::new("")),
+            Some(executable.clone())
+        );
+        assert_eq!(
+            resolve_executable(Path::new(name), "unused", Path::new("")),
+            Some(executable)
+        );
+    }
+
+    #[test]
+    fn systems_directory_takes_precedence_over_bundled_binary() {
+        let executable = std::env::current_exe().unwrap();
+        let name = executable.file_name().unwrap().to_str().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let candidate = dir.path().join(name);
+        std::fs::write(&candidate, b"test").unwrap();
+        assert_eq!(
+            resolve_executable(Path::new(""), name, dir.path()),
+            Some(candidate)
+        );
+        assert_eq!(
+            resolve_executable(&dir.path().join("missing"), name, Path::new("")),
+            None
+        );
     }
 
     #[cfg(feature = "native-prover")]

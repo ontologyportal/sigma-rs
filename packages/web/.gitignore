@@ -2,3 +2,5 @@
 worker-dist/
 dist/
 e2e/shots/
+
+/public/eprover/

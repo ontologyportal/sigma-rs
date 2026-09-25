@@ -111,11 +111,11 @@ impl Session {
                     dialect,
                 ))
             }
-            Backend::Vampire => {
+            Backend::Vampire | Backend::E => {
                 let opts = self.config.to_external_opts(axiom_count);
                 let mut view =
                     session_guard.ask_view_dialect(query, session.as_deref(), &opts, dialect);
-                view.input_tptp = self.vampire.last_tptp();
+                view.input_tptp = self.runner.last_tptp();
                 to_js(&view)
             }
         }
@@ -147,6 +147,7 @@ impl Session {
     /// [`Config`]: crate::Config
     #[wasm_bindgen(js_name = auditConsistency)]
     pub fn audit_consistency(&self, limit: Option<u32>) -> Result<JsValue, JsValue> {
+        self.runner.set_audit_limit(limit.unwrap_or(5) as usize);
         let session_guard = self.session.read().expect("kb lock not poisoned");
         let axiom_count = session_guard.kb().sine_axiom_count();
         match self.config.selected_backend() {
@@ -154,8 +155,10 @@ impl Session {
                 let opts = self.config.to_native_opts(axiom_count);
                 to_js(&session_guard.audit_view_native(opts, limit.unwrap_or(5) as usize))
             }
-            Backend::Vampire => {
+            Backend::Vampire | Backend::E => {
                 let opts = self.config.to_external_opts(axiom_count);
+                self.runner
+                    .set_selection_budget(opts.selection.auto_budget.unwrap_or(axiom_count));
                 to_js(&session_guard.audit_view(opts))
             }
         }
