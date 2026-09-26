@@ -4,6 +4,7 @@ import { call } from "../services/sigma";
 import { errMsg } from "../utils/format";
 import { useProverStore } from "../stores/prover";
 import BusyButton from "../components/BusyButton.vue";
+import { useElapsed } from "../composables/useElapsed";
 import Card from "../components/Card.vue";
 import Disclosure from "../components/Disclosure.vue";
 import ProofView from "../components/ProofView.vue";
@@ -14,6 +15,12 @@ const prover = useProverStore();
 
 const auditLimit = ref(5);
 const auditing = ref(false);
+const runLimitSecs = ref(0);
+const {
+  label: elapsedLabel,
+  fraction: elapsedFraction,
+  lastLabel: tookLabel,
+} = useElapsed(auditing);
 const error = ref("");
 
 // The raw result + backend label, kept so the proof-language/plain-proof
@@ -54,12 +61,13 @@ const heading = (c: AuditResult["contradictions"][0], i: number) =>
 
 async function runAudit() {
   const vampire = prover.vampireSelected;
+  // Audit inherits the Ask/Tell prover settings (including backend and
+  // time limit) via the shared settings panel both tabs toggle.
+  const config = prover.config();
+  runLimitSecs.value = config.timeLimitSecs ?? 0;
   auditing.value = true;
   error.value = "";
   try {
-    // Audit inherits the Ask/Tell prover settings (including backend and
-    // time limit) via the shared settings panel both tabs toggle.
-    const config = prover.config();
     const res = await call("audit", {
       config,
       limit: Math.max(1, Number(auditLimit.value) || 5),
@@ -95,7 +103,8 @@ async function runAudit() {
           <BusyButton
             :busy="auditing"
             label="Run audit"
-            busy-label="Auditing…"
+            :busy-label="`Auditing… ${elapsedLabel(runLimitSecs)}`"
+            :progress="elapsedFraction(runLimitSecs)"
             @click="runAudit"
           />
           <button
@@ -120,6 +129,9 @@ async function runAudit() {
             <span :class="badgeClass">{{ result.status }}</span>
             <span class="hint">{{ backendText }}</span>
             <span class="hint">{{ stepsText }}</span>
+            <span v-if="tookLabel" class="hint" title="Wall-clock time">{{
+              tookLabel
+            }}</span>
           </div>
           <div class="hint verdict">{{ verdict }}</div>
           <Disclosure summary="raw engine output">

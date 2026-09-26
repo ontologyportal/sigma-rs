@@ -16,6 +16,7 @@ import { downloadText, errMsg } from "../utils/format";
 import { useProverStore } from "../stores/prover";
 import { useTestsStore, type TestEntry } from "../stores/tests";
 import BusyButton from "../components/BusyButton.vue";
+import { useElapsed } from "../composables/useElapsed";
 import Card from "../components/Card.vue";
 import MonacoEditor from "../components/MonacoEditor.vue";
 import ProofView from "../components/ProofView.vue";
@@ -37,6 +38,12 @@ const queryEd = ref<InstanceType<typeof MonacoEditor> | null>(null);
 const tptpMode = computed(() => prover.proofLang === "tptp");
 
 const proving = ref(false);
+const runLimitSecs = ref(0);
+const {
+  label: elapsedLabel,
+  fraction: elapsedFraction,
+  lastLabel: tookLabel,
+} = useElapsed(proving);
 const savingTest = ref(false);
 /** The save-test result line under the button row. */
 const testLog = useStatus();
@@ -140,6 +147,8 @@ onBeforeUnmount(() => clearTimeout(scratchTimer));
 
 async function prove() {
   const vampire = prover.vampireSelected;
+  const config = prover.config();
+  runLimitSecs.value = config.timeLimitSecs ?? 0;
   proving.value = true;
   lastVampireTptp = null;
   showDownloadTptp.value = false;
@@ -162,7 +171,7 @@ async function prove() {
     ({ result: r } = await call("prove", {
       assertions: asserted,
       query: asked,
-      config: prover.config(),
+      config,
       session: "user-assertions",
     }));
     lastVampireTptp = r?.input_tptp ?? null;
@@ -306,7 +315,8 @@ async function saveTest() {
       <BusyButton
         :busy="proving"
         label="Prove"
-        busy-label="Proving…"
+        :busy-label="`Proving… ${elapsedLabel(runLimitSecs)}`"
+        :progress="elapsedFraction(runLimitSecs)"
         @click="prove"
       />
       <BusyButton
@@ -369,6 +379,9 @@ async function saveTest() {
         }}</span>
         <span class="hint">{{ backendBadge }}</span>
         <span class="hint">{{ stepsText }}</span>
+        <span v-if="tookLabel" class="hint" title="Wall-clock time">{{
+          tookLabel
+        }}</span>
       </div>
       <label class="check"
         ><input type="checkbox" v-model="prover.plainProof" /> Plain
