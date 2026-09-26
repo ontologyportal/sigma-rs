@@ -43,7 +43,7 @@ export type TreeEntry =
   Res<"GET /repos/{owner}/{repo}/git/trees/{tree_sha}">["tree"][number];
 /** A pull request, as `fetchPullRequest` reports it. */
 export type PullRequest = Res<"GET /repos/{owner}/{repo}/pulls/{pull_number}">;
-/** A single release, as `fetchAppRelease` reports it. */
+/** A single release, as `fetchAppRelease` / `fetchAppReleases` report it. */
 export type Release = Res<"GET /repos/{owner}/{repo}/releases/tags/{tag}">;
 /** A single git ref -- the branch tips `contributeFiles` commits onto. */
 type GitRef = Res<"GET /repos/{owner}/{repo}/git/ref/{ref}">;
@@ -587,4 +587,19 @@ export async function fetchAppRelease(tag: string): Promise<Release | null> {
     if (e instanceof GitHubError && e.status === 404) return null;
     throw e;
   }
+}
+
+/**
+ * One page (1-based) of this app's repo's releases, newest first -- the
+ * source of the settings dialog's release history. Public data, so no token
+ * is required. Includes other components' releases (e.g. `sumo-lsp-v*`);
+ * callers filter by tag. A page shorter than `perPage` is the last one.
+ */
+export function fetchAppReleases(
+  page: number,
+  perPage: number,
+): Promise<Release[]> {
+  return githubApi<Release[]>(
+    `/repos/${APP_REPO.owner}/${APP_REPO.repo}/releases?per_page=${perPage}&page=${page}`,
+  );
 }

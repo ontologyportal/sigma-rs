@@ -12,11 +12,12 @@ import {
   AVAILABLE_LAYOUTS,
   NARROW_LAYOUT_QUERY,
 } from "../constants";
-import { fetchAppRelease } from "../api/github";
+import { fetchAppRelease, fetchAppReleases } from "../api/github";
 import {
   extractReleaseSection,
   renderReleaseNotes,
 } from "../utils/releaseNotes";
+import { errMsg, fmtDate } from "../utils/format";
 
 /** The deployed build's identity, from `version.json`. */
 export interface AppVersion {
@@ -24,6 +25,23 @@ export interface AppVersion {
   build: string;
   commit: string;
 }
+
+/** One release in the settings dialog's history (`loadMoreReleases`). */
+export interface ReleaseEntry {
+  version: string;
+  /** Publication date, already formatted for display; empty if unpublished. */
+  date: string;
+  /** The release's page on GitHub. */
+  url: string;
+  notesHtml: string | null;
+}
+
+/** This app's release tags are `sigmakee-v<version>`; the repo's other
+ *  components (e.g. `sumo-lsp-v*`) release under their own prefixes. */
+const RELEASE_TAG_PREFIX = "sigmakee-v";
+
+/** How many releases the history shows at first and adds per "Load more". */
+const RELEASE_PAGE_SIZE = 5;
 
 export type Theme = "light" | "dark";
 export type Layout = (typeof AVAILABLE_LAYOUTS)[number];
@@ -56,6 +74,22 @@ export const useShellStore = defineStore("shell", {
       title: "",
       body: "",
       notesHtml: null as string | null,
+      /** The release's GitHub page, set alongside `notesHtml`. */
+      releaseUrl: null as string | null,
+    },
+    /** Every release's notes, newest first, opened from the version number
+     *  in the settings dialog. `entries` fills in `RELEASE_PAGE_SIZE` at a
+     *  time: on first open, then per `loadMoreReleases`. */
+    releaseHistory: {
+      open: false,
+      loading: false,
+      error: null as string | null,
+      entries: null as ReleaseEntry[] | null,
+      /** The next GitHub page to fetch; null once the last one is in. */
+      nextPage: 1 as number | null,
+      /** Fetched releases past the last `RELEASE_PAGE_SIZE` boundary, shown
+       *  by the next `loadMoreReleases`. */
+      buffered: [] as ReleaseEntry[],
     },
     /** Bumped by `requestSearchFocus`; the Browse view watches it. */
     searchFocusRequest: 0,
@@ -70,6 +104,10 @@ export const useShellStore = defineStore("shell", {
   getters: {
     /** Whether the page currently renders dark: the explicit choice wins,
      *  the OS preference is the fallback. */
+    /** Whether "Load more" has anything left to show in the release history. */
+    hasMoreReleases: (state): boolean =>
+      state.releaseHistory.nextPage !== null ||
+      state.releaseHistory.buffered.length > 0,
     isDark: (state): boolean =>
       state.theme ? state.theme === "dark" : state.systemDark,
     /** The layout actually applied: `layout` (the saved preference),
@@ -179,6 +217,7 @@ export const useShellStore = defineStore("shell", {
         this.versionDialog.body = "";
       }
       this.versionDialog.notesHtml = null;
+      this.versionDialog.releaseUrl = null;
       this.versionDialog.open = true;
       try {
         localStorage.setItem(SEEN_VERSION_KEY, version);
@@ -194,13 +233,66 @@ export const useShellStore = defineStore("shell", {
      *  "Web Updates" section, offline, rate-limited) just leaves it as is. */
     async loadReleaseNotes(version: string) {
       try {
-        const release = await fetchAppRelease(`sigmakee-v${version}`);
+        const release = await fetchAppRelease(
+          `${RELEASE_TAG_PREFIX}${version}`,
+        );
         if (!release?.body) return;
         const section = extractReleaseSection(release.body, "Web Updates");
         if (!section) return;
         this.versionDialog.notesHtml = renderReleaseNotes(section);
+        this.versionDialog.releaseUrl = release.html_url;
       } catch {
         /* best effort -- see above */
+      }
+    },
+
+    /** Opens the release history, fetching the first releases on first open
+     *  (or after a failed attempt). */
+    openReleaseHistory() {
+      this.releaseHistory.open = true;
+      if (!this.releaseHistory.entries && !this.releaseHistory.loading)
+        this.loadMoreReleases();
+    },
+
+    /** Appends the next `RELEASE_PAGE_SIZE` published `sigmakee-v*`
+     *  releases, fetching further pages when other components' releases
+     *  crowd one out. Each shows its "Web Updates" section when it has one;
+     *  releases that predate that convention show their whole body instead. */
+    async loadMoreReleases() {
+      const history = this.releaseHistory;
+      if (history.loading || !this.hasMoreReleases) return;
+      history.loading = true;
+      history.error = null;
+      try {
+        while (
+          history.nextPage !== null &&
+          history.buffered.length < RELEASE_PAGE_SIZE
+        ) {
+          const page = await fetchAppReleases(
+            history.nextPage,
+            RELEASE_PAGE_SIZE,
+          );
+          for (const r of page) {
+            if (r.draft || !r.tag_name.startsWith(RELEASE_TAG_PREFIX)) continue;
+            const body = r.body ?? "";
+            const notes = extractReleaseSection(body, "Web Updates") ?? body;
+            history.buffered.push({
+              version: r.tag_name.slice(RELEASE_TAG_PREFIX.length),
+              date: r.published_at ? fmtDate(new Date(r.published_at)) : "",
+              url: r.html_url,
+              notesHtml: notes.trim() ? renderReleaseNotes(notes) : null,
+            });
+          }
+          history.nextPage =
+            page.length < RELEASE_PAGE_SIZE ? null : history.nextPage + 1;
+        }
+      } catch (e) {
+        history.error = errMsg(e);
+      } finally {
+        const shown = history.buffered.splice(0, RELEASE_PAGE_SIZE);
+        if (shown.length || !history.error)
+          history.entries = [...(history.entries ?? []), ...shown];
+        history.loading = false;
       }
     },
 

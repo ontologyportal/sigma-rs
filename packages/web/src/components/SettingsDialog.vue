@@ -131,7 +131,14 @@ async function onBackup() {
       <span v-if="backupLabel" class="hint">{{ backupLabel }}</span>
     </div>
     <template #actions>
-      <span class="version">{{ versionText }}</span>
+      <button
+        class="version"
+        type="button"
+        title="Show release notes for every version"
+        @click="shell.openReleaseHistory()"
+      >
+        {{ versionText }}
+      </button>
       <button
         class="btn ghost"
         type="button"
@@ -193,5 +200,13 @@ async function onBackup() {
   color: var(--muted);
   font-family: var(--mono);
   opacity: 0.7;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+.version:hover {
+  opacity: 1;
+  text-decoration: underline;
 }
 </style>

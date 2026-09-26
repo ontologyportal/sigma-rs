@@ -53,8 +53,38 @@ DOMPurify.addHook("afterSanitizeAttributes", (node) => {
   }
 });
 
+/**
+ * Swaps every image for a new-tab link to it, labeled by its alt text.
+ * GitHub's release attachments send no CORP or CORS headers, so this page's
+ * `Cross-Origin-Embedder-Policy: require-corp` blocks them as `<img>`s.
+ */
+function imagesToLinks(root: DocumentFragment): void {
+  for (const img of root.querySelectorAll("img")) {
+    const src = img.getAttribute("src") ?? "";
+    if (!/^https?:\/\//i.test(src)) {
+      img.remove();
+      continue;
+    }
+    const link = document.createElement("a");
+    link.href = src;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = `View image: ${img.alt || src}`;
+    img.replaceWith(link);
+  }
+}
+
 /** Markdown to sanitized HTML, safe for `v-html` -- the source is a GitHub
  *  release body fetched at runtime, not bundled content. */
 export function renderReleaseNotes(markdown: string): string {
-  return DOMPurify.sanitize(marked.parse(markdown, { async: false }));
+  const fragment = DOMPurify.sanitize(
+    marked.parse(markdown, { async: false }),
+    {
+      RETURN_DOM_FRAGMENT: true,
+    },
+  );
+  imagesToLinks(fragment);
+  const container = document.createElement("div");
+  container.append(fragment);
+  return container.innerHTML;
 }
