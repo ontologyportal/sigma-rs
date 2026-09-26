@@ -367,6 +367,10 @@ function defineKifLanguage(m: MonacoNs): void {
       const tag = lspOpenTag();
       if (!tag || lspEditor()?.getModel() !== model) return local();
       try {
+        // The server formats its own copy of the document, which otherwise
+        // lags the validate debounce; a stale copy yields an edit sized to
+        // the old text, leaving anything newer unformatted.
+        await lspSyncDocument(tag, model.getValue(), { reconcile: false });
         const edits = await lspRequest<TextEdit[]>("textDocument/formatting", {
           textDocument: { uri: tagToUri(tag) },
           options: { tabSize: 2, insertSpaces: true },

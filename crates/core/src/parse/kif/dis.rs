@@ -578,6 +578,15 @@ mod format_document_tests {
     }
 
     #[test]
+    fn tab_and_mixed_indentation_is_normalized() {
+        let src = "(=>\n\t(instance ?M Meteoroid)\n\t(exists (?L)\n\t\t(and\n      (instance ?L LengthMeasure)\n      (equal ?L\n        (MeasureFn ?L Meter))\n\t\t\t(length ?M ?L)\n\t\t\t(lessThanOrEqualTo ?L 1.0))))\n";
+        assert_eq!(
+            fmt(src),
+            "(=>\n  (instance ?M Meteoroid)\n  (exists (?L)\n    (and\n      (instance ?L LengthMeasure)\n      (equal ?L\n        (MeasureFn ?L Meter))\n      (length ?M ?L)\n      (lessThanOrEqualTo ?L 1.0))))"
+        );
+    }
+
+    #[test]
     fn standalone_and_attached_comments_keep_their_grouping() {
         // The two short header lines re-flow into ONE filled line (the fixed
         // width is a fill target, not just a ceiling); grouping around the
