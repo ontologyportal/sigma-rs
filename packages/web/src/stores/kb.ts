@@ -48,6 +48,12 @@ type Located = "file" | "line" | "col" | "end_line" | "end_col";
 export type Diagnostic = Omit<EngineDiagnostic, Located> &
   Partial<Pick<EngineDiagnostic, Located>>;
 
+/** `d` as one plain-text line for the clipboard:
+ *  `<loc> <severity> [<kind>/<code>] <message>`. */
+export function diagnosticText(d: Diagnostic, loc: string): string {
+  return `${loc} ${d.severity} [${d.kind}/${d.code}] ${d.message}`;
+}
+
 /** What's mirrored to localStorage -- just enough to reconstruct an `Origin`
  *  and refetch its text on the next boot. */
 export interface SavedConstituent {

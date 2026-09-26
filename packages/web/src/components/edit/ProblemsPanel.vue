@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import type { Diagnostic } from "../../stores/kb";
+import { diagnosticText, type Diagnostic } from "../../stores/kb";
 import { computed } from "vue";
+import CopyButton from "../CopyButton.vue";
 
 const props = defineProps<{
   /** Every diagnostic for the buffer; only errors and warnings are listed
@@ -32,6 +33,15 @@ const line = (d: Diagnostic) => Math.max(1, d.line || 1);
 const col = (d: Diagnostic) => Math.max(1, d.col || 1);
 const loc = (d: Diagnostic) =>
   `${props.file || "untitled"}:${line(d)}:${col(d)}`;
+const text = (d: Diagnostic) => diagnosticText(d, loc(d));
+const allText = () => items.value.map(text).join("\n");
+
+/** Row click jumps to the diagnostic -- unless the click ended a text
+ *  selection, which is the user copying, not navigating. */
+function onRowClick(d: Diagnostic) {
+  if (window.getSelection()?.toString()) return;
+  emit("jump", { line: line(d), col: col(d) });
+}
 </script>
 
 <template>
@@ -39,26 +49,39 @@ const loc = (d: Diagnostic) =>
     <summary>
       <span>Problems</span>
       <span class="summary-text">{{ summary }}</span>
+      <CopyButton
+        v-if="items.length"
+        class="copy-all"
+        :text="allText"
+        title="Copy all errors and warnings"
+      />
     </summary>
     <div class="list" aria-live="polite">
       <div v-if="!items.length" class="hint empty">
         This file has no errors or warnings.
       </div>
-      <button
+      <div
         v-for="(d, i) in items"
         :key="i"
         class="edit-diag"
-        type="button"
         :data-sev="d.severity"
-        @click="emit('jump', { line: line(d), col: col(d) })"
+        @click="onRowClick(d)"
       >
         <span class="sev" :class="d.severity">{{ d.severity }}</span>
-        <span class="edit-diag-loc">{{ loc(d) }}</span>
+        <button
+          class="edit-diag-loc"
+          type="button"
+          title="Go to this line"
+          @click.stop="emit('jump', { line: line(d), col: col(d) })"
+        >
+          {{ loc(d) }}
+        </button>
         <span class="edit-diag-msg"
           >{{ d.message }}
           <span class="edit-diag-code">[{{ d.kind }}/{{ d.code }}]</span></span
         >
-      </button>
+        <CopyButton :text="text(d)" title="Copy this diagnostic" />
+      </div>
     </div>
   </details>
 </template>
@@ -105,20 +128,19 @@ const loc = (d: Diagnostic) =>
   overflow-y: auto;
   border-top: 1px solid var(--line);
 }
+.copy-all {
+  margin-left: auto;
+}
 .edit-diag {
-  width: 100%;
   display: grid;
-  grid-template-columns: auto auto 1fr;
+  grid-template-columns: auto auto 1fr auto;
   align-items: baseline;
   gap: 8px;
   padding: 8px 14px;
-  border: 0;
   border-bottom: 1px solid var(--line);
   border-left: 3px solid transparent;
   background: var(--bg);
   color: var(--fg);
-  font: inherit;
-  text-align: left;
   cursor: pointer;
 }
 .edit-diag:last-child {
@@ -127,12 +149,9 @@ const loc = (d: Diagnostic) =>
 .edit-diag:hover {
   background: var(--card);
 }
-/* Inset outline, not the ~1-2% luminance hover swap: this row sits inside a
-   scrolling list, and it's the interactive control here a keyboard user is
-   most likely to arrow/tab through. An outside outline would also get
-   clipped by the list's overflow-y. */
-.edit-diag:focus-visible {
-  background: var(--card);
+/* Inset outline: the location is the row's keyboard-focusable jump control,
+   and an outside outline would get clipped by the list's overflow-y. */
+.edit-diag-loc:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
@@ -143,6 +162,10 @@ const loc = (d: Diagnostic) =>
   border-left-color: var(--warn);
 }
 .edit-diag-loc {
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
   color: var(--accent);
   font-family: var(--mono);
   font-size: 12px;

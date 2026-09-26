@@ -2,12 +2,13 @@
 import { computed, nextTick, ref, watch } from "vue";
 import BusyButton from "../components/BusyButton.vue";
 import Card from "../components/Card.vue";
+import CopyButton from "../components/CopyButton.vue";
 import SourceLoc from "../components/SourceLoc.vue";
 import WordNetDiagnosticsCard from "../components/diagnostics/WordNetDiagnosticsCard.vue";
 import { useTabQuery } from "../composables/useTabQuery";
 import { updateParams } from "../router";
 import { call } from "../services/sigma";
-import { useKBStore, type Diagnostic } from "../stores/kb";
+import { diagnosticText, useKBStore, type Diagnostic } from "../stores/kb";
 import { useShellStore } from "../stores/shell.ts";
 import type { WordNetDiagnostics } from "sigmakee/sdk";
 import Row from "../components/Row.vue";
@@ -239,6 +240,11 @@ const sorted = computed(() =>
   sortDiagnostics(facets.value.filtered, sort.value),
 );
 const filteredCount = computed(() => sorted.value.length);
+
+const diagText = (d: Diagnostic) =>
+  diagnosticText(d, d.file ? `${d.file}:${d.line}` : "(no location)");
+/** Every diagnostic the current filter shows, across all pages. */
+const allText = () => sorted.value.map(({ d }) => diagText(d)).join("\n");
 
 // Clamp the page to the current (possibly just-filtered/shrunk) result set
 // so a filter change or a smaller re-validation never strands the view
@@ -508,8 +514,15 @@ onQuery((q) => {
             </template>
             <template v-else>No diagnostics — the loaded KB is clean.</template>
           </div>
-          <div v-if="isCompact" class="inline tight">
+          <div class="inline tight">
+            <CopyButton
+              v-if="filteredCount"
+              label="Copy all"
+              :text="allText"
+              :title="`Copy all ${filteredCount} shown diagnostics`"
+            />
             <button
+              v-if="isCompact"
               class="btn ghost filter-btn"
               type="button"
               :aria-expanded="filterOpen"
@@ -530,6 +543,7 @@ onQuery((q) => {
               Filter<span class="filter-badge">{{ activeCount || "" }}</span>
             </button>
             <BusyButton
+              v-if="isCompact"
               :busy="revalidating"
               label="Re-validate"
               @click="revalidate"
@@ -588,6 +602,11 @@ onQuery((q) => {
               <span v-else class="loc">(no location)</span>
               <span class="code">[{{ d.kind }}/{{ d.code }}]</span>
               <span class="msg">{{ d.message }}</span>
+              <CopyButton
+                class="diag-copy"
+                :text="diagText(d)"
+                title="Copy this diagnostic"
+              />
             </div>
           </div>
         </div>
@@ -699,6 +718,10 @@ onQuery((q) => {
 }
 .diag .msg {
   font-size: 13px;
+}
+.diag-copy {
+  margin-left: auto;
+  align-self: center;
 }
 /* Brief flash on the diagnostic a deep link landed on. */
 .diag.diag-target {
