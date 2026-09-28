@@ -24,10 +24,21 @@ type NullaryCmd = {
   [C in Cmd]: [] extends Parameters<Handlers[C]> ? C : never;
 }[Cmd];
 
-const worker = new Worker(
-  new URL("../worker/sigma.worker.ts", import.meta.url),
-  { type: "module" },
-);
+function spawnWorker(): Worker {
+  const w = new Worker(new URL("../worker/sigma.worker.ts", import.meta.url), {
+    type: "module",
+  });
+  w.onmessage = onMessage;
+  w.onerror = onError;
+  return w;
+}
+
+/** A trap inside wasm -- a Rust panic or a failed allocation -- surfaces as a
+ *  bare `unreachable`; the instance is unusable afterwards, and later calls
+ *  fail with "recursive use of an object". */
+export function isWasmAbort(message: string): boolean {
+  return /^unreachable$|recursive use of an object/i.test(message.trim());
+}
 
 let seq = 0;
 const pending = new Map<
@@ -45,7 +56,7 @@ export function connectVampire(baseUrl: string) {
   worker.postMessage({ cmd: "vampirePort", args: { port } }, [port]);
 }
 
-worker.onmessage = (e) => {
+function onMessage(e: MessageEvent) {
   // The sigma worker's bridge gave up on a Vampire run: replace the worker.
   if (e.data?.type === "vampire-restart") {
     connectVampire(vampireBaseUrl);
@@ -55,9 +66,21 @@ worker.onmessage = (e) => {
   const p = pending.get(id);
   if (!p) return;
   pending.delete(id);
-  if (error) p.reject(new Error(error));
-  else p.resolve(result);
-};
+  if (error) {
+    if (isWasmAbort(error)) void useBootStore().recoverWorker();
+    p.reject(new Error(error));
+  } else p.resolve(result);
+}
+
+/** Replace the worker with a fresh one; the caller re-boots it and reloads
+ *  the KB (see the boot store's `recoverWorker`). Calls still in flight on
+ *  the old worker reject. */
+export function replaceWorker() {
+  worker.terminate();
+  for (const p of pending.values()) p.reject(new Error("the engine restarted"));
+  pending.clear();
+  worker = spawnWorker();
+}
 
 /**
  * Call one of the worker's commands. Args and result are the handler's own
@@ -92,7 +115,7 @@ export function call<C extends Cmd>(
 // An uncaught worker error during boot is fatal for the page: surface it
 // on the loading screen. Later ones are logged; the failing call itself
 // rejects through the pending map.
-worker.onerror = (e) => {
+function onError(e: ErrorEvent) {
   const m = e.message || `${e.filename || ""}:${e.lineno || ""}`;
   console.error("worker error", e);
   const boot = useBootStore();
@@ -100,4 +123,6 @@ worker.onerror = (e) => {
     boot.failed = true;
     boot.error = "worker: " + m;
   }
-};
+}
+
+let worker = spawnWorker();

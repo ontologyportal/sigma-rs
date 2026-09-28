@@ -171,7 +171,9 @@ pub use sigmakee_rs_core::RenderReport;
 #[cfg(feature = "native-prover")]
 pub use sigmakee_rs_core::Strategy;
 #[cfg(any(feature = "external-prover", feature = "native-prover"))]
-pub use sigmakee_rs_core::{AxiomSource, AxiomSourceIndex, CommonProverOpts};
+pub use sigmakee_rs_core::{
+    AuditBatch, AuditSample, AxiomSource, AxiomSourceIndex, CommonProverOpts, SampledAudit,
+};
 pub use sigmakee_rs_core::{
     SearchHit, SearchOpts, SearchSource, TaxConstraint, DEFAULT_CANDIDATE_LIMIT,
 };

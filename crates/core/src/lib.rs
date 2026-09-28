@@ -111,6 +111,8 @@ pub use semantics::types::{TaxDirection, TaxRelation};
 
 pub use cache::CacheConfig;
 pub use kb::man::{ManKind, ManPage, ParentEdge, SentenceRef, SortSig};
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
+pub use kb::prove::{AuditBatch, AuditSample, SampledAudit};
 pub use kb::search::{
     RankComponent, SearchHit, SearchOpts, SearchSource, TaxConstraint, DEFAULT_CANDIDATE_LIMIT,
 };

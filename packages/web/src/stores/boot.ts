@@ -3,7 +3,7 @@
  *  driving the LoadingScreen's progress bar until the app is usable. */
 
 import { defineStore } from "pinia";
-import { call, connectVampire } from "../services/sigma";
+import { call, connectVampire, replaceWorker } from "../services/sigma";
 import { tryRestore } from "../services/kb-cache";
 import { BASE } from "../constants";
 import { useKBStore } from "./kb";
@@ -11,6 +11,8 @@ import { useWordNetStore } from "./wordnet";
 import { useTestsStore } from "./tests";
 import { useChangesStore } from "./changes";
 import { useLibraryStore } from "./library";
+
+let recovery: Promise<void> | null = null;
 
 export const useBootStore = defineStore("boot", {
   state: () => ({
@@ -25,6 +27,8 @@ export const useBootStore = defineStore("boot", {
     total: 1,
     /** OPFS root, opened once at boot. */
     opfsRoot: null as FileSystemDirectoryHandle | null,
+    /** True while `recoverWorker` replaces a crashed engine. */
+    recovering: false,
   }),
   actions: {
     progress(msg: string) {
@@ -47,6 +51,27 @@ export const useBootStore = defineStore("boot", {
       kb.symbols = symbols;
       kb.uiLanguage = symbols.defaultLanguage;
       connectVampire(baseUrl);
+    },
+
+    /** Replace a worker whose wasm instance trapped (a panic, or running out
+     *  of memory) and reload the KB into the fresh one from the texts already
+     *  in memory. Concurrent callers share one recovery. */
+    recoverWorker(): Promise<void> {
+      if (recovery) return recovery;
+      this.recovering = true;
+      recovery = (async () => {
+        try {
+          replaceWorker();
+          await this.bootWorker();
+          const kb = useKBStore();
+          await kb.rebuildSession();
+          await kb.reprocess();
+        } finally {
+          this.recovering = false;
+          recovery = null;
+        }
+      })();
+      return recovery;
     },
 
     /** Reconcile tracked local changes against upstream in the background.

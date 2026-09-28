@@ -507,45 +507,29 @@ pub enum Cmd {
         limit: usize,
     },
 
-    /// Audit the knowledge base for inconsistency, enumerating the
-    /// contradictions found and the axioms implicated in each.
+    /// Audit the knowledge base for inconsistency by sampling: walk a
+    /// seeded pseudorandom sweep of its axioms (bookkeeping heads such as
+    /// `documentation` excluded) and check each one's SInE neighbourhood
+    /// for a contradiction.  Any contradiction found in a neighbourhood is
+    /// one of the KB's; finding none never certifies the KB consistent.
     ///
-    /// With no `<FILE>`, the ENTIRE KB is audited.  Optionally pass:
-    ///   * a `.kif` file already loaded in the KB — restrict the audit
-    ///     to its sentences (and their SInE-relevant neighbourhood),
-    ///   * or a `.kif.tq` test case — its assertions are injected into a
-    ///     temporary session and used as the sample, so you can answer
-    ///     "which axioms made this *test* fail?" by running `audit`
-    ///     directly on the failing `.kif.tq`.
+    /// With no `<FILE>` the sweep covers the whole KB.  Optionally pass:
+    ///   * a `.kif` file already loaded in the KB -- sweep only its
+    ///     sentences (their neighbourhoods still reach every file),
+    ///   * or a `.kif.tq` test case -- its assertions are injected into a
+    ///     temporary session and checked as one neighbourhood, so you can
+    ///     answer "which axioms made this *test* fail?" directly.
+    ///
+    /// `--seed` fixes the sweep order and `--step` the position to start
+    /// from; the run ends by printing the position to resume from, so the
+    /// same check can be repeated exactly or continued.  `--batch` checks
+    /// several sentences' neighbourhoods together; `--scope` (SInE
+    /// tolerance) sizes each neighbourhood; `--timeout` bounds each one.
     ///
     /// Each contradiction lists the implicated axioms (formula +
     /// file:line).  With `--proof` (and unless `--ugly` is set) each
     /// contradiction's full derivation is shown one-per-page in the
     /// pager; `--proof --ugly` prints the derivations inline.
-    ///
-    /// The flow is:
-    ///   1. Collect the sample sentences:
-    ///        - `.kif`:    look up `<FILE>` in the loaded KB and take
-    ///          its root sentences.
-    ///        - `.kif.tq`: parse via the test-file grammar, inject
-    ///          every `(...)` assertion into a debug session, take
-    ///          the resulting SIDs.  `--thoroughness` is ignored —
-    ///          the entire test bundle is always used.
-    ///   2. (`.kif` only) Randomly subsample by `--thoroughness`
-    ///      (default 1.0 = all).
-    ///   3. SInE-expand from the sampled sentences' symbols at
-    ///      tolerance `--scope` (default: crate SInE default, usually
-    ///      2.0).  This pulls in every axiom the sampled sentences
-    ///      semantically depend on, across every other loaded file.
-    ///   4. Feed the union (sampled ∪ SInE-expanded) to Vampire with
-    ///      NO conjecture — pure axiom-satisfiability.
-    ///   5. If Vampire reports Unsatisfiable / ContradictoryAxioms,
-    ///      parse the refutation proof and trace each axiom-role step
-    ///      back to its source `file:line`.
-    ///   6. Report: verdict, contradictory axioms (if any), and the
-    ///      set of other files whose axioms SInE pulled in.
-    ///
-    /// Uses TPTP FOF (TFF is not currently wired through `audit`).
     #[cfg(feature = "ask")]
     Audit {
         /// OPTIONAL path to scope the audit.  Omit to audit the entire
@@ -556,20 +540,39 @@ pub enum Cmd {
         /// you used when loading); for `.kif.tq` the file is read fresh.
         file: Option<PathBuf>,
 
-        /// Fraction of the file's root sentences to sample for the
-        /// consistency check, in (0.0, 1.0].  `1.0` uses every
-        /// sentence; `0.5` a random half; `0.1` a random tenth.
-        /// Smaller values run faster at the cost of coverage — the
-        /// SInE expansion step then pulls in a proportionally smaller
-        /// relevant axiom set.
+        /// Fraction of the sweep (from `--step`) to check when `--count` is
+        /// not given, in (0.0, 1.0].  `1.0` checks every remaining
+        /// sentence; `0.1` a tenth of them.
         #[arg(long, value_name = "F", default_value_t = 1.0)]
         thoroughness: f32,
 
-        /// Stop after finding N distinct contradictions (native backend).
-        /// A smaller limit returns faster — the audit terminates the search
-        /// as soon as N are found instead of saturating for the rest.
+        /// Stop after finding N distinct contradictions.
         #[arg(long, value_name = "N", default_value_t = 64)]
         limit: usize,
+
+        /// Seed of the pseudorandom sweep order.
+        #[arg(long, value_name = "S", default_value_t = 0)]
+        seed: u32,
+
+        /// Sweep position to start from (printed at the end of a run as the
+        /// position to resume from).
+        #[arg(long, value_name = "I", default_value_t = 0)]
+        step: usize,
+
+        /// How many sentences to check (overrides `--thoroughness`).
+        #[arg(long, value_name = "N")]
+        count: Option<usize>,
+
+        /// Sentences per subproblem: their neighbourhoods are checked
+        /// together.
+        #[arg(long, value_name = "K", default_value_t = 1)]
+        batch: usize,
+
+        /// Print one JSON summary on stdout (seed, positions, subproblem
+        /// outcomes, and each contradiction's axioms); progress goes to
+        /// stderr.
+        #[arg(long)]
+        json: bool,
 
         /// Write the generated TPTP to FILE (for debugging).  When
         /// omitted, TPTP is piped directly to Vampire via stdin.

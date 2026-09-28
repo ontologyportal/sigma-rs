@@ -216,7 +216,20 @@ impl<T: HasTranslation + 'static> ProvingLayer for ExternalProverLayer<T> {
         opts: &Self::Opts,
         ctx: &crate::ProveCtx,
     ) -> super::result::ProverResult {
-        self.ext_check_consistency(opts, ctx)
+        self.ext_check_consistency(&[], opts, ctx)
+    }
+
+    /// Focused audit: one satisfiability check over `focus`'s SInE
+    /// neighborhood (the external backend has no enumerator, so `limit` is
+    /// ignored and at most one contradiction comes back).
+    fn audit_consistency(
+        &self,
+        focus: &[crate::SentenceId],
+        opts: &Self::Opts,
+        _limit: usize,
+        ctx: &crate::ProveCtx,
+    ) -> super::result::ProverResult {
+        self.ext_check_consistency(focus, opts, ctx)
     }
 }
 

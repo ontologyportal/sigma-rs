@@ -1,40 +1,66 @@
-//! `sumo audit [FILE]` — consistency-check the knowledge base (or a single
-//! file / `.kif.tq` test bundle) by enumerating distinct contradictions with
-//! cited derivations, via the session's prover.
+//! `sumo audit [FILE]` -- sampled consistency audit: walk a seeded
+//! pseudorandom sweep of the KB's axioms (or one file's) and check each
+//! sentence's SInE neighbourhood for a contradiction, citing each one found.
 //!
 //! Pipeline:
 //!   1. Use the loaded `Session` (the prover backend is already selected).
-//!   2. No FILE ⇒ audit the entire promoted base (empty focus). A `.kif` file
-//!      ⇒ its roots, optionally subsampled by `--thoroughness`. A `.kif.tq`
-//!      bundle ⇒ its hypotheses, injected into a temp session.
-//!   3. `KnowledgeBase::audit_consistency` enumerates up to `--limit`
-//!      contradictions over the focus's neighbourhood.
-//!   4. Render the verdict; on `Inconsistent`, cite each axiom-role step back
-//!      to its `file:line` via `build_axiom_source_index`.
+//!   2. A `.kif.tq` bundle -> its hypotheses, injected into a temp session and
+//!      checked as one neighbourhood.
+//!   3. Otherwise `KnowledgeBase::audit_sweep_order` orders the eligible
+//!      sentences (whole KB, or FILE's) by `--seed`, and
+//!      `KnowledgeBase::audit_sampled` checks `--count` of them from `--step`,
+//!      `--batch` per subproblem, one subproblem per call so each prints a
+//!      progress line.
+//!   4. Render the contradictions, citing each axiom-role step back to its
+//!      `file:line` via `build_axiom_source_index`, and print the position to
+//!      resume from.
 //!
 //! Requires the `ask` feature.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
-
-use rand::seq::SliceRandom;
 
 use sigmakee_rs_sdk::manager::{KBManager, ProverOptsFor};
 use sigmakee_rs_sdk::Session;
 use sigmakee_rs_sdk::{
-    parse_test_content, AstKif, CommonProverOpts, KnowledgeBase, ProverStatus, ProvingLayer,
-    SentenceId, TopLayer,
+    parse_test_content, AstKif, AuditSample, CommonProverOpts, KifProofStep, KnowledgeBase,
+    ProverStatus, ProvingLayer, SentenceId, TopLayer,
 };
 
 use crate::style::*;
 
-/// Run `sumo audit`: consistency-check the KB or the given file/test bundle,
-/// print the verdict and any cited contradiction derivations. Returns `true`
-/// when no contradiction is found.
+/// Where a sampled audit's sweep starts and how much of it to check.
+pub struct Sweep {
+    /// Seed of the pseudorandom sweep order.
+    pub seed: u32,
+    /// Sweep position to start from.
+    pub step: usize,
+    /// Sentences to check; `None` = `--thoroughness` of what remains.
+    pub count: Option<usize>,
+    /// Sentences per subproblem.
+    pub batch: usize,
+    /// Print one JSON summary on stdout (progress goes to stderr).
+    pub json: bool,
+}
+
+/// A human-readable line: stdout normally, stderr under `--json` so stdout
+/// carries only the JSON summary.
+fn say(json: bool, line: String) {
+    if json {
+        eprintln!("{line}");
+    } else {
+        println!("{line}");
+    }
+}
+
+/// Run `sumo audit`: sample-check the KB, the given file, or a test bundle,
+/// print any cited contradiction derivations and where to resume. Returns
+/// `true` when no contradiction is found.
 pub fn run_audit<L>(
     mut session: Session<L>,
     manager: &KBManager,
     file: Option<PathBuf>,
+    sweep: Sweep,
     keep: Option<PathBuf>,
 ) -> bool
 where
@@ -50,87 +76,98 @@ where
         return false;
     }
 
-    // No file ⇒ the entire KB (empty focus). Otherwise a `.kif` file (its
-    // roots, optionally subsampled) or a `.kif.tq` test bundle.
-    let (tag, sample, header_count, debug_session): (
-        String,
-        Vec<SentenceId>,
-        Option<usize>,
-        Option<String>,
-    ) = match &file {
-        None => ("the entire KB".to_string(), Vec::new(), None, None),
-        Some(file) => {
-            let is_test_file = file
-                .file_name()
-                .and_then(|n| n.to_str())
-                .map(|n| n.ends_with(".kif.tq"))
-                .unwrap_or(false);
-            let (tag, sids, sess) = if is_test_file {
-                match inject_test_case(session.kb_mut(), file) {
-                    Ok((tag, sids, sess)) => (tag, sids, Some(sess)),
-                    Err(()) => return false,
-                }
-            } else {
-                let tag_primary = file.display().to_string();
-                let tag_canonical = file.canonicalize().ok().map(|p| p.display().to_string());
-                match resolve_file_tag(session.kb(), file, &tag_primary, tag_canonical.as_deref()) {
-                    Ok((tag, sids)) => (tag, sids, None),
-                    Err(()) => return false,
-                }
+    let is_test_file = file
+        .as_ref()
+        .and_then(|f| f.file_name())
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.ends_with(".kif.tq"));
+    let (proofs, summary) = match file {
+        Some(file) if is_test_file => {
+            let Ok((tag, sids, sess)) = inject_test_case(session.kb_mut(), &file) else {
+                return false;
             };
-            let total = sids.len();
-            let sample = if thoroughness >= 1.0 || is_test_file {
-                sids
-            } else {
-                let mut rng = rand::rng();
-                let mut shuffled = sids;
-                shuffled.shuffle(&mut rng);
-                let keep_n = ((shuffled.len() as f32) * thoroughness).ceil().max(1.0) as usize;
-                shuffled.truncate(keep_n);
-                shuffled
+            say(
+                sweep.json,
+                format!(
+                    "{style_bold}Audit:{style_reset} {} -- test bundle, {} sentence(s)",
+                    tag,
+                    sids.len()
+                ),
+            );
+            let mut opts = <L::Opts as ProverOptsFor>::from_manager(manager);
+            opts.set_session(Some(sess.clone()));
+            let mut result = session.kb().audit_consistency(&sids, opts, manager.limit);
+            session.kb_mut().flush_session(&sess);
+            log::info!("{}", result.raw_output);
+            if result.contradiction_proofs.is_empty() && !result.proof_kif.is_empty() {
+                result
+                    .contradiction_proofs
+                    .push(std::mem::take(&mut result.proof_kif));
+            }
+            let summary = serde_json::json!({ "test_bundle": tag, "sentences": sids.len() });
+            (result.contradiction_proofs, summary)
+        }
+        file => {
+            let scope = match &file {
+                Some(file) => {
+                    let tag_primary = file.display().to_string();
+                    let tag_canonical = file.canonicalize().ok().map(|p| p.display().to_string());
+                    match resolve_file_tag(
+                        session.kb(),
+                        file,
+                        &tag_primary,
+                        tag_canonical.as_deref(),
+                    ) {
+                        Ok((tag, _)) => Some(tag),
+                        Err(()) => return false,
+                    }
+                }
+                None => None,
             };
-            (tag, sample, Some(total), sess)
+            sampled_sweep(session.kb(), manager, scope.as_deref(), &sweep)
         }
     };
-
-    match header_count {
-        Some(total) => println!(
-            "{style_bold}Audit:{style_reset} {} — {} of {} sentence(s)",
-            tag,
-            sample.len(),
-            total
-        ),
-        None => println!("{style_bold}Audit:{style_reset} {}", tag),
+    let n = proofs.len();
+    if sweep.json {
+        let src_idx = session.kb().build_axiom_source_index();
+        let contradictions: Vec<serde_json::Value> = proofs
+            .iter()
+            .map(|steps| {
+                let mut seen = BTreeSet::new();
+                let axioms: Vec<serde_json::Value> = steps
+                    .iter()
+                    .filter_map(|st| {
+                        let sid = st.source_sid.filter(|sid| seen.insert(*sid))?;
+                        let a = src_idx.lookup_by_sid(sid);
+                        Some(serde_json::json!({
+                            "file": a.map(|a| a.file.clone()),
+                            "line": a.map(|a| a.line),
+                            "kif": st.formula.flat(),
+                        }))
+                    })
+                    .collect();
+                serde_json::json!({ "axioms": axioms, "steps": steps.len() })
+            })
+            .collect();
+        let mut out = summary;
+        out["inconsistent"] = serde_json::json!(n > 0);
+        out["contradictions"] = serde_json::json!(contradictions);
+        println!("{out}");
+        return n == 0;
     }
-
-    let mut opts = <L::Opts as ProverOptsFor>::from_manager(manager);
-    opts.set_session(debug_session.clone());
-
-    let result = session.kb().audit_consistency(&sample, opts, manager.limit);
-    if let Some(s) = debug_session.as_ref() {
-        session.kb_mut().flush_session(s);
+    if n > 0 {
+        println!(
+            "{style_bold}Result:{style_reset} {color_bright_red}Inconsistent{color_reset} -- {} distinct contradiction(s)",
+            n
+        );
     }
-
-    let n = result.contradiction_proofs.len();
-    match result.status {
-        ProverStatus::Consistent => {
-            println!("{style_bold}Result:{style_reset} {color_bright_green}Consistent{color_reset} (saturated — no contradiction reachable from this sample)");
-        }
-        ProverStatus::Inconsistent => {
-            println!("{style_bold}Result:{style_reset} {color_bright_red}Inconsistent{color_reset} — {} distinct contradiction(s)", n);
-        }
-        other => {
-            println!("{style_bold}Result:{style_reset} {color_bright_yellow}{:?}{color_reset} (budget exhausted; no contradiction found — weaker than Consistent)", other);
-        }
-    }
-    log::info!("{}", result.raw_output);
 
     if n > 0 {
         let src_idx = session.kb().build_axiom_source_index();
         let plain =
             crate::style::is_ugly() || !std::io::IsTerminal::is_terminal(&std::io::stdout());
 
-        for (i, steps) in result.contradiction_proofs.iter().enumerate() {
+        for (i, steps) in proofs.iter().enumerate() {
             let mut seen = BTreeSet::new();
             let mut axioms: Vec<(String, String)> = Vec::new();
             for st in steps {
@@ -156,8 +193,7 @@ where
         }
 
         if manager.proof != "none" {
-            let pages: Vec<String> = result
-                .contradiction_proofs
+            let pages: Vec<String> = proofs
                 .iter()
                 .enumerate()
                 .map(|(i, steps)| render_derivation(i + 1, steps, &src_idx, plain))
@@ -171,7 +207,132 @@ where
         }
     }
 
-    n == 0 && matches!(result.status, ProverStatus::Consistent)
+    n == 0
+}
+
+/// Walk `sweep`'s slice of the sweep one subproblem at a time, printing a
+/// progress line per subproblem and the position to resume from; returns the
+/// distinct contradictions found and the run's JSON summary.
+fn sampled_sweep<L>(
+    kb: &KnowledgeBase<L>,
+    manager: &KBManager,
+    scope: Option<&str>,
+    sweep: &Sweep,
+) -> (Vec<Vec<KifProofStep>>, serde_json::Value)
+where
+    L: ProvingLayer,
+    L::Opts: ProverOptsFor,
+{
+    let order = kb.audit_sweep_order(scope, sweep.seed);
+    let start = sweep.step.min(order.len());
+    let remaining = order.len() - start;
+    let count = sweep
+        .count
+        .unwrap_or_else(|| ((remaining as f32) * manager.thoroughness).ceil() as usize)
+        .min(remaining);
+    let batch = sweep.batch.max(1);
+    say(
+        sweep.json,
+        format!(
+            "{style_bold}Audit:{style_reset} {}: checking {} of {} sentence(s) from step {} (seed {}, {} per subproblem)",
+            scope.unwrap_or("the entire KB"),
+            count,
+            order.len(),
+            start,
+            sweep.seed,
+            batch
+        ),
+    );
+
+    let opts = <L::Opts as ProverOptsFor>::from_manager(manager);
+    let src_idx = kb.build_axiom_source_index();
+    let mut seen: HashSet<Vec<SentenceId>> = HashSet::new();
+    let mut proofs: Vec<Vec<KifProofStep>> = Vec::new();
+    let (mut problems, mut clean, mut contradictory) = (0usize, 0usize, 0usize);
+    let end = start + count;
+    let mut pos = start;
+    while pos < end && proofs.len() < manager.limit {
+        let take = batch.min(end - pos);
+        let sample = AuditSample {
+            seed: sweep.seed,
+            step: pos,
+            count: take,
+            batch: take,
+            limit: manager.limit - proofs.len(),
+        };
+        let out = kb.audit_sampled(&order, sample, &opts);
+        for b in &out.batches {
+            problems += 1;
+            clean += usize::from(b.outcome.status == ProverStatus::Consistent);
+            contradictory += usize::from(b.outcome.status == ProverStatus::Inconsistent);
+            let locs: Vec<String> = b
+                .focus
+                .iter()
+                .map(|sid| {
+                    src_idx
+                        .lookup_by_sid(*sid)
+                        .map_or_else(|| "?".to_string(), |a| format!("{}:{}", a.file, a.line))
+                })
+                .collect();
+            say(
+                sweep.json,
+                format!(
+                    "  [{}/{}] {:?} in {} ms : {}",
+                    out.next_step - start,
+                    count,
+                    b.outcome.status,
+                    b.elapsed.as_millis(),
+                    locs.join(", ")
+                ),
+            );
+        }
+        for steps in out.result.contradiction_proofs {
+            let mut culprits: Vec<SentenceId> = steps.iter().filter_map(|s| s.source_sid).collect();
+            culprits.sort_unstable();
+            culprits.dedup();
+            if seen.insert(culprits) {
+                proofs.push(steps);
+            }
+        }
+        pos = out.next_step.max(pos + take);
+    }
+
+    if proofs.is_empty() {
+        say(
+            sweep.json,
+            format!(
+                "{style_bold}Result:{style_reset} {color_bright_yellow}No contradiction found{color_reset} in {} neighbourhood(s) ({} saturated clean, {} hit a limit) -- this does not certify the KB consistent",
+                problems,
+                clean,
+                problems - clean - contradictory
+            ),
+        );
+    }
+    say(
+        sweep.json,
+        format!(
+            "Checked steps {}..{} of {}. Resume with: --seed {} --step {}",
+            start,
+            pos,
+            order.len(),
+            sweep.seed,
+            pos
+        ),
+    );
+    let summary = serde_json::json!({
+        "scope": scope,
+        "seed": sweep.seed,
+        "step": start,
+        "next_step": pos,
+        "total": order.len(),
+        "subproblems": {
+            "total": problems,
+            "clean": clean,
+            "contradictory": contradictory,
+            "hit_limit": problems - clean - contradictory,
+        },
+    });
+    (proofs, summary)
 }
 
 /// Inject a `.kif.tq` test bundle's hypotheses into a temp session and return

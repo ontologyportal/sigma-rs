@@ -2,7 +2,8 @@
  * GitHub REST client for the demo: the pure, token-per-call layer (fork,
  * branch, commit, pull request) plus the page's authenticated entry points
  * (`fetchFileCommits`, `fetchPullRequest`, `fetchBlobText`, `fetchSumoTree`,
- * `fetchLastCommitInfo`) that read the token from the auth store, so catalog
+ * `fetchLastCommitInfo`, `findSumoIssue`, `createSumoIssue`) that read the
+ * token from the auth store, so catalog
  * reads, commit reads, and contribution writes all authenticate the same way
  * and share one set of rate-limit wording.
  *
@@ -428,6 +429,54 @@ export function fetchPullRequest(number: number): Promise<PullRequest> {
   return githubApi<PullRequest>(
     `/repos/${SUMO.owner}/${SUMO.repo}/pulls/${number}`,
   );
+}
+
+/** An issue on the SUMO repository, as `findSumoIssue` / `createSumoIssue`
+ *  report it. */
+export interface IssueRef {
+  number: number;
+  url: string;
+  title: string;
+  state: string;
+}
+
+/** The first SUMO issue (open or closed) whose body contains `marker`, or
+ *  null -- how a contradiction report finds an earlier report of itself. */
+export async function findSumoIssue(marker: string): Promise<IssueRef | null> {
+  const q = `repo:${SUMO.owner}/${SUMO.repo} is:issue in:body "${marker}"`;
+  const res = await githubApi<Res<"GET /search/issues">>(
+    `/search/issues?q=${encodeURIComponent(q)}&per_page=1`,
+  );
+  const hit = res.items[0];
+  return hit
+    ? {
+        number: hit.number,
+        url: hit.html_url,
+        title: hit.title,
+        state: hit.state,
+      }
+    : null;
+}
+
+/** Open an issue on the SUMO repository as the signed-in user. */
+export async function createSumoIssue(
+  title: string,
+  body: string,
+): Promise<IssueRef> {
+  const token = useAuthStore().token;
+  if (!token)
+    throw new GitHubError("Log in with GitHub to report issues.", 401);
+  const issue = await api<Res<"POST /repos/{owner}/{repo}/issues">>(
+    token,
+    `/repos/${SUMO.owner}/${SUMO.repo}/issues`,
+    { method: "POST", body: JSON.stringify({ title, body }) },
+  );
+  return {
+    number: issue.number,
+    url: issue.html_url,
+    title: issue.title,
+    state: issue.state,
+  };
 }
 
 /**

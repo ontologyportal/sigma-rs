@@ -47,7 +47,9 @@ const prover = useProverStore();
           step="100"
           v-model.number="prover.cfg.maxSteps"
         />
-        <div class="hint sub">given-clause loop budget</div>
+        <div class="hint sub">
+          given-clause loop budget (per query, or per audit subproblem)
+        </div>
       </div>
       <div v-if="!prover.vampireSelected">
         <label for="cfgMaxLits">max literals</label>

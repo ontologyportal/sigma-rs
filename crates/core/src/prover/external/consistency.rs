@@ -12,10 +12,12 @@ use crate::{
 };
 
 impl<T: crate::trans::HasTranslation + 'static> ExternalProverLayer<T> {
-    /// KB-wide satisfiability check (no conjecture): SInE-select from the
-    /// session seed (or the whole axiom base), build, and saturate.
+    /// Satisfiability check (no conjecture): SInE-select from the `focus` and
+    /// session sentences (force-including them), or take the whole axiom base
+    /// when both are empty, then build and saturate.
     pub(super) fn ext_check_consistency(
         &self,
+        focus: &[SentenceId],
         opts: &ExternalOpts,
         ctx: &ProveCtx,
     ) -> ProverResult {
@@ -33,7 +35,8 @@ impl<T: crate::trans::HasTranslation + 'static> ExternalProverLayer<T> {
             })
             .unwrap_or_default();
 
-        let mut sorted: Vec<SentenceId> = if session_sids.is_empty() {
+        let seed: Vec<SentenceId> = focus.iter().chain(&session_sids).copied().collect();
+        let mut sorted: Vec<SentenceId> = if seed.is_empty() {
             self.translation()
                 .semantic
                 .syntactic
@@ -44,11 +47,11 @@ impl<T: crate::trans::HasTranslation + 'static> ExternalProverLayer<T> {
             self.translation()
                 .semantic
                 .syntactic
-                .sine_select_for_sids(&session_sids, opts.selection, ctx)
+                .sine_select_for_sids(&seed, opts.selection, ctx)
                 .into_iter()
                 .collect()
         };
-        sorted.extend(session_sids.iter().copied());
+        sorted.extend(seed);
         sorted.sort_unstable();
         sorted.dedup();
         let extra = self.translation().synthetic_replacements(&sorted);

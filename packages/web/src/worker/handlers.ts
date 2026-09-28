@@ -18,6 +18,7 @@ import {
 } from "sigmakee/sdk";
 import type {
   AskResult,
+  AuditRequest,
   AuditResult,
   Diagnostic,
   FileStats,
@@ -311,11 +312,17 @@ export const handlers = {
     return { result: active().ask(query, { session: tag, tptp: !!tptp }) };
   },
 
-  audit({ config, limit }: { config?: ProverConfig; limit?: number }): {
+  audit({
+    config,
+    request,
+  }: {
+    config?: ProverConfig;
+    request?: AuditRequest;
+  }): {
     result: AuditResult;
   } {
     active().configure(makeConfig(config));
-    return { result: active().auditConsistency(limit ?? 5) };
+    return { result: active().auditConsistency(request) };
   },
 };
 

@@ -121,42 +121,68 @@ impl Session {
         }
     }
 
-    /// Audit the whole KB for logical consistency with the backend the
-    /// active [`Config`] selects -- the native saturation prover enumerates
-    /// up to `limit` (default 5) distinct contradictions; Vampire's one-shot
-    /// run yields at most one.  Each contradiction is cited back to
-    /// `file:line` wherever a step traces to an input axiom.  In-browser
-    /// analogue of the `sumo audit` CLI command; uses the active config for
-    /// its time/step budget.
+    /// Sampled consistency audit with the backend the active [`Config`]
+    /// selects: walk a seeded pseudorandom sweep of the KB's eligible axioms
+    /// (bookkeeping heads excluded) and, for each group of `batch` of them,
+    /// check their SInE neighborhood -- sized by the config's selection
+    /// budget -- for a contradiction.  Uses the active config's time limit per
+    /// subproblem, and (native) its step cap.
+    ///
+    /// `request` is `{ seed?, step?, count?, batch?, limit?, scope?, budget?,
+    /// depth? }`: sweep seed (default 0), start position (0), sentences to
+    /// check (1), sentences per subproblem (1), distinct contradictions to
+    /// stop at (5), an optional loaded file tag to restrict the sweep to, and
+    /// the subproblem size -- the most axioms a neighborhood may select and
+    /// the SInE expansion depth -- overriding the config's selection budget
+    /// when given.
     ///
     /// Returns a JS object:
     ///
-    /// * `status` -- one of `"Consistent"`, `"Inconsistent"`, `"Timeout"`,
-    ///   `"InputError"`, `"Unknown"`;
+    /// * `status` -- `"Inconsistent"` or `"Unknown"` (never `"Consistent"`:
+    ///   unchecked neighborhoods remain);
     /// * `inconsistent` -- `true` iff `status === "Inconsistent"`;
-    /// * `given_steps` -- given-clause steps the native loop executed (or `null`);
-    /// * `raw_output` -- the engine's human-readable trace;
+    /// * `raw_output` -- the engine's human-readable trace, one line per
+    ///   subproblem;
+    /// * `seed`, `step`, `next_step`, `total` -- the sweep position checked
+    ///   and where to resume (`total` is the sweep's size);
+    /// * `batches` -- one per subproblem: `{ focus: { kif, file, line }[],
+    ///   status, stop_reason, elapsed_ms }`, where `status` `"Consistent"`
+    ///   means that neighborhood saturated clean and `stop_reason` is
+    ///   `"TimeLimit"`, `"StepLimit"`, `"IncompleteLoad"`, `"GaveUp"` or `null`;
     /// * `contradictions` -- one entry per distinct contradiction found, each
     ///   `{ steps: { index, rule, premises, kif, tptp, file, line }[],
-    ///   graphviz, proof_tptp_prologue }` (see [`ask`](Session::ask) for
-    ///   `tptp`/`proof_tptp_prologue`); `file`/`line` are `null` for
-    ///   derived/anonymous steps that don't trace to an input axiom;
-    ///   `graphviz` is that contradiction's derivation rendered as a DOT
-    ///   digraph.
+    ///   graphviz, prose, prose_missing, proof_tptp_prologue }` (see
+    ///   [`ask`](Session::ask) for `tptp`/`proof_tptp_prologue`).
     ///
     /// [`Config`]: crate::Config
     #[wasm_bindgen(js_name = auditConsistency)]
-    pub fn audit_consistency(&self, limit: Option<u32>) -> Result<JsValue, JsValue> {
+    pub fn audit_consistency(&self, request: JsValue) -> Result<JsValue, JsValue> {
+        let req: AuditRequest = if request.is_undefined() || request.is_null() {
+            AuditRequest::default()
+        } else {
+            serde_wasm_bindgen::from_value(request)
+                .map_err(|e| JsValue::from_str(&format!("audit request: {e}")))?
+        };
+        let sample = sigmakee_rs_core::AuditSample {
+            seed: req.seed,
+            step: req.step,
+            count: req.count,
+            batch: req.batch.max(1),
+            limit: req.limit.max(1),
+        };
+        let scope = req.scope.as_deref();
         let session_guard = self.session.read().expect("kb lock not poisoned");
         let axiom_count = session_guard.kb().sine_axiom_count();
         match self.config.selected_backend() {
             Backend::Native => {
-                let opts = self.config.to_native_opts(axiom_count);
-                to_js(&session_guard.audit_view_native(opts, limit.unwrap_or(5) as usize))
+                let mut opts = self.config.to_native_opts(axiom_count);
+                req.size(&mut opts.selection);
+                to_js(&session_guard.audit_view_native(opts, sample, scope))
             }
             Backend::Vampire => {
-                let opts = self.config.to_external_opts(axiom_count);
-                to_js(&session_guard.audit_view(opts))
+                let mut opts = self.config.to_external_opts(axiom_count);
+                req.size(&mut opts.selection);
+                to_js(&session_guard.audit_view(opts, sample, scope))
             }
         }
     }
@@ -174,5 +200,47 @@ impl Session {
             None => inner.clausify_all(),
         };
         serde_wasm_bindgen::to_value(&clauses).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+}
+
+/// The JS request object of [`Session::audit_consistency`].
+#[derive(serde::Deserialize)]
+#[serde(default)]
+struct AuditRequest {
+    seed: u32,
+    step: usize,
+    count: usize,
+    batch: usize,
+    limit: usize,
+    scope: Option<String>,
+    budget: Option<usize>,
+    depth: Option<usize>,
+}
+
+impl AuditRequest {
+    /// Apply the requested subproblem size to a prover's selection params.
+    fn size(&self, selection: &mut sigmakee_rs_core::SineParams) {
+        if let Some(budget) = self.budget {
+            selection.auto_budget = Some(budget.max(1));
+            selection.select_all = false;
+        }
+        if self.depth.is_some() {
+            selection.depth_limit = self.depth;
+        }
+    }
+}
+
+impl Default for AuditRequest {
+    fn default() -> Self {
+        Self {
+            seed: 0,
+            step: 0,
+            count: 1,
+            batch: 1,
+            limit: 5,
+            scope: None,
+            budget: None,
+            depth: None,
+        }
     }
 }

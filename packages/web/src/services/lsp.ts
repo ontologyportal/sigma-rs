@@ -250,6 +250,13 @@ export function lspOpenTag(): string | null {
   return openTag;
 }
 
+/** The buffer text last synced to the server for `tag` -- which, reconciled,
+ *  is what the live KB holds for that file, saved or not -- or null when
+ *  `tag` is not the open document. */
+export function lspSyncedText(tag: string): string | null {
+  return openTag === tag ? lastSyncedText : null;
+}
+
 const LSP_SEVERITY: Record<number, Diagnostic["severity"]> = {
   1: "error",
   2: "warning",

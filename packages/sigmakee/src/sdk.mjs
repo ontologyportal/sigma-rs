@@ -362,18 +362,18 @@ export class Session {
   }
 
   /**
-   * Consistency-audit the whole KB with this session's backend: the native
-   * prover enumerates up to `limit` distinct contradictions, Vampire's
-   * one-shot run reports at most one; each is cited back to `file:line`
-   * wherever a step traces to an input axiom. TranslationOnly sessions throw.
-   * @param {number} [limit] caps distinct contradictions found (default 5).
+   * Sampled consistency audit with this session's backend: walk
+   * `request`'s slice of the KB's seeded sweep, checking each subproblem's
+   * SInE neighborhood for a contradiction; each one found is cited back to
+   * `file:line`. Never reports `Consistent`. TranslationOnly sessions throw.
+   * @param {import('./sdk').AuditRequest} [request]
    * @returns {import('./sdk').AuditResult}
    */
-  auditConsistency(limit) {
+  auditConsistency(request) {
     if (this.#backend === Backend.TranslationOnly) {
       throw new Error("auditConsistency() needs a proving backend");
     }
-    return this.#kb.auditConsistency(limit);
+    return this.#kb.auditConsistency(request);
   }
 
   /**

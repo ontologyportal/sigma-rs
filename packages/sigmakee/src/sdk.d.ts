@@ -59,12 +59,54 @@ export interface AuditStep {
   line: number | null;
 }
 
-/** Consistency-audit result (from a Native-backed {@link Session.auditConsistency}). */
-export interface AuditResult {
+/** Which slice of the sampled audit's sweep to check (see {@link Session.auditConsistency}). */
+export interface AuditRequest {
+  /** Seed of the pseudorandom sweep order (default 0). */
+  seed?: number;
+  /** Sweep position to start from (default 0). */
+  step?: number;
+  /** Sentences to check (default 1). */
+  count?: number;
+  /** Sentences per subproblem (default 1). */
+  batch?: number;
+  /** Stop after this many distinct contradictions (default 5). */
+  limit?: number;
+  /** A loaded file tag to restrict the sweep to; omitted = the whole KB. */
+  scope?: string;
+  /** Most axioms one neighborhood may select; omitted = the config's selection budget. */
+  budget?: number;
+  /** SInE expansion depth; omitted = unlimited / the config's. */
+  depth?: number;
+}
+
+/** Why one audit subproblem stopped without a verdict. `StepLimit` is
+ *  native-only (the given-clause cap, which only binds without a time limit). */
+export type AuditStopReason =
+  "TimeLimit" | "StepLimit" | "IncompleteLoad" | "GaveUp";
+
+/** One subproblem of a sampled audit. */
+export interface AuditBatch {
+  /** The sentences whose SInE neighborhood was checked. */
+  focus: Array<{ kif: string; file: string | null; line: number | null }>;
+  /** `Consistent` means only that this neighborhood saturated clean. */
   status: "Consistent" | "Inconsistent" | "Timeout" | "InputError" | "Unknown";
+  stop_reason: AuditStopReason | null;
+  elapsed_ms: number;
+}
+
+/** Sampled consistency-audit result (from {@link Session.auditConsistency}). */
+export interface AuditResult {
+  /** Never `Consistent`: unchecked neighborhoods remain. */
+  status: "Inconsistent" | "Unknown";
   inconsistent: boolean;
-  given_steps: number | null;
   raw_output: string;
+  seed: number;
+  step: number;
+  /** Where to resume the sweep. */
+  next_step: number;
+  /** Size of the whole sweep (eligible sentences). */
+  total: number;
+  batches: AuditBatch[];
   /** One entry per distinct contradiction, each with its own DOT digraph and prose. */
   contradictions: Array<{
     steps: AuditStep[];
@@ -495,8 +537,8 @@ export class Session {
   tell(text: string, session?: string, tptp?: boolean): TellResult;
   /** Prove with this session's backend (Native or Vampire); TranslationOnly throws. */
   ask(query: string, opts?: AskOpts): AskResult;
-  /** Consistency-audit the whole KB with this session's backend. `limit` caps distinct contradictions (default 5; Vampire reports at most one). */
-  auditConsistency(limit?: number): AuditResult;
+  /** Sampled consistency audit with this session's backend: check `request`'s slice of the KB's seeded sweep, one SInE neighborhood per subproblem. */
+  auditConsistency(request?: AuditRequest): AuditResult;
   translate(opts?: TranslateOpts): string;
   lookup(pattern: string): string[];
   validate(): Diagnostic[];

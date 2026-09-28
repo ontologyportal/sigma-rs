@@ -627,6 +627,11 @@ where
             file,
             thoroughness,
             limit,
+            seed,
+            step,
+            count,
+            batch,
+            json,
             keep,
             kb: _,
         } => {
@@ -636,14 +641,22 @@ where
             if supplied(arg_matches, "scope") {
                 manager.native_prover.selection.auto_budget = None;
             }
+            // Per subproblem: a neighbourhood is small, and a sweep runs many.
             if !supplied(arg_matches, "timeout") {
-                manager.native_prover.time_limit_secs = 60;
+                manager.native_prover.time_limit_secs = 10;
             }
             manager.native_prover.want_proof = true;
             manager.native_prover.max_steps = 500_000;
             manager.native_prover.max_lits = 12;
             manager.native_prover.forward_close = true;
-            run_audit(session, &manager, file, keep)
+            let sweep = sigmakee::cli::audit::Sweep {
+                seed,
+                step,
+                count,
+                batch,
+                json,
+            };
+            run_audit(session, &manager, file, sweep, keep)
         }
 
         Cmd::Search {

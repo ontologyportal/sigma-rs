@@ -177,6 +177,10 @@ onBeforeUnmount(() => {
           </div>
         </div>
       </header>
+      <div v-if="boot.recovering" class="recover-banner" role="status">
+        The engine crashed (most likely out of memory) and is restarting —
+        reloading the knowledge base…
+      </div>
 
       <TabNav />
 
@@ -358,5 +362,13 @@ header {
   to {
     transform: rotate(360deg);
   }
+}
+.recover-banner {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border-left: 3px solid var(--warn);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  font-size: 13px;
 }
 </style>

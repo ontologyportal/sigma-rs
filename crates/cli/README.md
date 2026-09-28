@@ -266,34 +266,87 @@ sumo man SYMBOL [--lang LANG] [-P] [-f FILE]... [-d DIR]... [--db DIR]
 
 ### `sumo audit`
 
-Consistency-check a single loaded KIF file against the rest of the
-knowledge base via Vampire, surfacing any axioms that contradict each
-other.
+Look for contradictions in the knowledge base by sampling a random axiom and saturating its SInE neighborhood (e.g. E prover's EAX filter). The axiom is pseudorandomly selected based on the fixed `--seed`, at most `--count` axioms are tested, and `--step` skips that many axioms (the combination of `--seed`, `--count` and `--step` can allow you to run continuing contradiction scans deterministically).
 
 ```
-sumo audit <FILE> [--thoroughness F] [--scope F] [--timeout SECS] [-k FILE]
-                [--proof FORMAT] [--vampire PATH]
-                [-f FILE]... [-d DIR]... [--db DIR]
+sumo audit [FILE] [--seed S] [--step I] [--count N | --thoroughness F]
+                  [--batch K] [--limit N] [--json]
+                  [--scope F] [--timeout SECS] [--proof FORMAT]
+                  [-f FILE]... [-d DIR]... [--db DIR]
 ```
 
-Flow: collect the sentences of `<FILE>` (must already be in the KB →
-pass `-f` / `-d` the same way as other subcommands) → randomly
-subsample by `--thoroughness` → SInE-expand from the sampled
-sentences' symbols at the configured `--scope` tolerance → feed the
-union to Vampire with no conjecture (pure axiom-satisfiability) → if
-Vampire reports `ContradictoryAxioms`, trace each axiom-role step in
-the refutation back to its source `file:line`.
+Any contradiction found in a neighbourhood is a contradiction of the
+whole KB, and is reported with every implicated axiom cited back to its
+`file:line`. Finding none does **not** certify the KB consistent: the
+result is either "Inconsistent" or "no contradiction found in the N
+neighbourhoods checked", never "Consistent".
+
+The run prints one progress line per subproblem and ends with the
+position to resume from:
+
+```
+Audit: the entire KB -- checking 3 of 35724 sentence(s) from step 0 (seed 5, 1 per subproblem)
+  [1/3] Timeout in 10711 ms -- capabilities.kif:298
+  [2/3] Consistent in 412 ms -- Government.kif:2518
+  [3/3] Inconsistent in 51 ms -- Merge.kif:4
+Checked steps 0..3 of 35724. Resume with: --seed 5 --step 3
+```
+
+The same `--seed` always produces the same order, so a `(--seed,
+--step)` pair names the same position again as long as the loaded KB
+is unchanged.
 
 | Flag | Default | Description |
 |---|---|---|
-| `FILE` | — | Path to a `.kif` file already loaded into the KB. Tag matched case-sensitively against the loaded tags |
-| `--thoroughness F` | `1.0` | Fraction of root sentences to sample, in `(0.0, 1.0]`. Smaller = faster, less coverage |
-| `--scope F` | crate default | SInE tolerance factor (≥ 1.0) for axiom expansion. Higher = more thorough, more expensive |
-| `--timeout SECS` | `60` | Vampire proof-search timeout |
-| `-k` / `--keep FILE` | — | Write generated TPTP to `FILE` (for debugging) |
-| `--proof FORMAT` | — | Print the full refutation proof when one is found (same `FORMAT` values as `ask`) |
+| `FILE` | -- | Optional. A `.kif` file already loaded into the KB (tag matched case-sensitively against the loaded tags) restricts the sweep to its sentences; their neighbourhoods still reach every file. A `.kif.tq` test file instead has its assertions injected into a temporary session and checked as one neighbourhood ("which axioms made this test fail?"). Omit to sweep the whole KB |
+| `--seed S` | `0` | Seed of the pseudorandom sweep order |
+| `--step I` | `0` | Sweep position to start from; the end-of-run summary prints the position to resume from |
+| `--count N` | -- | How many sentences to check. Overrides `--thoroughness` |
+| `--thoroughness F` | `1.0` | Fraction of the remaining sweep (from `--step`) to check when `--count` is not given, in `(0.0, 1.0]` |
+| `--batch K` | `1` | Sentences per subproblem: their neighbourhoods are checked together. Larger batches mean fewer, bigger subproblems |
+| `--limit N` | `64` | Stop after this many distinct contradictions (duplicates, i.e. the same set of implicated axioms reached from different subproblems, are reported once) |
+| `--scope F` | crate default | SInE tolerance for each neighbourhood (a fixed tolerance instead of the automatic budget). Lower = smaller, faster subproblems |
+| `--timeout SECS` | `10` | Time limit **per subproblem** |
+| `--proof FORMAT` | -- | Also print each contradiction's full derivation (same `FORMAT` values as `ask`) |
+| `--json` | off | Print one JSON summary on stdout (see below); progress lines go to stderr |
+| `-k` / `--keep FILE` | -- | Accepted for compatibility; not used by `audit` |
 
-Uses TPTP FOF (TFF is not currently wired through `debug`).
+With `--json`, stdout carries a single object suitable for scripts and
+CI:
+
+```json
+{
+  "scope": "audit.kif",
+  "seed": 5,
+  "step": 5,
+  "next_step": 7,
+  "total": 7,
+  "subproblems": { "total": 2, "clean": 0, "contradictory": 1, "hit_limit": 1 },
+  "inconsistent": true,
+  "contradictions": [
+    {
+      "axioms": [
+        { "file": "audit.kif", "line": 6, "kif": "(=> (p ?X) (q ?X))" },
+        { "file": "audit.kif", "line": 4, "kif": "(p a)" },
+        { "file": "audit.kif", "line": 5, "kif": "(not (q a))" }
+      ],
+      "steps": 4
+    }
+  ]
+}
+```
+
+`subproblems.clean` counts neighbourhoods that saturated with no
+contradiction (which says nothing about the rest of the KB);
+`hit_limit` counts those stopped by the time limit or step cap. For a
+`.kif.tq` test file the summary carries `test_bundle` and `sentences`
+instead of the sweep fields. The exit status is `0` when no
+contradiction was found, and `1` when one was (or on an error, such as
+a `FILE` that is not loaded).
+
+The prover is whichever backend the session is configured with; the
+native prover checks each neighbourhood for up to `--limit`
+contradictions, Vampire reports at most one per subproblem.
 
 ### `sumo update`
 

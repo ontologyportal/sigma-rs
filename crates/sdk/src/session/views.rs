@@ -1078,30 +1078,109 @@ pub struct ContradictionView {
     pub proof_tptp_prologue: String,
 }
 
-/// Curated consistency-audit result.
+/// Why one audit subproblem ended without a `Consistent` / `Inconsistent`
+/// verdict.
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub enum AuditStopReason {
+    /// The wall-clock time limit ran out.
+    TimeLimit,
+    /// The native prover's given-clause step cap ran out.
+    StepLimit,
+    /// The search saturated, but some axioms never entered it (failed
+    /// clausification or a dropped clause), so consistency is not certified.
+    IncompleteLoad,
+    /// The prover stopped without a verdict for any other reason.
+    GaveUp,
+}
+
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
+impl AuditStopReason {
+    /// Classify a native-prover audit result.  The native driver reports a
+    /// step-cap stop as `Unknown`/`GaveUp` with no saturation outcome, and an
+    /// incomplete load as saturation that was not complete.
+    pub fn from_native(r: &sigmakee_rs_core::ProverResult) -> Option<Self> {
+        use sigmakee_rs_core::prover::TerminationReason as TR;
+        match r.status {
+            ProverStatus::Consistent | ProverStatus::Inconsistent => None,
+            ProverStatus::Timeout => Some(Self::TimeLimit),
+            _ if r.termination == Some(TR::TimeLimit) => Some(Self::TimeLimit),
+            _ if r.complete_saturation == Some(false) => Some(Self::IncompleteLoad),
+            _ if r.termination == Some(TR::GaveUp) && r.complete_saturation.is_none() => {
+                Some(Self::StepLimit)
+            }
+            _ => Some(Self::GaveUp),
+        }
+    }
+
+    /// Classify an external-prover (Vampire) audit result, which has no step
+    /// cap.
+    pub fn from_external(r: &sigmakee_rs_core::ProverResult) -> Option<Self> {
+        match r.status {
+            ProverStatus::Consistent | ProverStatus::Inconsistent => None,
+            ProverStatus::Timeout => Some(Self::TimeLimit),
+            _ if r.termination == Some(sigmakee_rs_core::prover::TerminationReason::TimeLimit) => {
+                Some(Self::TimeLimit)
+            }
+            _ => Some(Self::GaveUp),
+        }
+    }
+}
+
+/// One sentence a sampled-audit subproblem was focused on.
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
+#[derive(serde::Serialize)]
+pub struct AuditFocusView {
+    pub kif: String,
+    pub file: Option<String>,
+    pub line: Option<u32>,
+}
+
+/// One subproblem of a sampled audit: its focus sentences and how the check
+/// of their SInE neighborhood ended (`Consistent` here means only that the
+/// neighborhood saturated clean).
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
+#[derive(serde::Serialize)]
+pub struct AuditBatchView {
+    pub focus: Vec<AuditFocusView>,
+    pub status: String,
+    pub stop_reason: Option<AuditStopReason>,
+    pub elapsed_ms: u64,
+}
+
+/// Curated sampled consistency-audit result (see
+/// `KnowledgeBase::audit_sampled_with`).  `status` is `Inconsistent` or
+/// `Unknown`, never `Consistent`.  `seed` + `next_step` resume the sweep.
 #[cfg(any(feature = "external-prover", feature = "native-prover"))]
 #[derive(serde::Serialize)]
 pub struct AuditResultView {
     pub status: String,
     pub inconsistent: bool,
-    pub given_steps: Option<usize>,
     pub raw_output: String,
+    pub seed: u32,
+    pub step: usize,
+    pub next_step: usize,
+    /// Size of the whole sweep (eligible sentences).
+    pub total: usize,
+    pub batches: Vec<AuditBatchView>,
     pub contradictions: Vec<ContradictionView>,
 }
 
 #[cfg(any(feature = "external-prover", feature = "native-prover"))]
 impl AuditResultView {
-    /// Project an audit outcome against the KB that ran it.  The axiom source
-    /// index is built once and shared across all contradictions -- rendering N
+    /// Project a sampled audit against the KB that ran it; `classify` names
+    /// each subproblem's stop reason for its backend.  The axiom source index
+    /// is built once and shared across all contradictions -- rendering N
     /// contradictions would otherwise repeat a whole-KB fingerprint pass N
     /// times.
     pub fn project<L: TopLayer>(
         kb: &KnowledgeBase<L>,
-        status: ProverStatus,
-        given_steps: Option<usize>,
-        raw_output: String,
-        contradiction_proofs: &[Vec<KifProofStep>],
+        sample: sigmakee_rs_core::AuditSample,
+        audit: sigmakee_rs_core::SampledAudit,
+        classify: fn(&sigmakee_rs_core::ProverResult) -> Option<AuditStopReason>,
     ) -> Self {
+        let result = audit.result;
+        let contradiction_proofs = &result.contradiction_proofs;
         let src_idx = if contradiction_proofs.is_empty() {
             None
         } else {
@@ -1134,11 +1213,40 @@ impl AuditResultView {
                 }
             })
             .collect();
+        let batches = audit
+            .batches
+            .iter()
+            .map(|b| AuditBatchView {
+                focus: b
+                    .focus
+                    .iter()
+                    .map(|&sid| {
+                        let span = sigmakee_rs_core::DiagnosticSource::sentence_location(kb, sid);
+                        AuditFocusView {
+                            kif: kb.pretty_print_sentence_plain(sid, 0),
+                            file: span.as_ref().map(|s| s.file.clone()),
+                            line: span.as_ref().map(|s| s.line),
+                        }
+                    })
+                    .collect(),
+                status: format!("{:?}", b.outcome.status),
+                stop_reason: classify(&b.outcome),
+                elapsed_ms: u64::try_from(b.elapsed.as_millis()).unwrap_or(u64::MAX),
+            })
+            .collect();
+        let mut raw_output = result.raw_output.clone();
+        for (i, b) in audit.batches.iter().enumerate() {
+            raw_output.push_str(&format!("\n[{}] {}", i + 1, b.outcome.raw_output));
+        }
         Self {
-            status: format!("{:?}", status),
-            inconsistent: status == ProverStatus::Inconsistent,
-            given_steps,
+            status: format!("{:?}", result.status),
+            inconsistent: result.status == ProverStatus::Inconsistent,
             raw_output,
+            seed: sample.seed,
+            step: sample.step,
+            next_step: audit.next_step,
+            total: audit.total,
+            batches,
             contradictions,
         }
     }
@@ -1533,18 +1641,19 @@ impl<S: TopLayer + 'static> Session<sigmakee_rs_core::ProverLayer<S>> {
         )
     }
 
-    /// Audit the whole KB for logical consistency with the native saturation
-    /// prover, enumerating up to `limit` distinct contradictions, and project
-    /// the outcome (see [`AuditResultView`]).
-    pub fn audit_view(&self, opts: sigmakee_rs_core::NativeOpts, limit: usize) -> AuditResultView {
-        let result = self.kb.audit_consistency(&[], opts, limit);
-        AuditResultView::project(
-            &self.kb,
-            result.status,
-            result.given_steps,
-            result.raw_output,
-            &result.contradiction_proofs,
-        )
+    /// Sampled consistency audit with the native saturation prover over the
+    /// sweep `scope` (a loaded file tag, or the whole KB) and `sample`'s
+    /// slice of it; `opts.selection` sizes each subproblem's neighborhood and
+    /// `opts`' time limit and step cap bound each one.
+    pub fn audit_view(
+        &self,
+        opts: sigmakee_rs_core::NativeOpts,
+        sample: sigmakee_rs_core::AuditSample,
+        scope: Option<&str>,
+    ) -> AuditResultView {
+        let order = self.kb.audit_sweep_order(scope, sample.seed);
+        let audit = self.kb.audit_sampled(&order, sample, &opts);
+        AuditResultView::project(&self.kb, sample, audit, AuditStopReason::from_native)
     }
 }
 
@@ -1588,24 +1697,17 @@ impl<T: sigmakee_rs_core::HasTranslation + 'static>
         )
     }
 
-    /// Audit the KB for consistency with the external prover (one-shot: at
-    /// most one contradiction) and project the outcome (see
-    /// [`AuditResultView`]).
-    pub fn audit_view(&self, opts: sigmakee_rs_core::ExternalOpts) -> AuditResultView {
-        let result = self.kb.audit_consistency(&[], opts, 1);
-        let proofs: Vec<Vec<KifProofStep>> =
-            if result.status == ProverStatus::Inconsistent && !result.proof_kif.is_empty() {
-                vec![result.proof_kif]
-            } else {
-                result.contradiction_proofs
-            };
-        AuditResultView::project(
-            &self.kb,
-            result.status,
-            result.given_steps,
-            result.raw_output,
-            &proofs,
-        )
+    /// Sampled consistency audit with the external prover (at most one
+    /// contradiction per subproblem); see the native `audit_view`.
+    pub fn audit_view(
+        &self,
+        opts: sigmakee_rs_core::ExternalOpts,
+        sample: sigmakee_rs_core::AuditSample,
+        scope: Option<&str>,
+    ) -> AuditResultView {
+        let order = self.kb.audit_sweep_order(scope, sample.seed);
+        let audit = self.kb.audit_sampled(&order, sample, &opts);
+        AuditResultView::project(&self.kb, sample, audit, AuditStopReason::from_external)
     }
 }
 
@@ -1636,21 +1738,16 @@ impl<S: sigmakee_rs_core::HasTranslation + 'static>
         )
     }
 
-    /// [`audit_view`](Self::audit_view) on the nested native prover, which
-    /// enumerates up to `limit` distinct contradictions.
+    /// [`audit_view`](Self::audit_view) on the nested native prover.
     pub fn audit_view_native(
         &self,
         opts: sigmakee_rs_core::NativeOpts,
-        limit: usize,
+        sample: sigmakee_rs_core::AuditSample,
+        scope: Option<&str>,
     ) -> AuditResultView {
-        let result = self.kb.audit_consistency_native(&[], opts, limit);
-        AuditResultView::project(
-            &self.kb,
-            result.status,
-            result.given_steps,
-            result.raw_output,
-            &result.contradiction_proofs,
-        )
+        let order = self.kb.audit_sweep_order(scope, sample.seed);
+        let audit = self.kb.audit_sampled_native(&order, sample, &opts);
+        AuditResultView::project(&self.kb, sample, audit, AuditStopReason::from_native)
     }
 }
 
@@ -2103,5 +2200,67 @@ fof(f2,axiom,(
         let rows = narrow["domains"].as_array().expect("array");
         assert_eq!(rows[1]["status"], "inherited");
         assert_eq!(rows[1]["inherited_from"], "sparse");
+    }
+
+    #[cfg(any(feature = "external-prover", feature = "native-prover"))]
+    mod audit_stop_reason {
+        use super::super::AuditStopReason;
+        use sigmakee_rs_core::prover::TerminationReason as TR;
+        use sigmakee_rs_core::{ProverResult, ProverStatus};
+
+        fn result(
+            status: ProverStatus,
+            termination: Option<TR>,
+            complete: Option<bool>,
+        ) -> ProverResult {
+            ProverResult {
+                status,
+                termination,
+                complete_saturation: complete,
+                ..Default::default()
+            }
+        }
+
+        #[test]
+        fn verdicts_have_no_stop_reason() {
+            for st in [ProverStatus::Consistent, ProverStatus::Inconsistent] {
+                let r = result(st, Some(TR::Saturation), Some(true));
+                assert_eq!(AuditStopReason::from_native(&r), None);
+                assert_eq!(AuditStopReason::from_external(&r), None);
+            }
+        }
+
+        #[test]
+        fn native_distinguishes_step_limit_from_incomplete_load() {
+            let steps = result(ProverStatus::Unknown, Some(TR::GaveUp), None);
+            assert_eq!(
+                AuditStopReason::from_native(&steps),
+                Some(AuditStopReason::StepLimit)
+            );
+            let load = result(ProverStatus::Unknown, Some(TR::GaveUp), Some(false));
+            assert_eq!(
+                AuditStopReason::from_native(&load),
+                Some(AuditStopReason::IncompleteLoad)
+            );
+            let time = result(ProverStatus::Timeout, Some(TR::TimeLimit), None);
+            assert_eq!(
+                AuditStopReason::from_native(&time),
+                Some(AuditStopReason::TimeLimit)
+            );
+        }
+
+        #[test]
+        fn external_never_reports_a_step_limit() {
+            let r = result(ProverStatus::Unknown, Some(TR::GaveUp), None);
+            assert_eq!(
+                AuditStopReason::from_external(&r),
+                Some(AuditStopReason::GaveUp)
+            );
+            let t = result(ProverStatus::Unknown, Some(TR::TimeLimit), None);
+            assert_eq!(
+                AuditStopReason::from_external(&t),
+                Some(AuditStopReason::TimeLimit)
+            );
+        }
     }
 }

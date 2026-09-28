@@ -434,6 +434,63 @@ fof(goal, conjecture, animal(rex)).\n";
     }
 
     #[test]
+    fn sampled_audit_view_reports_per_subproblem_outcomes() {
+        use crate::session::views::AuditStopReason;
+        let mut s = Session::<ProverLayer>::new(SESSION.to_string());
+        s.ingest(
+            reader(
+                "c.kif",
+                "(p a)\n(p b)\n(=> (p ?X) (q ?X))\n(=> (q ?X) (r ?X))\n\
+                 (=> (r ?X) (s ?X))\n(=> (s ?X) (t ?X))",
+            ),
+            true,
+        );
+        let whole = |batch| sigmakee_rs_core::AuditSample {
+            seed: 3,
+            step: 0,
+            count: 100,
+            batch,
+            limit: 5,
+        };
+        let capped = NativeOpts {
+            max_steps: 1,
+            time_limit_secs: 0,
+            forward_close: false,
+            ..Default::default()
+        };
+        let v = s.audit_view(capped, whole(100), None);
+        assert_eq!(v.status, "Unknown", "{}", v.raw_output);
+        assert_eq!(v.batches.len(), 1);
+        assert_eq!(
+            v.batches[0].stop_reason,
+            Some(AuditStopReason::StepLimit),
+            "{}",
+            v.raw_output
+        );
+
+        let default_cap = NativeOpts {
+            time_limit_secs: 10,
+            forward_close: false,
+            ..Default::default()
+        };
+        let v = s.audit_view(default_cap, whole(1), None);
+        assert_eq!(
+            v.status, "Unknown",
+            "a sampled audit never claims Consistent"
+        );
+        assert_eq!(v.seed, 3);
+        assert_eq!(v.total, 6);
+        assert_eq!(v.next_step, 6);
+        assert_eq!(v.batches.len(), 6);
+        for b in &v.batches {
+            assert_eq!(b.status, "Consistent", "{}", v.raw_output);
+            assert_eq!(b.stop_reason, None);
+            assert_eq!(b.focus.len(), 1);
+            assert_eq!(b.focus[0].file.as_deref(), Some("c.kif"));
+        }
+    }
+
+    #[test]
     fn validate_formula_on_native_session_flags_parse_error() {
         let mut s = Session::<ProverLayer>::new(SESSION.to_string());
         let diags = s.validate_formula("(broken (").unwrap();

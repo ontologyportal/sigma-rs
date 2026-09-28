@@ -7,6 +7,7 @@
 
 #![cfg(any(feature = "external-prover", feature = "native-prover"))]
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use crate::layer::{Layer, TopLayer};
@@ -44,6 +45,17 @@ impl<L: ProvingLayer + TopLayer + Layer> KnowledgeBase<L> {
     /// base plus optional session support carried by `opts`.
     pub fn check_satisfiable(&self, opts: L::Opts) -> ProverResult {
         self.audit_consistency(&[], opts, 1)
+    }
+
+    /// [`audit_sampled_with`](KnowledgeBase::audit_sampled_with) on the top
+    /// layer's prover.
+    pub fn audit_sampled(
+        &self,
+        order: &[SentenceId],
+        sample: AuditSample,
+        opts: &L::Opts,
+    ) -> SampledAudit {
+        self.audit_sampled_with(&self.layer, order, sample, opts)
     }
 }
 
@@ -161,6 +173,150 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
     ) -> ProverResult {
         prover.audit_consistency(focus, &opts, limit, &self.prove_ctx())
     }
+
+    /// The sweep a sampled audit walks: every promoted axiom (or only
+    /// `scope`'s, a loaded file tag) minus the excluded bookkeeping heads,
+    /// in a pseudorandom order fixed by `seed`.  The order depends only on
+    /// the seed and the sentences' content, so a `(seed, step)` pair names
+    /// the same position again as long as the eligible set is unchanged.
+    pub fn audit_sweep_order(&self, scope: Option<&str>, seed: u32) -> Vec<SentenceId> {
+        let axioms = self.syntactic().axiom_ids_set();
+        let pool: Vec<SentenceId> = match scope {
+            Some(file) => self
+                .file_roots(file)
+                .into_iter()
+                .filter(|sid| axioms.contains(sid))
+                .collect(),
+            None => axioms.into_iter().collect(),
+        };
+        let mut order = self.filter_excluded_heads(&pool);
+        order.sort_unstable_by_key(|&sid| (splitmix64(sid ^ u64::from(seed)), sid));
+        order
+    }
+
+    /// Sampled consistency audit: take `sample.count` sentences of `order`
+    /// from `sample.step`, and for each group of `sample.batch` run a focused
+    /// [`audit_with`](Self::audit_with) to check satisfiability over that
+    /// group's SInE neighborhood, selected by `opts`' selection parameters.
+    /// Any contradiction found in a neighborhood is one of the KB's.
+    ///
+    /// Stops early once `sample.limit` distinct contradictions (deduped by
+    /// the source axioms they cite) are found.  The result is `Inconsistent`
+    /// or `Unknown`.
+    pub fn audit_sampled_with<P: ProvingLayer>(
+        &self,
+        prover: &P,
+        order: &[SentenceId],
+        sample: AuditSample,
+        opts: &P::Opts,
+    ) -> SampledAudit {
+        let start = sample.step.min(order.len());
+        let end = start.saturating_add(sample.count).min(order.len());
+        let limit = sample.limit.max(1);
+        let mut out = SampledAudit {
+            total: order.len(),
+            next_step: start,
+            ..Default::default()
+        };
+        let mut seen: HashSet<Vec<SentenceId>> = HashSet::new();
+        let mut proofs: Vec<Vec<crate::prover::proof::KifProofStep>> = Vec::new();
+        let mut inconsistent = false;
+        for focus in order[start..end].chunks(sample.batch.max(1)) {
+            if proofs.len() >= limit {
+                break;
+            }
+            let started = crate::clock::Instant::now();
+            let mut r = self.audit_with(prover, focus, opts.clone(), limit - proofs.len());
+            inconsistent |= r.status == ProverStatus::Inconsistent;
+            let mut found = std::mem::take(&mut r.contradiction_proofs);
+            if found.is_empty() && !r.proof_kif.is_empty() {
+                found.push(std::mem::take(&mut r.proof_kif));
+            }
+            for steps in found {
+                let mut culprits: Vec<SentenceId> =
+                    steps.iter().filter_map(|s| s.source_sid).collect();
+                culprits.sort_unstable();
+                culprits.dedup();
+                if seen.insert(culprits) {
+                    proofs.push(steps);
+                }
+            }
+            out.next_step += focus.len();
+            out.batches.push(AuditBatch {
+                focus: focus.to_vec(),
+                outcome: r,
+                elapsed: started.elapsed(),
+            });
+        }
+        out.result = ProverResult {
+            status: if inconsistent {
+                ProverStatus::Inconsistent
+            } else {
+                ProverStatus::Unknown
+            },
+            raw_output: format!(
+                "sampled audit: seed {}, positions {}..{} of {} in {} subproblem(s); \
+                 {} distinct contradiction(s)",
+                sample.seed,
+                start,
+                out.next_step,
+                out.total,
+                out.batches.len(),
+                proofs.len()
+            ),
+            proof_kif: proofs.first().cloned().unwrap_or_default(),
+            contradiction_proofs: proofs,
+            ..Default::default()
+        };
+        out
+    }
+}
+
+/// Which slice of the sweep a sampled audit checks (see
+/// [`KnowledgeBase::audit_sampled_with`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AuditSample {
+    /// Seed of the pseudorandom sweep order.
+    pub seed: u32,
+    /// Sweep position to start from.
+    pub step: usize,
+    /// How many sentences to check (clamped to what remains).
+    pub count: usize,
+    /// Sentences per subproblem (their neighborhoods are checked together).
+    pub batch: usize,
+    /// Stop after this many distinct contradictions.
+    pub limit: usize,
+}
+
+/// One subproblem of a sampled audit: the focus sentences whose SInE
+/// neighborhood was checked, and that check's outcome.  The outcome's
+/// contradiction proofs are moved into [`SampledAudit::result`].
+#[derive(Debug, Clone)]
+pub struct AuditBatch {
+    pub focus: Vec<SentenceId>,
+    pub outcome: ProverResult,
+    pub elapsed: std::time::Duration,
+}
+
+/// Outcome of [`KnowledgeBase::audit_sampled_with`].
+#[derive(Debug, Clone, Default)]
+pub struct SampledAudit {
+    /// `Inconsistent` (with the deduped proofs) or `Unknown`.
+    pub result: ProverResult,
+    pub batches: Vec<AuditBatch>,
+    /// Size of the whole sweep.
+    pub total: usize,
+    /// Where to resume: the position after the last sentence checked.
+    pub next_step: usize,
+}
+
+/// A cheap, well-mixed bijection for seeding the
+/// sweep order without a random-number dependency.
+fn splitmix64(mut x: u64) -> u64 {
+    x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    x ^ (x >> 31)
 }
 
 /// Parse a query in `dialect` into the bare conjecture formulas a prover
@@ -290,6 +446,17 @@ impl<S: crate::trans::HasTranslation + 'static>
     ) -> ProverResult {
         self.audit_with(self.native(), focus, opts, limit)
     }
+
+    /// [`audit_sampled_with`](KnowledgeBase::audit_sampled_with) on the
+    /// nested native prover instead of the external backend.
+    pub fn audit_sampled_native(
+        &self,
+        order: &[SentenceId],
+        sample: AuditSample,
+        opts: &crate::NativeOpts,
+    ) -> SampledAudit {
+        self.audit_sampled_with(self.native(), order, sample, opts)
+    }
 }
 
 #[cfg(feature = "native-prover")]
@@ -390,6 +557,110 @@ mod dialect_tests {
         let res = kb.ask_query("(subclass Dog Mammal)", None, SineParams::default(), fast());
         assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
     }
+
+    fn sample(step: usize, count: usize, batch: usize, limit: usize) -> crate::AuditSample {
+        crate::AuditSample {
+            seed: 7,
+            step,
+            count,
+            batch,
+            limit,
+        }
+    }
+
+    const CONTRA: &str = "(p a)\n(not (q a))\n(=> (p ?X) (q ?X))\n(r b)\n(s c)\n";
+
+    #[test]
+    fn sweep_order_is_a_seeded_permutation_without_bookkeeping() {
+        let facts: String = (0..20).map(|i| format!("(p c{i})\n")).collect();
+        let kb = kb_native(&format!(
+            "(documentation c0 EnglishLanguage \"a thing\")\n{facts}"
+        ));
+        let order = kb.audit_sweep_order(None, 1);
+        assert_eq!(order.len(), 20, "documentation must be excluded");
+        assert_eq!(
+            order,
+            kb.audit_sweep_order(None, 1),
+            "same seed, same order"
+        );
+        let mut sorted = order.clone();
+        sorted.sort_unstable();
+        let mut other = kb.audit_sweep_order(None, 2);
+        assert_ne!(order, other, "a different seed reorders");
+        other.sort_unstable();
+        assert_eq!(sorted, other, "every seed covers the same sentences");
+    }
+
+    #[test]
+    fn sweep_order_can_be_scoped_to_one_file() {
+        let mut kb = kb_native("(p a)\n(p b)\n");
+        let r = kb.reload_kif(
+            "(q a)\n",
+            &std::path::PathBuf::from("other.kif"),
+            "other.kif",
+        );
+        assert!(r.ok, "load failed: {:?}", r.diagnostics);
+        kb.make_session_axiomatic("other.kif").expect("promote");
+        assert_eq!(kb.audit_sweep_order(None, 0).len(), 3);
+        assert_eq!(kb.audit_sweep_order(Some("other.kif"), 0).len(), 1);
+    }
+
+    #[test]
+    fn sampled_audit_finds_a_contradiction_in_a_neighborhood() {
+        let kb = kb_native(CONTRA);
+        let order = kb.audit_sweep_order(None, 7);
+        let out = kb.audit_sampled(&order, sample(0, order.len(), 1, 10), &fast());
+        assert_eq!(
+            out.result.status,
+            ProverStatus::Inconsistent,
+            "raw: {}",
+            out.result.raw_output
+        );
+        assert_eq!(
+            out.result.contradiction_proofs.len(),
+            1,
+            "deduped by culprits"
+        );
+        assert_eq!(out.next_step, order.len());
+        assert_eq!(out.total, order.len());
+    }
+
+    #[test]
+    fn sampled_audit_never_claims_consistent() {
+        let kb = kb_native("(p a)\n(q a)\n(=> (p ?X) (q ?X))\n");
+        let order = kb.audit_sweep_order(None, 7);
+        let out = kb.audit_sampled(&order, sample(0, order.len(), 1, 10), &fast());
+        assert_eq!(out.result.status, ProverStatus::Unknown);
+        assert!(out.result.contradiction_proofs.is_empty());
+        assert_eq!(out.batches.len(), order.len());
+    }
+
+    #[test]
+    fn sampled_audit_pages_through_the_sweep() {
+        let kb = kb_native(CONTRA);
+        let order = kb.audit_sweep_order(None, 7);
+        let out = kb.audit_sampled(&order, sample(1, 2, 1, 10), &fast());
+        assert_eq!(out.batches.len(), 2);
+        assert_eq!(out.next_step, 3);
+        assert_eq!(out.batches[0].focus, vec![order[1]]);
+
+        let batched = kb.audit_sampled(&order, sample(0, order.len(), 3, 10), &fast());
+        assert_eq!(batched.batches.len(), order.len().div_ceil(3));
+        assert_eq!(batched.batches[0].focus.len(), 3);
+
+        let past = kb.audit_sampled(&order, sample(99, 5, 1, 10), &fast());
+        assert!(past.batches.is_empty());
+        assert_eq!(past.next_step, order.len());
+    }
+
+    #[test]
+    fn sampled_audit_stops_at_the_limit() {
+        let kb = kb_native("(p a)\n(not (p a))\n(q b)\n(not (q b))\n(r c)\n(not (r c))\n");
+        let order = kb.audit_sweep_order(None, 7);
+        let out = kb.audit_sampled(&order, sample(0, order.len(), 1, 1), &fast());
+        assert_eq!(out.result.contradiction_proofs.len(), 1);
+        assert!(out.next_step < order.len(), "stopped before the end");
+    }
 }
 
 #[cfg(all(test, feature = "external-prover"))]
@@ -476,6 +747,49 @@ fof(f4, plain, $false, inference(resolution, [], [f1, f3])).\n\
         assert!(
             tptp.contains("s__Rex") && tptp.contains("s__Animal"),
             "conjecture symbols missing in:\n{tptp}"
+        );
+    }
+
+    #[test]
+    fn a_focused_audit_sends_only_the_neighborhood() {
+        let runner = Arc::new(Canned {
+            transcript: "% SZS status Satisfiable for input\n",
+            seen: Mutex::new(Vec::new()),
+        });
+        let mut kb = kb_with(runner.clone());
+        let r = kb.reload_kif(
+            "(instance Tweety Bird)\n",
+            &std::path::PathBuf::from("birds.kif"),
+            "birds.kif",
+        );
+        assert!(r.ok, "load failed: {:?}", r.diagnostics);
+        kb.make_session_axiomatic("birds.kif").expect("promote");
+
+        let focus = kb.file_roots("test.kif");
+        let rex: Vec<_> = focus
+            .into_iter()
+            .filter(|sid| kb.sentence_kif_str(*sid).contains("Rex"))
+            .collect();
+        // A fixed tolerance: the default auto-budget exceeds this tiny KB and
+        // would select all of it.
+        let opts = ExternalOpts {
+            selection: crate::SineParams::strict(),
+            ..ExternalOpts::default()
+        };
+        let res = kb.audit_consistency(&rex, opts, 1);
+        assert_eq!(
+            res.status,
+            ProverStatus::Consistent,
+            "raw: {}",
+            res.raw_output
+        );
+
+        let seen = runner.seen.lock().unwrap();
+        let tptp = &seen[0];
+        assert!(tptp.contains("s__Rex"), "focus missing in:\n{tptp}");
+        assert!(
+            !tptp.contains("s__Tweety"),
+            "an unrelated axiom leaked into the neighborhood:\n{tptp}"
         );
     }
 
