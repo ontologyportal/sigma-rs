@@ -151,6 +151,7 @@ const shownRefs = computed(() =>
       <ol v-if="shownRefs.length" class="refs">
         <CiteRow
           v-for="(r, i) in shownRefs"
+          :class="{ 'doc-ref': r.kind === 'doc' }"
           :key="`${r.file}:${r.line}:${i}`"
           :kif="r.kif"
           :file="r.file"
@@ -200,5 +201,11 @@ ol.refs li {
 }
 ol.refs li:last-child {
   border-bottom: none;
+}
+:deep(.doc-ref .ref-kif) {
+  box-sizing: border-box;
+  width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 </style>
