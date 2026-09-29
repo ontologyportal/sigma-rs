@@ -545,19 +545,26 @@ export const useKBStore = defineStore("kb", {
 
     /** Fetch every saved constituent's text and ingest it, in order --
      *  boot's fetch+ingest loop. `onProgress` fires once per constituent,
-     *  before its fetch starts. */
+     *  before its fetch starts. A failed constituent is reported and skipped
+     *  so the remaining saved files can still load. */
     async loadSavedConstituents(
       onProgress?: (name: string, index: number, total: number) => void,
-    ) {
+    ): Promise<string[]> {
       const total = this.saved.length;
+      const failed: string[] = [];
       let i = 0;
       for (const { name, origin: json } of this.saved) {
         i += 1;
         onProgress?.(name, i, total);
-        const origin = parseOrigin(json, name);
-        const text = await fromOrigin(name, origin);
-        await this.ingest(name, text, origin);
+        try {
+          const origin = parseOrigin(json, name);
+          const text = await fromOrigin(name, origin);
+          await this.ingest(name, text, origin);
+        } catch (e) {
+          failed.push(`${name}: ${errMsg(e)}`);
+        }
       }
+      return failed;
     },
 
     /** Advance one source's update preference to the next in the cycle
