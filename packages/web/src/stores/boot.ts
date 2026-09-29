@@ -22,6 +22,10 @@ export const useBootStore = defineStore("boot", {
     /** True if boot threw -- `error` then holds the message to show. */
     failed: false,
     error: "",
+    /** Saved constituents skipped during boot because fetching or ingesting
+     *  them failed. These are non-fatal: the app opens with the files that
+     *  loaded successfully. */
+    loadErrors: [] as string[],
     msg: "Starting the engine...",
     step: 0,
     total: 1,
@@ -92,6 +96,9 @@ export const useBootStore = defineStore("boot", {
       const wordnet = useWordNetStore();
       const tests = useTestsStore();
       try {
+        this.failed = false;
+        this.error = "";
+        this.loadErrors = [];
         this.msg = "Starting the engine...";
         await this.bootWorker();
         this.opfsRoot = await navigator.storage.getDirectory();
@@ -111,7 +118,7 @@ export const useBootStore = defineStore("boot", {
           this.progress("Fetching WordNet lexicon...");
           await wordnet.install();
           this.progress("Loading WordNet lexicon...");
-          await kb.loadSavedConstituents((name, i, total) => {
+          this.loadErrors = await kb.loadSavedConstituents((name, i, total) => {
             this.progress(`Fetching ${name} (${i}/${total})`);
           });
         }

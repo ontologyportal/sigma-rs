@@ -182,6 +182,17 @@ onBeforeUnmount(() => {
         reloading the knowledge base…
       </div>
 
+      <div
+        v-if="boot.loadErrors.length"
+        class="load-warning"
+        role="alert"
+        :title="boot.loadErrors.join('\n')"
+      >
+        Could not load {{ boot.loadErrors.length }} constituent
+        {{ boot.loadErrors.length === 1 ? "file" : "files" }}. The app is
+        running with the remaining constituents. {{ boot.loadErrors[0] }}
+      </div>
+
       <TabNav />
 
       <router-view v-slot="{ Component }">
@@ -363,7 +374,8 @@ header {
     transform: rotate(360deg);
   }
 }
-.recover-banner {
+.recover-banner,
+.load-warning {
   margin: 0 0 12px;
   padding: 8px 12px;
   border-radius: 8px;
