@@ -16,6 +16,7 @@ following document is a full end user's guide for using the CLI.
     * [`test`](#sumo-test)
     * [`load`](#sumo-load)
     * [`man`](#sumo-man)
+    * [`celt`](#sumo-celt)
     * [`audit`](#sumo-audit)
     * [`update`](#sumo-update)
     * [`config`](#sumo-config)
@@ -304,6 +305,35 @@ sumo man SYMBOL [--lang LANG] [-P] [-f FILE]... [-d DIR]... [--db DIR]
 | `SYMBOL` | — | Symbol to describe (e.g. `Human`, `subclass`, `instance`) |
 | `--lang LANG` | — | Filter documentation / term-format entries by language tag (e.g. `EnglishLanguage`). When omitted, entries in all languages are shown |
 | `-P` / `--no-pager` | — | Disable the interactive pager; print directly to stdout. Pager is also disabled automatically when stdout is not a TTY or when `NO_PAGER` is set |
+
+### `sumo celt`
+
+Translate controlled English into SUO-KIF grounded in the loaded KB. The input is a deliberately tiny fragment of English that is really a formal language: every accepted sentence has exactly one reading, and the translator never guesses -- a sentence it cannot read is refused with the word or construct at fault, a caret under it, and a hint for rewriting it. Vocabulary comes from the KB's `termFormat` labels first and the WordNet mappings second (labels outrank senses, so a wrong most-frequent sense is fixed by adding a `termFormat`), and only terms the KB actually defines are used; proper names are KB instances, or unknown capitalized words with `--assume-names`. Assertions bind indefinites to Skolem constants (`Book-1`) so each formula is independently tellable and a later "the book" refers back; questions become conjectures. Requires the WordNet lexicon (`<lexicon>` in config.xml or `<kbDir>/WordNetMappings`).
+
+```
+sumo celt [TEXT]... [--input FILE] [--names FILE] [--assume-names] [--kif-only] [--explain] [-f FILE]... [-d DIR]... [--db DIR]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `TEXT` | stdin | The English text, joined with spaces. When omitted (and no `--input`), read from stdin |
+| `--input FILE` | -- | Read the text from a file instead (`-f` is the KB constituent flag) |
+| `--names FILE` | `<lexicon dir>/FirstNames.csv` when present | A `FirstNames.csv` (`"name","gender"` rows) of words that always read as proper names of Humans, even where WordNet has a common-noun sense ("Mike") |
+| `--assume-names` | off | Accept an unknown capitalized word as the name of a `Human` instead of refusing the sentence (emits `(instance Mike Human)` and `(names "Mike" Mike)`) |
+| `--kif-only` | off | Print only the KIF formulas, one per line; refused sentences become `;;` comment lines |
+| `--explain` | off | Also print each accepted sentence's lexical choices (`word -> Term (sense) [alternatives]`) and the matching rule |
+
+Exit status is success only when every sentence translated. The run ends with `N/M sentences translated` and, for any refusals, a histogram of refusal codes -- on a corpus, that histogram is the list of constructs worth supporting next.
+
+```
+Rex is a dog.          (instance Rex Dog)
+A dog is an animal.    (subclass Dog Animal)
+Mike reads a book.     (instance Reading-1 Reading) (agent Reading-1 Mike)
+                       (instance Book-1 Book) (patient Reading-1 Book-1)
+Is Rex a dog?          ?- (instance Rex Dog)
+```
+
+Refused constructs (each names its code, e.g. `unsupported/pronoun`): pronouns, coordination ("and"/"or"), subordinate and relative clauses, modals ("can", "must"), passives, possessives, numbers, progressive and perfect aspect, adverbs, bare-plural action generics ("Dogs chase cats"), and any word the lexicon or KB has no term for.
 
 ### `sumo audit`
 

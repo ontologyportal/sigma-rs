@@ -503,6 +503,47 @@ pub enum Cmd {
         limit: usize,
     },
 
+    /// Translate controlled English into SUO-KIF grounded in the loaded
+    /// KB.  Every sentence has exactly one reading or is refused with the
+    /// offending word/construct and a rewrite hint; nothing is guessed.
+    /// Vocabulary comes from `termFormat` labels plus the WordNet
+    /// mappings, so the lexicon must be loaded (`<lexicon>` in
+    /// config.xml or `<kbDir>/WordNetMappings`).
+    ///
+    /// Example: `sumo celt "Rex is a dog. Is Rex a dog?"`
+    Celt {
+        /// The English text (joined with spaces).  When omitted and no
+        /// `--file` is given, the text is read from stdin.
+        text: Vec<String>,
+
+        /// Read the text from this file instead of the command line
+        /// (`-f` is the KB constituent flag, hence a different name).
+        #[arg(long, value_name = "FILE", conflicts_with = "text")]
+        input: Option<PathBuf>,
+
+        /// A `FirstNames.csv` (`"name","gender"` rows) of words that always
+        /// read as proper names of Humans.  Default: the lexicon
+        /// directory's own `FirstNames.csv` when present.
+        #[arg(long, value_name = "FILE")]
+        names: Option<PathBuf>,
+
+        /// Accept an unknown capitalized word as the name of a Human
+        /// (`(instance Mike Human)`) instead of refusing the sentence.
+        #[arg(long = "assume-names")]
+        assume_names: bool,
+
+        /// Print only the KIF formulas, one per line; refused sentences
+        /// become `;;` comment lines.
+        #[arg(long = "kif-only", conflicts_with = "explain")]
+        kif_only: bool,
+
+        /// Also print each accepted sentence's lexical choices
+        /// (`word -> Term (sense) [alternatives]`) and the rule that
+        /// matched.
+        #[arg(long)]
+        explain: bool,
+    },
+
     /// Audit the knowledge base for inconsistency by sampling: walk a
     /// seeded pseudorandom sweep of its axioms (bookkeeping heads such as
     /// `documentation` excluded) and check each one's SInE neighbourhood

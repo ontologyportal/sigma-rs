@@ -57,6 +57,12 @@ pub(crate) use kb::progress::{profile_span, with_guard};
 #[cfg(feature = "lexicon")]
 pub mod lexicon;
 
+/// Controlled English to SUO-KIF translation over the lexicon and
+/// `KnowledgeBase::search`.  See [`celt`] for the language and how to
+/// extend it.
+#[cfg(feature = "lexicon")]
+pub mod celt;
+
 #[doc(hidden)]
 pub use crate::trans::TranslationLayer;
 
