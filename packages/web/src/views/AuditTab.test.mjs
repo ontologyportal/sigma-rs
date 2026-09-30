@@ -28,7 +28,12 @@ const source = transpile(
   compileScript(descriptor, { id: "audit-test" }).content,
 );
 
-function fixture({ unavailable = "", noProof = false } = {}) {
+function fixture({
+  unavailable = "",
+  noProof = false,
+  invalid = "",
+  recheckOutcome = "Consistent",
+} = {}) {
   const calls = [];
   const axiom = { file: "Merge.kif", line: 1, kif: "(p)" };
   const replay = {
@@ -45,12 +50,31 @@ function fixture({ unavailable = "", noProof = false } = {}) {
     ],
   };
   const imports = {
-    vue,
+    vue: { ...vue, onActivated: () => {} },
     "vue-router": { onBeforeRouteLeave: () => {} },
     "../services/sigma": {
       isWasmAbort: () => false,
       call: async (cmd, args) => {
         calls.push({ cmd, args });
+        if (cmd === "prepareAuditRecheck" || cmd === "auditRecheckStatus")
+          return { available: !invalid, reason: invalid, revision: 7 };
+        if (cmd === "recheckAudit")
+          return {
+            result: {
+              total: 1,
+              next_step: 1,
+              contradictions: [],
+              batches: [
+                {
+                  status: recheckOutcome,
+                  stop_reason:
+                    recheckOutcome === "Timeout" ? "TimeLimit" : null,
+                  focus: [],
+                },
+              ],
+              raw_output: "",
+            },
+          };
         return {
           result: {
             total: 1000,
@@ -94,7 +118,15 @@ function fixture({ unavailable = "", noProof = false } = {}) {
     },
     "../utils/contradictionReport": {
       contradictionKey: () => "proof",
-      summarizeBatches: () => ({}),
+      summarizeBatches: (batches) => ({
+        total: batches.length,
+        clean: batches.filter((b) => b.status === "Consistent").length,
+        contradictory: 0,
+        timeLimit: batches.filter((b) => b.status === "Timeout").length,
+        stepLimit: 0,
+        crashed: 0,
+        other: 0,
+      }),
     },
   };
   const exports = {};
@@ -108,6 +140,13 @@ function fixture({ unavailable = "", noProof = false } = {}) {
   const view = scope.run(() => exports.default.setup({}, { expose: () => {} }));
   return { view, calls, scope, replay };
 }
+
+test("report dialog explains the nightly audit and stale-report restriction", () => {
+  const template = descriptor.template.content.replace(/\s+/g, " ");
+  assert.match(template, /SUMO runs a two-hour contradiction audit each night/);
+  assert.match(template, /replay only those steps/);
+  assert.match(template, /Reports cannot be loaded if master has changed/);
+});
 
 test("opening and dismissing the report never loads or audits", async () => {
   const f = fixture();
@@ -165,6 +204,70 @@ test("missing contradictions are reported as a mismatch, never success", async (
     assert.match(
       f.view.replayMessage.value,
       /1 reported contradiction\(s\) missing/,
+    );
+  } finally {
+    f.scope.stop();
+  }
+});
+
+test("rechecking uses tracked targets without loading inputs or resetting settings again", async () => {
+  const f = fixture();
+  try {
+    await f.view.showMasterReport();
+    await f.view.confirmReplay();
+    f.calls.length = 0;
+    f.view.sweep.batch = 20;
+    f.view.sweep.scope = "Other.kif";
+    await f.view.recheckContradictions();
+    assert.deepEqual(
+      f.calls.map((c) => c.cmd),
+      [
+        "auditRecheckStatus",
+        "recheckAudit",
+        "recheckAudit",
+        "auditRecheckStatus",
+      ],
+    );
+    assert.deepEqual(
+      f.calls.filter((c) => c.cmd === "recheckAudit").map((c) => c.args.index),
+      [0, 1],
+    );
+    assert.match(
+      f.view.replayMessage.value,
+      /2 no longer reproduced a contradiction/,
+    );
+    assert.match(f.view.replayMessage.value, /does not prove/);
+  } finally {
+    f.scope.stop();
+  }
+});
+
+test("invalid formula tracking prevents every recheck call", async () => {
+  const f = fixture({ invalid: "Formulas were added" });
+  try {
+    await f.view.showMasterReport();
+    await f.view.confirmReplay();
+    f.calls.length = 0;
+    await f.view.recheckContradictions();
+    assert.deepEqual(
+      f.calls.map((c) => c.cmd),
+      ["auditRecheckStatus", "auditRecheckStatus"],
+    );
+    assert.match(f.view.recheckReason.value, /Formulas were added/);
+  } finally {
+    f.scope.stop();
+  }
+});
+
+test("recheck timeouts are inconclusive, not repaired contradictions", async () => {
+  const f = fixture({ recheckOutcome: "Timeout" });
+  try {
+    await f.view.showMasterReport();
+    await f.view.confirmReplay();
+    await f.view.recheckContradictions();
+    assert.match(
+      f.view.replayMessage.value,
+      /0 no longer reproduced a contradiction, 2 inconclusive/,
     );
   } finally {
     f.scope.stop();

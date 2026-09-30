@@ -163,7 +163,7 @@ impl Session {
             serde_wasm_bindgen::from_value(request)
                 .map_err(|e| JsValue::from_str(&format!("audit request: {e}")))?
         };
-        let sample = sigmakee_rs_core::AuditSample {
+        let mut sample = sigmakee_rs_core::AuditSample {
             seed: req.seed,
             step: req.step,
             count: req.count,
@@ -172,19 +172,117 @@ impl Session {
         };
         let scope = req.scope.as_deref();
         let session_guard = self.session.read().expect("kb lock not poisoned");
+        let focus = req
+            .focus
+            .as_ref()
+            .map(|focus| {
+                resolve_audit_focus(session_guard.kb(), focus).map_err(|e| JsValue::from_str(&e))
+            })
+            .transpose()?;
+        if focus.is_some() {
+            sample.step = 0;
+            sample.count = 1;
+            sample.batch = 1;
+        }
         let axiom_count = session_guard.kb().sine_axiom_count();
         match self.config.selected_backend() {
             Backend::Native => {
                 let mut opts = self.config.to_native_opts(axiom_count);
                 req.size(&mut opts.selection);
+                if let Some(sid) = focus {
+                    let kb = session_guard.kb();
+                    let audit = kb.audit_sampled_native(&[sid], sample, &opts);
+                    return to_js(&sigmakee_rs_sdk::session::views::AuditResultView::project(
+                        kb,
+                        sample,
+                        audit,
+                        sigmakee_rs_sdk::session::views::AuditStopReason::from_native,
+                    ));
+                }
                 to_js(&session_guard.audit_view_native(opts, sample, scope))
             }
             Backend::Vampire => {
+                if focus.is_some() {
+                    return Err(JsValue::from_str(
+                        "Targeted audit rechecks require the native backend.",
+                    ));
+                }
                 let mut opts = self.config.to_external_opts(axiom_count);
                 req.size(&mut opts.selection);
                 to_js(&session_guard.audit_view(opts, sample, scope))
             }
         }
+    }
+
+    /// Parse formula identities in source order, without mutating the KB.
+    #[wasm_bindgen(js_name = auditDocument)]
+    pub fn audit_document(&self, file: &str, text: &str) -> Result<JsValue, JsValue> {
+        let doc = sigmakee_rs_core::parse_document(
+            file,
+            text,
+            sigmakee_rs_core::Parser::Kif { options: None },
+        );
+        if doc.has_errors() {
+            return Err(JsValue::from_str(
+                "Fix parse errors before rechecking contradictions.",
+            ));
+        }
+        to_js(
+            &doc.root_hashes
+                .iter()
+                .map(|fp| format!("{fp:016x}"))
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    /// The live engine's source identities, including unsaved editor changes.
+    #[wasm_bindgen(js_name = auditSources)]
+    pub fn audit_sources(&self) -> Result<JsValue, JsValue> {
+        let guard = self.session.read().expect("kb lock not poisoned");
+        let kb = guard.kb();
+        let files: Vec<_> = kb
+            .iter_files()
+            .into_iter()
+            .map(|file| {
+                let hashes: Vec<_> = kb
+                    .file_hashes(&file)
+                    .into_iter()
+                    .map(|fp| format!("{fp:016x}"))
+                    .collect();
+                AuditSourceFile { file, keys: hashes }
+            })
+            .collect();
+        to_js(&files)
+    }
+
+    /// Resolve reported sweep positions to source-backed targets before editing.
+    #[wasm_bindgen(js_name = auditTargets)]
+    pub fn audit_targets(&self, positions: JsValue) -> Result<JsValue, JsValue> {
+        let positions: Vec<AuditPosition> = serde_wasm_bindgen::from_value(positions)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let guard = self.session.read().expect("kb lock not poisoned");
+        let kb = guard.kb();
+        let mut orders = std::collections::HashMap::new();
+        let mut out = Vec::new();
+        for position in positions {
+            let order = orders
+                .entry(position.seed)
+                .or_insert_with(|| kb.audit_sweep_order(None, position.seed));
+            let sid = *order
+                .get(position.step)
+                .ok_or_else(|| JsValue::from_str("Reported audit target is missing."))?;
+            let mut sources = kb.sentence_source_hashes(sid);
+            sources.sort_unstable();
+            let source = *sources
+                .first()
+                .ok_or_else(|| JsValue::from_str("Audit target has no source formula."))?;
+            out.push(AuditTarget {
+                source: format!("{source:016x}"),
+                kif: kb.pretty_print_sentence_plain(sid, 0),
+                roots: kb.source_roots(source).len(),
+            });
+        }
+        to_js(&out)
     }
 
     /// Clausify the KB and return its CNF form as SUO-KIF, via the native
@@ -203,10 +301,70 @@ impl Session {
     }
 }
 
+#[derive(serde::Deserialize)]
+struct AuditPosition {
+    seed: u32,
+    step: usize,
+}
+
+#[derive(serde::Serialize)]
+struct AuditTarget {
+    source: String,
+    kif: String,
+    roots: usize,
+}
+
+#[derive(serde::Serialize)]
+struct AuditSourceFile {
+    file: String,
+    keys: Vec<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct AuditFocus {
+    file: String,
+    source: String,
+    /// Original normalized formula, used to distinguish unchanged expansions.
+    kif: String,
+    unchanged: bool,
+}
+
+fn resolve_audit_focus(
+    kb: &sigmakee_rs_core::KnowledgeBase<super::NativeStack>,
+    focus: &AuditFocus,
+) -> Result<sigmakee_rs_core::SentenceId, String> {
+    let source = u64::from_str_radix(&focus.source, 16)
+        .map_err(|_| "Invalid audit source identity.".to_string())?;
+    if !kb.file_hashes(&focus.file).contains(&source) {
+        return Err("The tracked audit formula is no longer loaded.".into());
+    }
+    let roots = kb.source_roots(source);
+    let candidates: Vec<_> = if focus.unchanged {
+        roots
+            .into_iter()
+            .filter(|&sid| kb.pretty_print_sentence_plain(sid, 0) == focus.kif)
+            .collect()
+    } else {
+        roots
+    };
+    if candidates.len() != 1 {
+        return Err(
+            "The edited audit target is ambiguous or has changed its expansion. Load a new report."
+                .into(),
+        );
+    }
+    let sid = candidates[0];
+    if !kb.audit_sweep_order(None, 0).contains(&sid) {
+        return Err("The tracked formula is no longer eligible for an audit.".into());
+    }
+    Ok(sid)
+}
+
 /// The JS request object of [`Session::audit_consistency`].
 #[derive(serde::Deserialize)]
 #[serde(default)]
 struct AuditRequest {
+    focus: Option<AuditFocus>,
     seed: u32,
     step: usize,
     count: usize,
@@ -233,6 +391,7 @@ impl AuditRequest {
 impl Default for AuditRequest {
     fn default() -> Self {
         Self {
+            focus: None,
             seed: 0,
             step: 0,
             count: 1,
@@ -242,5 +401,81 @@ impl Default for AuditRequest {
             budget: None,
             depth: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod recheck_tests {
+    use super::*;
+    use sigmakee_rs_core::{KnowledgeBase, Prover};
+
+    fn kb(text: &str) -> KnowledgeBase<super::super::NativeStack> {
+        let runner = std::sync::Arc::new(crate::vampire::WasmVampireRunner::default());
+        let mut kb = KnowledgeBase::new_external_native(Prover::Custom(runner));
+        assert!(
+            kb.load(
+                sigmakee_rs_core::SourceFile::kif(
+                    std::path::PathBuf::from("test.kif"),
+                    text.to_string()
+                ),
+                "test.kif"
+            )
+            .ok
+        );
+        kb.make_session_axiomatic("test.kif").expect("promote");
+        kb
+    }
+
+    fn focus(
+        kb: &KnowledgeBase<super::super::NativeStack>,
+        text: &str,
+        unchanged: bool,
+    ) -> AuditFocus {
+        let doc = sigmakee_rs_core::parse_document(
+            "test.kif",
+            text,
+            sigmakee_rs_core::Parser::Kif { options: None },
+        );
+        let fp = doc.root_hashes[0];
+        let sid = kb.source_roots(fp)[0];
+        AuditFocus {
+            file: "test.kif".into(),
+            source: format!("{fp:016x}"),
+            kif: kb.pretty_print_sentence_plain(sid, 0),
+            unchanged,
+        }
+    }
+
+    #[test]
+    fn recheck_resolves_current_source_not_original_sweep_position() {
+        let before = kb("(instance Alice Human)");
+        let original = focus(&before, "(instance Alice Human)", true);
+        assert!(resolve_audit_focus(&before, &original).is_ok());
+        let after = kb("(instance Alice Animal)");
+        assert!(resolve_audit_focus(&after, &original).is_err());
+        let mut edited = focus(&after, "(instance Alice Animal)", false);
+        edited.kif = original.kif;
+        let sid = resolve_audit_focus(&after, &edited).expect("edited target");
+        assert!(after.pretty_print_sentence_plain(sid, 0).contains("Animal"));
+        edited.file = "missing.kif".into();
+        assert!(resolve_audit_focus(&after, &edited).is_err());
+    }
+
+    #[test]
+    fn recheck_rejects_expansion_changes_and_ineligible_targets() {
+        let expanded = kb("(<=> (instance Alice Human) (instance Alice Animal))");
+        let target = focus(
+            &expanded,
+            "(<=> (instance Alice Human) (instance Alice Animal))",
+            false,
+        );
+        assert!(resolve_audit_focus(&expanded, &target).is_err());
+        let docs = kb("(documentation Alice EnglishLanguage \"A person\")");
+        let target = focus(
+            &docs,
+            "(documentation Alice EnglishLanguage \"A person\")",
+            false,
+        );
+        assert!(resolve_audit_focus(&docs, &target).is_err());
     }
 }

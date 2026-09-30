@@ -30,6 +30,92 @@ const commit = "a".repeat(40);
 const engine = { commit: "b".repeat(40), fingerprint: "c".repeat(64) };
 const run = { id: 12, run_attempt: 1, head_sha: commit };
 
+function tracker(text = "a b c", roots = 1) {
+  return new exports.AuditRecheckTracker(
+    [{ name: "Merge.kif", text }],
+    [{ source: "b", kif: "(original)", roots }],
+    (_file, source) => {
+      if (source.includes("(")) throw new Error("parse");
+      return source.trim().split(/\s+/).filter(Boolean);
+    },
+  );
+}
+
+test("recheck follows an edited source slot instead of its old hash-sorted position", () => {
+  const t = tracker();
+  t.observe("Merge.kif", "a changed c");
+  assert.equal(
+    t.validate([{ file: "Merge.kif", keys: ["a", "changed", "c"] }]),
+    "",
+  );
+  assert.equal(t.focus(0).source, "changed");
+  assert.equal(t.focus(0).unchanged, false);
+  t.observe("Merge.kif", "a changedAgain c");
+  assert.equal(t.focus(0).source, "changedAgain");
+});
+
+test("formatting changes preserve identities", () => {
+  const t = tracker();
+  t.observe("Merge.kif", " a\n b  c ");
+  assert.equal(t.focus(0).unchanged, true);
+});
+
+test("adding or deleting formulas invalidates tracking even after undo", () => {
+  for (const text of ["a b c new", "a c", "a b c c"]) {
+    const t = tracker();
+    t.observe("Merge.kif", text);
+    t.observe("Merge.kif", "a b c");
+    assert.match(t.invalid, /added or removed/);
+    assert.throws(() => t.focus(0));
+  }
+});
+
+test("equal formula counts cannot disguise moves, duplication or ambiguous replacements", () => {
+  for (const text of ["b a c", "a c new", "new a b", "a a c", "x y c"]) {
+    const t = tracker();
+    t.observe("Merge.kif", text);
+    assert.match(t.invalid, /ambiguous/);
+  }
+});
+
+test("temporary malformed edits block until repaired without losing the original slot", () => {
+  const t = tracker();
+  t.observe("Merge.kif", "a ( c");
+  assert.match(t.validate([]), /parse errors/);
+  t.observe("Merge.kif", "a fixed c");
+  assert.equal(
+    t.validate([{ file: "Merge.kif", keys: ["a", "fixed", "c"] }]),
+    "",
+  );
+  assert.equal(t.focus(0).source, "fixed");
+});
+
+test("new constituents and untracked engine mutations cannot pass recheck validation", () => {
+  const t = tracker();
+  assert.match(
+    t.validate([{ file: "Merge.kif", keys: ["a", "b", "changed"] }]),
+    /live knowledge base differs/,
+  );
+  assert.match(
+    t.validate([
+      { file: "Merge.kif", keys: ["a", "b", "c"] },
+      { file: "Other.kif", keys: ["x"] },
+    ]),
+    /Additional formulas/,
+  );
+  const u = tracker();
+  u.observe("Other.kif", "new");
+  assert.match(u.invalid, /constituent list changed/);
+});
+
+test("duplicate targets and edits to expanded targets fail closed", () => {
+  assert.throws(() => tracker("a b b"), /duplicate/);
+  const t = tracker("a b c", 2);
+  assert.equal(t.focus(0).unchanged, true);
+  t.observe("Merge.kif", "a changed c");
+  assert.throws(() => t.focus(0), /expanded into multiple/);
+});
+
 export function fixture() {
   const files = [
     {

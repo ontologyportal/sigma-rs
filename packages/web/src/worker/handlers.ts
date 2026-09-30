@@ -32,6 +32,7 @@ import type {
   WordNetFiles,
 } from "sigmakee/sdk";
 import { WasmLsp } from "sigmakee";
+import { AuditRecheckTracker, type RecheckTarget } from "../utils/auditReplay";
 
 // Not imported from prover-config.ts: that file is DOM code (this worker has
 // no `document`/`window`), and even a type-only import pulls the whole file
@@ -55,6 +56,23 @@ let session: Session | null = null;
 // shared-KB seam: `new WasmLsp(active().kb)` clones the KB Arc). Lazily
 // (re)built by the `lsp` handler, dropped whenever the session is replaced.
 let wasmLsp: WasmLsp | null = null;
+let recheck: {
+  tracker: AuditRecheckTracker;
+  config: ProverConfig;
+  limit: number;
+} | null = null;
+let recheckRevision = 0;
+
+function recheckState() {
+  if (!recheck)
+    return {
+      available: false,
+      reason: "Load and replay a report to enable rechecking.",
+      revision: recheckRevision,
+    };
+  const reason = recheck.tracker.validate(active().kb.auditSources());
+  return { available: !reason, reason, revision: recheckRevision };
+}
 
 /** The booted session. Every handler but `boot` runs after `boot` has
  *  resolved, so a null here is a page-side ordering bug rather than a
@@ -104,6 +122,8 @@ export const handlers = {
   },
   // Drop the session and start fresh (the page re-ingests every constituent).
   newSession(): { ok: true } {
+    recheck = null;
+    recheckRevision++;
     session = newSession();
     return { ok: true };
   },
@@ -112,6 +132,8 @@ export const handlers = {
   ingest({ name, text }: { name: string; text: string }): {
     notices: string[];
   } {
+    recheck?.tracker.observe(name, text);
+    recheckRevision++;
     return { notices: active().kb.ingest(text, name) };
   },
 
@@ -166,6 +188,8 @@ export const handlers = {
     return { bytes: active().snapshot() };
   },
   restore({ bytes }: { bytes: Uint8Array }): { ok: true } {
+    recheck = null;
+    recheckRevision++;
     active().restore(bytes);
     return { ok: true };
   },
@@ -178,6 +202,32 @@ export const handlers = {
    * `validateBuffer` lane did, and diagnostics ride back in the same batch.
    */
   lsp({ json }: { json: string }): { out: string[] } {
+    if (recheck) {
+      const message = JSON.parse(json);
+      if (
+        ["textDocument/didOpen", "textDocument/didChange"].includes(
+          message.method,
+        )
+      ) {
+        const document = message.params.textDocument;
+        const file = decodeURIComponent(
+          new URL(document.uri).pathname.replace(/^\//, ""),
+        );
+        const changes = message.params.contentChanges;
+        const text =
+          message.method === "textDocument/didOpen"
+            ? document.text
+            : changes?.[0]?.text;
+        if (
+          typeof text !== "string" ||
+          (changes && (changes.length !== 1 || changes[0].range))
+        )
+          recheck.tracker.invalid =
+            "An unsupported editor change invalidated formula tracking. Load a new report.";
+        else recheck.tracker.observe(file, text);
+        recheckRevision++;
+      }
+    }
     if (!wasmLsp) wasmLsp = new WasmLsp(active().kb);
     return { out: wasmLsp.handleMessage(json) };
   },
@@ -323,6 +373,62 @@ export const handlers = {
   } {
     active().configure(makeConfig(config));
     return { result: active().auditConsistency(request) };
+  },
+
+  /** Capture targets only after the report's exact inputs have been loaded. */
+  prepareAuditRecheck({
+    files,
+    positions,
+    config,
+    limit,
+  }: {
+    files: { name: string; text: string }[];
+    positions: { seed: number; step: number }[];
+    config: ProverConfig;
+    limit: number;
+  }) {
+    recheck = null;
+    recheckRevision++;
+    const targets: RecheckTarget[] = active().kb.auditTargets(positions);
+    const tracker = new AuditRecheckTracker(files, targets, (file, text) =>
+      active().kb.auditDocument(file, text),
+    );
+    const reason = tracker.validate(active().kb.auditSources());
+    if (reason) throw new Error(reason);
+    recheck = { tracker, config: { ...config }, limit };
+    return recheckState();
+  },
+
+  auditRecheckStatus() {
+    // Apply pending editor changes before inspecting or rechecking the live KB.
+    wasmLsp?.flushReloads(true);
+    return recheckState();
+  },
+
+  recheckAudit({ index, revision }: { index: number; revision: number }): {
+    result: AuditResult;
+  } {
+    const state = recheckState();
+    if (!state.available || !recheck) throw new Error(state.reason);
+    if (revision !== recheckRevision)
+      throw new Error(
+        "The knowledge base changed during rechecking. Run the recheck again.",
+      );
+    try {
+      const focus = recheck.tracker.focus(index);
+      active().configure(makeConfig(recheck.config));
+      return {
+        result: active().auditConsistency({
+          focus,
+          count: 1,
+          batch: 1,
+          limit: recheck.limit,
+        }),
+      };
+    } catch (e) {
+      recheck.tracker.invalid = e instanceof Error ? e.message : String(e);
+      throw e;
+    }
   },
 };
 

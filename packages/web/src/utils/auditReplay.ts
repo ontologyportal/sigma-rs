@@ -1,9 +1,141 @@
-import type { ProverConfig } from "../stores/prover";
+import type { ProverConfig } from "../worker/handlers";
 
 export interface ReplayAxiom {
   file: string | null;
   line: number | null;
   kif: string;
+}
+
+export interface RecheckTarget {
+  source: string;
+  kif: string;
+  roots: number;
+}
+
+/** In-memory edit lineage for one verified report. Lost on worker reset/reload. */
+export class AuditRecheckTracker {
+  private documents = new Map<string, { text: string; keys: string[] }>();
+  private targets: (RecheckTarget & { file: string; index: number })[] = [];
+  private parseErrors = new Map<string, string>();
+  invalid = "";
+
+  constructor(
+    files: { name: string; text: string }[],
+    targets: RecheckTarget[],
+    private parse: (file: string, text: string) => string[],
+  ) {
+    for (const file of files)
+      this.documents.set(file.name, {
+        text: file.text,
+        keys: parse(file.name, file.text),
+      });
+    this.targets = targets.map((target) => {
+      const matches: { file: string; index: number }[] = [];
+      for (const [file, doc] of this.documents)
+        doc.keys.forEach((key, index) => {
+          if (key === target.source) matches.push({ file, index });
+        });
+      if (matches.length !== 1)
+        throw new Error(
+          "A reported target has missing or duplicate source formulas; rechecking is unsafe.",
+        );
+      return { ...target, ...matches[0] };
+    });
+  }
+
+  /** Observe full editor buffers, including unsaved edits. Structural invalidation is sticky. */
+  observe(file: string, text: string) {
+    if (this.invalid) return;
+    const previous = this.documents.get(file);
+    if (!previous) {
+      this.invalid =
+        "The constituent list changed. Load a new report before rechecking.";
+      return;
+    }
+    if (previous.text === text && !this.parseErrors.has(file)) return;
+    let keys: string[];
+    try {
+      keys = this.parse(file, text);
+      this.parseErrors.delete(file);
+    } catch {
+      this.parseErrors.set(
+        file,
+        `Fix parse errors in ${file} before rechecking.`,
+      );
+      return;
+    }
+    if (keys.length !== previous.keys.length) {
+      this.invalid = `Formulas were added or removed in ${file}. These reported steps are no longer valid.`;
+      return;
+    }
+    const oldPositions = new Map<string, number[]>();
+    previous.keys.forEach((key, index) => {
+      oldPositions.set(key, [...(oldPositions.get(key) ?? []), index]);
+    });
+    let changedRun = 0;
+    for (let i = 0; i < keys.length; i++) {
+      if (keys[i] === previous.keys[i]) {
+        changedRun = 0;
+        continue;
+      }
+      if (oldPositions.has(keys[i]) || ++changedRun > 1) {
+        this.invalid = `Formula identity is ambiguous in ${file} (reordering, duplication, or a multi-formula replacement). Load a new report.`;
+        return;
+      }
+    }
+    this.documents.set(file, { text, keys });
+  }
+
+  /** Verify that tracked buffers really describe the live engine, not saved file copies. */
+  validate(sources: { file: string; keys: string[] }[]): string {
+    if (this.invalid) return this.invalid;
+    if (this.parseErrors.size) return [...this.parseErrors.values()][0];
+    const actual = new Map(sources.map((s) => [s.file, new Set(s.keys)]));
+    for (const [file, doc] of this.documents) {
+      const keys = actual.get(file);
+      if (
+        !keys ||
+        keys.size !== new Set(doc.keys).size ||
+        doc.keys.some((k) => !keys.has(k))
+      )
+        return "The live knowledge base differs from the tracked edits. Save or finish applying your edits before rechecking.";
+      actual.delete(file);
+    }
+    if ([...actual.values()].some((keys) => keys.size)) {
+      this.invalid =
+        "Additional formulas or constituents were loaded. These reported steps are no longer valid.";
+      return this.invalid;
+    }
+    try {
+      this.targets.forEach((_, index) => this.focus(index));
+    } catch (e) {
+      this.invalid = e instanceof Error ? e.message : String(e);
+      return this.invalid;
+    }
+    return "";
+  }
+
+  /** Resolve by source slot, never by the old content-sorted sweep index. */
+  focus(index: number) {
+    if (this.invalid) throw new Error(this.invalid);
+    const target = this.targets[index];
+    if (!target) throw new Error("Unknown reported target.");
+    const source = this.documents.get(target.file)!.keys[target.index];
+    const occurrences = [...this.documents.values()].reduce(
+      (n, doc) => n + doc.keys.filter((key) => key === source).length,
+      0,
+    );
+    if (occurrences !== 1)
+      throw new Error(
+        "The edited target has duplicate source formulas; rechecking is unsafe.",
+      );
+    const unchanged = source === target.source;
+    if (!unchanged && target.roots !== 1)
+      throw new Error(
+        "An edited target originally expanded into multiple formulas; its identity is ambiguous. Load a new report.",
+      );
+    return { file: target.file, source, kif: target.kif, unchanged };
+  }
 }
 
 export interface AuditReplay {

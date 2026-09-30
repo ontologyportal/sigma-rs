@@ -61,6 +61,8 @@ export interface AuditStep {
 
 /** Which slice of the sampled audit's sweep to check (see {@link Session.auditConsistency}). */
 export interface AuditRequest {
+  /** Recheck a tracked source formula instead of an unstable sweep position. Native only. */
+  focus?: { file: string; source: string; kif: string; unchanged: boolean };
   /** Seed of the pseudorandom sweep order (default 0). */
   seed?: number;
   /** Sweep position to start from (default 0). */

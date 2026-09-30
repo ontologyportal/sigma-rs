@@ -71,6 +71,8 @@ const server = await createServer({
         export function connectVampire() {}
         export function replaceWorker() {}
         export async function call(cmd, args) {
+          if (cmd === 'prepareAuditRecheck' || cmd === 'auditRecheckStatus') return { available: true, reason: '', revision: 1 };
+          if (cmd === 'recheckAudit') return { result: { total: 1, next_step: 1, contradictions: [], batches: [{ status: 'Consistent', stop_reason: null, elapsed_ms: 10, focus: [${JSON.stringify(axiom)}] }], raw_output: 'Rechecked edited test fixture target ' + args.index } };
           if (cmd === 'audit') return { result: { total: 1000, next_step: args.request.step + 1, contradictions: [{ steps: [${JSON.stringify(axiom)}] }], batches: [{ status: 'Inconsistent', stop_reason: null, elapsed_ms: 10, focus: [${JSON.stringify(axiom)}] }], raw_output: 'Replayed test fixture step ' + args.request.step } };
           return { text: 'Test fixture', info: {}, terms: [] };
         }`;

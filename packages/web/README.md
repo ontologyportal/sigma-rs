@@ -32,13 +32,32 @@ node --test packages/web/src/services/taxonomy-3d.test.mjs
 
 ## Replaying the master contradiction audit
 
-In Audit, open **Latest master contradiction report** to inspect the latest
+In Audit, open **Latest Contradiction Report** to inspect the latest
 completed master run. A finding makes the workflow fail, so failed runs are
 included. Choose **Confirm: replace work and replay** only after saving any
 local work you want to keep. It replaces the loaded KB, discards conflicting
 saved edits, restores the workflow's prover settings, and runs only the
 reported seed/step positions. The result compares cited axiom sets with the
 report and explicitly identifies missing or additional contradictions.
+
+After loading a report, **Recheck reported contradictions** tests edits against
+the same source targets without downloading inputs, resetting settings, or
+discarding saved or live editor changes. The original workflow settings are
+used for each recheck. Targets follow source-formula slots, not the old sweep
+positions: changing formula content can reorder the seeded sweep.
+
+Tracking lasts for the current app/worker session, including navigation to the
+editor and back. A refresh, worker restart, or KB replacement requires loading
+a report again. Added or removed formulas permanently invalidate the session's
+steps, even if subsequently undone. Reordered or duplicated targets and ambiguous
+multi-formula replacements are rejected; make edits to one existing formula at
+a time. Temporary parse errors block rechecking until corrected. An edited target
+that expands into multiple normalized formulas cannot be safely remapped.
+
+Results distinguish targets that still produce contradictions, those that no
+longer reproduce a contradiction, and inconclusive checks (including timeouts).
+They do not certify that the entire KB is consistent. Rechecking a previously
+loaded, pinned report does not synchronize to a newer master commit.
 
 The SUMO workflow publishes the same `contradictions.md` as both an Actions
 artifact and `.github/latest-contradictions.md` on its `audit-state` branch.
@@ -73,6 +92,7 @@ the same synthetic contradiction is found at the same seed and step:
 
 ```bash
 node packages/web/e2e/audit-replay-engine.mjs
+node packages/web/e2e/audit-recheck-engine.mjs
 ```
 
 For an isolated visual preview of the confirmation flow (no real saved work
