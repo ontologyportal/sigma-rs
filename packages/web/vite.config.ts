@@ -1,13 +1,34 @@
 import { defineConfig } from "vite";
 import vue from "@vitejs/plugin-vue";
 
+function auditEngine() {
+  try {
+    return JSON.parse(
+      process
+        .getBuiltinModule("fs")
+        .readFileSync(
+          new URL("../sigmakee/dist/build-info.json", import.meta.url),
+          "utf8",
+        ),
+    );
+  } catch {
+    return null;
+  }
+}
+
 // vite.config.ts runs under Node, not the browser -- but this is a browser
 // package, so pulling in @types/node globally would leak Node's `setTimeout`
 // (returning `Timeout`) over DOM's (returning `number`) into every app file.
 // `declare const` in a module file scopes the binding to this file only.
-declare const process: { env: Record<string, string | undefined> };
+declare const process: {
+  env: Record<string, string | undefined>;
+  getBuiltinModule(name: "fs"): {
+    readFileSync(path: URL, encoding: "utf8"): string;
+  };
+};
 
 export default defineConfig({
+  define: { __AUDIT_ENGINE__: JSON.stringify(auditEngine()) },
   // Mount point, baked into every emitted asset URL: / for Cloudflare Pages,
   // /browse/ for GitHub Pages. Must stay ABSOLUTE -- with a relative base the
   // SPA fallback serves index.html at deeper paths (/edit/), where

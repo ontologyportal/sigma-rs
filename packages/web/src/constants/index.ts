@@ -27,6 +27,10 @@ export const WORDNET_DIR = "WordNetMappings";
 /** This app's own repository — the bug-report link's target. */
 export const APP_REPO = { owner: "ontologyportal", repo: "sigma-rs" };
 
+declare const __AUDIT_ENGINE__: { commit: string; fingerprint: string } | null;
+/** Source identity of the bundled WASM, absent for legacy engine builds. */
+export const AUDIT_ENGINE = __AUDIT_ENGINE__;
+
 export const SUMO_FILE_SETTING = "sumoFiles";
 export const TQ_SETTING = "sumoTests";
 /** The constituent library: registered repos + local/URL entries. */

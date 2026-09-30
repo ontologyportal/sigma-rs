@@ -19,6 +19,7 @@
  */
 
 import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   copyFileSync,
   existsSync,
@@ -26,6 +27,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  writeFileSync,
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -36,6 +38,33 @@ const LIB_NAME = "sumo_parser_wasm";
 const WASM_TRIPLE = "wasm32-unknown-unknown";
 const TARGET = process.argv[2] ?? "web";
 const OUT_DIR = join(PKG_DIR, process.argv[3] ?? "dist");
+
+// Stamp the actual WASM inputs, not the web checkout (NO_REBUILD can reuse
+// an older engine). The audit runner computes this same source fingerprint.
+function engineIdentity() {
+  const opts = { cwd: WORKSPACE_ROOT, encoding: "utf8" };
+  const paths = execFileSync(
+    "git",
+    ["ls-files", "-z", "--", "Cargo.toml", "Cargo.lock", ".cargo", "crates"],
+    opts,
+  )
+    .split("\0")
+    .filter(Boolean)
+    .sort();
+  const digest = createHash("sha256");
+  for (const name of paths) {
+    digest.update(name + "\0");
+    digest.update(
+      createHash("sha256")
+        .update(readFileSync(join(WORKSPACE_ROOT, name)))
+        .digest(),
+    );
+  }
+  return {
+    commit: execFileSync("git", ["rev-parse", "HEAD"], opts).trim(),
+    fingerprint: digest.digest("hex"),
+  };
+}
 
 function run(cmd, args, opts = {}) {
   const r = spawnSync(cmd, args, { stdio: "inherit", ...opts });
@@ -108,6 +137,7 @@ if (
 }
 
 console.log(`==> Compiling (release, ${WASM_TRIPLE})`);
+const engine = engineIdentity();
 run("cargo", [
   "build",
   "--manifest-path",
@@ -186,6 +216,11 @@ if (wasmOpt) {
 // license scanners look; only the workspace-root copy exists, and `npm publish`
 // cannot reach outside the package directory.
 console.log("==> Staging SDK facade and license");
+if (engine.fingerprint !== engineIdentity().fingerprint)
+  throw new Error(
+    "Engine sources changed during the WASM build; rebuild before publishing.",
+  );
+writeFileSync(join(OUT_DIR, "build-info.json"), JSON.stringify(engine) + "\n");
 for (const f of ["sdk.mjs", "sdk.d.ts", "node.mjs", "node.d.ts"]) {
   copyFileSync(join(PKG_DIR, "src", f), join(OUT_DIR, f));
 }

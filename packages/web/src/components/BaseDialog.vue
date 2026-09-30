@@ -9,8 +9,10 @@ const props = withDefaults(
     title?: string;
     /** CSS width of the dialog box. */
     width?: string;
+    /** Keep a confirmed operation modal until its current work completes. */
+    dismissible?: boolean;
   }>(),
-  { title: "", width: "min(360px, 92vw)" },
+  { title: "", width: "min(360px, 92vw)", dismissible: true },
 );
 
 const emit = defineEmits<{
@@ -38,7 +40,12 @@ onMounted(() => sync(props.modelValue));
 </script>
 
 <template>
-  <dialog ref="el" :style="{ width }" @close="onClose">
+  <dialog
+    ref="el"
+    :style="{ width }"
+    @close="onClose"
+    @cancel="!dismissible && $event.preventDefault()"
+  >
     <h3 v-if="title">{{ title }}</h3>
     <slot />
     <div v-if="$slots.actions" class="dialog-actions">
