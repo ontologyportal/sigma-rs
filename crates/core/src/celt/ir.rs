@@ -175,6 +175,15 @@ pub struct Referent {
     pub sentence: usize,
 }
 
+/// A [`Discourse`] snapshot (see [`Discourse::mark`]).
+#[derive(Debug, Clone)]
+pub struct Mark {
+    counters: HashMap<String, usize>,
+    referents: usize,
+    names: usize,
+    next_var: HashMap<String, usize>,
+}
+
 /// Document-level state: minted constants and referents for definite
 /// reference across sentences.
 #[derive(Debug, Default)]
@@ -222,6 +231,24 @@ impl Discourse {
             .collect();
         out.reverse();
         out
+    }
+
+    /// Snapshot for rolling back a failed parse attempt.
+    pub fn mark(&self) -> Mark {
+        Mark {
+            counters: self.counters.clone(),
+            referents: self.referents.len(),
+            names: self.names.len(),
+            next_var: self.next_var.clone(),
+        }
+    }
+
+    /// Undo everything minted since `mark`.
+    pub fn reset(&mut self, mark: Mark) {
+        self.counters = mark.counters;
+        self.referents.truncate(mark.referents);
+        self.names.truncate(mark.names);
+        self.next_var = mark.next_var;
     }
 
     /// Reset variable numbering at the start of a sentence.

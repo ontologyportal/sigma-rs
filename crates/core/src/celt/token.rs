@@ -202,6 +202,13 @@ pub fn tokenize(sentence: &str) -> Vec<Token> {
 fn push_word(word: String, start: usize, out: &mut Vec<Token>) {
     let lower = word.to_lowercase();
     let len = word.chars().count();
+    if lower == "cannot" {
+        let can: String = word.chars().take(3).collect();
+        let not: String = word.chars().skip(3).collect();
+        push_plain(can, "can".into(), start, start + 3, out);
+        push_plain(not, "not".into(), start + 3, start + len, out);
+        return;
+    }
     if let Some(base) = lower.strip_suffix("n't") {
         let base_text: String = word.chars().take(len - 3).collect();
         let base = match base {

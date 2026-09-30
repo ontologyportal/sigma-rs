@@ -42,6 +42,8 @@ pub struct Candidate {
     pub source: Source,
     /// Label or `=` anchor (the term IS the concept), vs a `+` anchor.
     pub exact: bool,
+    /// An `@` anchor: the synset names this KB instance (the Sun).
+    pub instance: bool,
 }
 
 /// The chosen term for a word, with the alternatives that were passed over,
@@ -95,7 +97,14 @@ pub enum Inflection {
 }
 
 const ENGLISH: &str = "EnglishLanguage";
-const GENERIC_TERMS: &[&str] = &["Entity", "Physical", "Abstract", "Process", "Object"];
+const GENERIC_TERMS: &[&str] = &[
+    "Entity",
+    "Physical",
+    "Abstract",
+    "Process",
+    "Object",
+    "SelfConnectedObject",
+];
 
 /// Memoizing word-to-term resolver bound to one KB and lexicon.
 pub struct Lookup<'a, L: TopLayer + Layer> {
@@ -305,6 +314,7 @@ impl<'a, L: TopLayer + Layer> Lookup<'a, L> {
                     sense: String::new(),
                     source: Source::Label,
                     exact: true,
+                    instance: false,
                 });
             }
         }
@@ -317,10 +327,11 @@ impl<'a, L: TopLayer + Layer> Lookup<'a, L> {
                 continue;
             }
             for anchor in &sense.synset.sumo {
-                let exact = match anchor.kind {
-                    MappingKind::Equivalent => true,
-                    MappingKind::Subsuming => false,
-                    _ => continue,
+                let (exact, instance) = match anchor.kind {
+                    MappingKind::Equivalent => (true, false),
+                    MappingKind::Subsuming => (false, false),
+                    MappingKind::Instance => (true, true),
+                    MappingKind::Other(_) => continue,
                 };
                 if !self.defined(&anchor.term)
                     || out.iter().any(|c| c.term == anchor.term)
@@ -334,6 +345,7 @@ impl<'a, L: TopLayer + Layer> Lookup<'a, L> {
                     sense: format!("{}{}", sense.label(), anchor.kind.suffix()),
                     source: Source::WordNet,
                     exact,
+                    instance,
                 });
             }
         }
@@ -360,13 +372,32 @@ impl<'a, L: TopLayer + Layer> Lookup<'a, L> {
             .filter(move |s| seen.insert(s.clone()))
     }
 
-    /// The no-sliding rule: when the most frequent sense (or a label) is not
-    /// usable, a rarer subsuming anchor is a guess, not a translation.
-    fn admissible(cands: Vec<Candidate>) -> Vec<Candidate> {
-        if cands.iter().any(|c| c.rank == 1) {
-            cands
-        } else {
-            cands.into_iter().filter(|c| c.exact).collect()
+    /// The no-sliding rule: the chosen term must come from a KB label or
+    /// the most frequent sense.  When neither passes the gate, the word is
+    /// refused for the most frequent sense's own reason (its anchor is not
+    /// in the KB, or has the wrong type) rather than translated by a rarer
+    /// sense that happens to fit.
+    fn strict(
+        &self,
+        word: &str,
+        lemma: &str,
+        pos: Pos,
+        usable: Vec<Candidate>,
+        all: &[Candidate],
+        wrong_type: impl Fn(String) -> Refusal,
+    ) -> Result<Vec<Candidate>, Refusal> {
+        if usable.iter().any(|c| c.rank == 1) {
+            return Ok(usable);
+        }
+        if let Some(r) = self.mfs_missing(word, lemma, pos) {
+            return Err(r);
+        }
+        match all.iter().find(|c| c.rank == 1) {
+            Some(c) => Err(wrong_type(c.term.clone())),
+            None => Err(Refusal::NoSumoAnchor {
+                word: word.into(),
+                pos: pos_name(pos),
+            }),
         }
     }
 
@@ -440,18 +471,15 @@ impl<'a, L: TopLayer + Layer> Lookup<'a, L> {
         }
         let classes: Vec<Candidate> = all
             .iter()
-            .filter(|c| self.sym(&c.term).is_some_and(|s| self.kb.is_class(s)))
+            .filter(|c| !c.instance && self.sym(&c.term).is_some_and(|s| self.kb.is_class(s)))
             .cloned()
             .collect();
-        let classes = Self::admissible(classes);
-        if classes.is_empty() {
-            return Err(self
-                .mfs_missing(word, &lemma, Pos::Noun)
-                .unwrap_or_else(|| Refusal::NotAClass {
-                    word: word.into(),
-                    term: all[0].term.clone(),
-                }));
-        }
+        let classes = self.strict(word, &lemma, Pos::Noun, classes, &all, |term| {
+            Refusal::NotAClass {
+                word: word.into(),
+                term,
+            }
+        })?;
         if GENERIC_TERMS.contains(&classes[0].term.as_str()) {
             return Err(Refusal::GenericTerm {
                 word: word.into(),
@@ -473,20 +501,21 @@ impl<'a, L: TopLayer + Layer> Lookup<'a, L> {
             .iter()
             .filter(|c| {
                 self.is_attribute_instance(&c.term)
-                    || self.sym(&c.term).is_some_and(|s| {
-                        self.kb.is_class(s) && !self.kb.has_ancestor(s, "Attribute")
-                    })
+                    || (!c.instance
+                        && self.sym(&c.term).is_some_and(|s| {
+                            self.kb.is_class(s) && !self.kb.has_ancestor(s, "Attribute")
+                        }))
             })
             .cloned()
             .collect();
-        let usable = Self::admissible(usable);
+        let usable = self.strict(word, &lemma, Pos::Noun, usable, &all, |term| {
+            Refusal::NotAClass {
+                word: word.into(),
+                term,
+            }
+        })?;
         match usable.first() {
-            None => Err(self
-                .mfs_missing(word, &lemma, Pos::Noun)
-                .unwrap_or_else(|| Refusal::NotAClass {
-                    word: word.into(),
-                    term: all[0].term.clone(),
-                })),
+            None => Err(Refusal::UnknownWord { word: word.into() }),
             Some(c) => {
                 let is_attr = self.is_attribute_instance(&c.term);
                 if !is_attr && GENERIC_TERMS.contains(&c.term.as_str()) {
@@ -512,15 +541,12 @@ impl<'a, L: TopLayer + Layer> Lookup<'a, L> {
             .filter(|c| self.is_attribute_instance(&c.term))
             .cloned()
             .collect();
-        let attrs = Self::admissible(attrs);
-        if attrs.is_empty() {
-            return Err(self.mfs_missing(word, &w, Pos::Adj).unwrap_or_else(|| {
-                Refusal::NotAnAttribute {
-                    word: word.into(),
-                    term: all[0].term.clone(),
-                }
-            }));
-        }
+        let attrs = self.strict(word, &w, Pos::Adj, attrs, &all, |term| {
+            Refusal::NotAnAttribute {
+                word: word.into(),
+                term,
+            }
+        })?;
         Ok(Self::choose(word, attrs))
     }
 
@@ -554,6 +580,7 @@ impl<'a, L: TopLayer + Layer> Lookup<'a, L> {
                     sense: String::new(),
                     source: Source::Label,
                     exact: true,
+                    instance: false,
                 });
             }
         }
@@ -565,14 +592,14 @@ impl<'a, L: TopLayer + Layer> Lookup<'a, L> {
             .filter(|c| self.verb_kind(&c.term).is_some())
             .cloned()
             .collect();
-        let usable = Self::admissible(usable);
+        let usable = self.strict(word, &lemma, Pos::Verb, usable, &all, |term| {
+            Refusal::NotAnEvent {
+                verb: word.into(),
+                term,
+            }
+        })?;
         let Some(first) = usable.first() else {
-            return Err(self
-                .mfs_missing(word, &lemma, Pos::Verb)
-                .unwrap_or_else(|| Refusal::NotAnEvent {
-                    verb: word.into(),
-                    term: all[0].term.clone(),
-                }));
+            return Err(Refusal::UnknownWord { word: word.into() });
         };
         if GENERIC_TERMS.contains(&first.term.as_str()) || first.term == "IntentionalProcess" {
             return Err(Refusal::GenericTerm {
@@ -608,6 +635,22 @@ impl<'a, L: TopLayer + Layer> Lookup<'a, L> {
         } else {
             None
         }
+    }
+
+    /// A common noun that names one KB instance ("the sun" -> Sun): a label
+    /// on an instance, or the most frequent sense's `@` anchor.
+    pub fn named_instance(&self, word: &str) -> Option<Choice> {
+        let (lemma, plural) = self.noun_lemma(word);
+        if plural {
+            return None;
+        }
+        let all = self.candidates(&lemma, Pos::Noun);
+        let first = all.iter().find(|c| c.rank == 1)?;
+        let is_inst = self
+            .sym(&first.term)
+            .is_some_and(|s| self.kb.is_instance(s))
+            && (first.instance || first.source == Source::Label);
+        is_inst.then(|| Self::choose(word, vec![first.clone()]))
     }
 
     /// A capitalized word as a proper name: the KB instance with that

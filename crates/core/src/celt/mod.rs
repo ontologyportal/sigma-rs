@@ -253,6 +253,11 @@ mod tests {
         (subclass Garden Object)
         (subclass Automobile Object)
         (subclass Rock Object)
+        (subclass Horse Animal)
+        (subclass Foal Horse)
+        (subclass Living Process)
+        (instance Young AgeAttribute)
+        (subclass AgeAttribute Attribute)
         (subclass Microphone Object)
         (termFormat EnglishLanguage Tuesday "Tuesday")
         (subclass Tuesday Day)
@@ -307,12 +312,16 @@ mod tests {
         (instance Loud SoundAttribute)
         (subclass ColorAttribute Attribute)
         (instance Red ColorAttribute)
+        (instance Purple ColorAttribute)
         (subclass SubjectiveAssessmentAttribute Attribute)
         (subclass RelationalAttribute Attribute)
         (subclass SocialRole RelationalAttribute)
         (subclass OccupationalRole SocialRole)
         (instance Musician OccupationalRole)
         (instance Rex Dog)
+        (subclass Star Object)
+        (instance Sun Star)
+        (subclass Sunday Day)
         (instance Mike Human)
         (instance Bob Human)
         (instance Mary Human)
@@ -344,6 +353,12 @@ mod tests {
 00000023 05 n 01 pet 0 000 | a pet &%Pet=
 00000024 05 n 01 pet 1 000 | a domestic animal &%Animal+
 00000025 05 n 01 Regina 0 000 | a queen &%Queen=
+00000026 05 n 01 sun 0 000 | the star &%Sun@
+00000027 05 n 02 sun 1 Sunday 0 000 | first day &%Sunday=
+00000028 05 n 01 foal 0 000 | a foal &%Foal=
+00000029 05 n 01 horse 0 000 | a horse &%Horse=
+00000030 05 n 01 young 0 000 | offspring &%Animal+
+00000031 05 n 01 purple 0 000 | the color &%Purple=
 00000019 05 n 01 mike 0 000 | a microphone &%Microphone=
 ";
     const VERBS: &str = "\
@@ -356,12 +371,17 @@ mod tests {
 00000107 30 v 01 believe 0 000 00 | to believe &%believes=
 00000108 30 v 01 exist 0 000 00 | to exist &%Entity+
 00000109 30 v 01 like 0 000 00 | to like &%wants+
+00000110 30 v 01 horse 0 000 00 | to provide with horses &%Process+
+00000111 30 v 01 live 0 000 00 | to live &%Living=
 ";
     const ADJS: &str = "\
 00000201 00 a 01 loud 0 000 | loud &%Loud=
 00000202 00 a 01 red 0 000 | red &%Red=
 00000203 00 a 01 big 0 000 | big &%SubjectiveAssessmentAttribute+
 00000204 00 a 01 like 0 000 | similar
+00000205 00 a 01 young 0 000 | young &%Young=
+00000206 00 a 01 live 0 000 | alive
+00000207 00 a 01 purple 0 000 | purple &%Purple=
 ";
     const ADVS: &str =
         "00000301 02 r 01 quickly 0 000 | quickly &%SubjectiveAssessmentAttribute+\n";
@@ -799,6 +819,81 @@ mod tests {
         // Mid-sentence too, a capitalized word with a dead noun reading is
         // an unknown name, not a term-not-in-kb noun.
         assert_eq!(refusal("Mary sees Regina.").reason.code(), "unknown-name");
+    }
+
+    #[test]
+    fn instance_anchors_and_no_sliding() {
+        // sun#n#1 anchors to the instance Sun: "the sun" names it.
+        assert_eq!(one("The sun is loud."), "(attribute Sun Loud)");
+        assert_eq!(
+            one("Rex sees the sun."),
+            "(and (instance Seeing-1 Seeing) (experiencer Seeing-1 Rex) (patient Seeing-1 Sun))"
+        );
+        // In class position the instance is refused; the rarer Sunday sense
+        // must not slide in.
+        let r = refusal("A sun is a rock.");
+        assert_eq!(r.reason.code(), "not-a-class");
+        assert!(r.reason.to_string().contains("Sun"), "{r}");
+    }
+
+    #[test]
+    fn cannot_and_relative_that_and_plurals() {
+        assert_eq!(
+            refusal("Rex cannot bark.").reason.code(),
+            "unsupported/modal"
+        );
+        assert_eq!(
+            refusal("A dog is an animal that barks.").reason.code(),
+            "unsupported/relative-clause"
+        );
+        assert_eq!(
+            refusal("That dog barks.").reason.code(),
+            "unsupported/demonstrative"
+        );
+        // A plural with no KB term is a missing term, not a name.
+        assert_eq!(
+            refusal("Unicorns are animals.").reason.code(),
+            "term-not-in-kb"
+        );
+    }
+
+    #[test]
+    fn noun_phrase_readings_are_disambiguated_by_the_rest() {
+        // "young" is also a noun and "horse" also a verb: the longest
+        // predicate reading is the one under which the sentence completes,
+        // and its refusal (a modified class) wins over the partial parse.
+        assert_eq!(
+            refusal("A foal is a young horse.").reason.code(),
+            "modified-class"
+        );
+        assert_eq!(
+            one("Rex is a young horse."),
+            "(and (instance Rex Horse) (attribute Rex Young))"
+        );
+        // "live" is also an adjective: the subject stops at "dogs".
+        assert_eq!(
+            one("Every dog lives in a garden."),
+            "(forall (?X1) (=> (instance ?X1 Dog) (exists (?E1 ?X2) (and (instance ?E1 Living) (agent ?E1 ?X1) (instance ?X2 Garden) (located ?E1 ?X2)))))"
+        );
+        // Failed readings leave no trace: no gaps in Skolem numbering.
+        assert_eq!(
+            one("The foal sees a young horse."),
+            "(and (instance Foal-1 Foal) (instance Seeing-1 Seeing) (experiencer Seeing-1 Foal-1) (instance Horse-1 Horse) (attribute Horse-1 Young) (patient Seeing-1 Horse-1))"
+        );
+    }
+
+    #[test]
+    fn predicate_adjective_never_slides_to_a_noun_sense() {
+        // "loud" has a noun sense (SoundAttribute) but "big"'s refusal must
+        // stand: the adjective reading is the only one offered.
+        assert_eq!(refusal("Rex is big.").reason.code(), "not-an-attribute");
+        assert_eq!(refusal("Dogs are big.").reason.code(), "not-an-attribute");
+        // Instance statements are guarded like subclass statements.
+        assert_eq!(
+            refusal("The rock is a party.").reason.code(),
+            "cross-category"
+        );
+        assert_eq!(refusal("Purple is purple.").reason.code(), "trivial-fact");
     }
 
     #[test]

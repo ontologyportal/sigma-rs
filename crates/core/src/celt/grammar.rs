@@ -32,6 +32,7 @@ pub trait Lex {
     fn noun_lemma(&self, word: &str) -> (String, bool);
     fn noun_class(&self, word: &str) -> Result<Choice, Refusal>;
     fn predicate_noun(&self, word: &str) -> Result<(Choice, bool), Refusal>;
+    fn named_instance(&self, word: &str) -> Option<Choice>;
     fn adjective(&self, word: &str) -> Result<Choice, Refusal>;
     fn verb(&self, word: &str) -> Result<(Verb, Inflection), Refusal>;
     fn name(&self, word: &str) -> Option<String>;
@@ -69,6 +70,9 @@ impl<L: TopLayer + Layer> Lex for Lookup<'_, L> {
     }
     fn predicate_noun(&self, word: &str) -> Result<(Choice, bool), Refusal> {
         Lookup::predicate_noun(self, word)
+    }
+    fn named_instance(&self, word: &str) -> Option<Choice> {
+        Lookup::named_instance(self, word)
     }
     fn adjective(&self, word: &str) -> Result<Choice, Refusal> {
         Lookup::adjective(self, word)
@@ -249,15 +253,42 @@ impl<'a> Cx<'a> {
         )
     }
 
-    /// Parse a noun phrase at `at` with the grammar's NP rules.
-    pub fn np(&mut self, at: usize) -> Step<Np> {
+    /// Every noun-phrase reading at `at`, longest first, from all NP rules.
+    /// Empty means no rule applied (expectations are recorded).
+    pub fn nps(&mut self, at: usize) -> Result<Vec<(Np, usize)>, Refused> {
+        let mut out = Vec::new();
         for rule in &self.grammar.np {
-            match rule.apply(self, at) {
-                Step::Miss => continue,
-                hit => return hit,
-            }
+            out.extend(rule.candidates(self, at)?);
         }
-        Step::Miss
+        Ok(out)
+    }
+
+    /// The longest noun-phrase reading at `at`.
+    pub fn np(&mut self, at: usize) -> Step<Np> {
+        match self.nps(at) {
+            Ok(mut v) if !v.is_empty() => {
+                let (np, next) = v.remove(0);
+                Step::Hit(np, next)
+            }
+            Ok(_) => Step::Miss,
+            Err(r) => Step::Refuse(r),
+        }
+    }
+
+    /// Run one parse attempt and roll back its side effects unless it
+    /// reached the end of the sentence.  Returns the attempt's outcome.
+    pub fn attempt<T>(&mut self, f: impl FnOnce(&mut Cx) -> Step<T>) -> Step<T> {
+        let mark = self.discourse.mark();
+        let choices = self.choices.len();
+        let declared = self.declared.conds.len();
+        let step = f(self);
+        let keep = matches!(&step, Step::Hit(_, next) if self.is_end(*next));
+        if !keep {
+            self.discourse.reset(mark);
+            self.choices.truncate(choices);
+            self.declared.conds.truncate(declared);
+        }
+        step
     }
 
     /// Parse `PREP NP` at `at`.
@@ -398,38 +429,20 @@ impl Np {
                 }
                 (Term::Const(n.clone()), Some("Human".to_string()))
             }
-            Head::Noun { word, .. } => {
-                let choice = cx
-                    .lex
-                    .noun_class(word)
-                    .map_err(|r| cx.refused(r, self.end - 1))?;
-                cx.record(&choice);
-                let class = choice.term.clone();
-                let resolved = if self.det == Some(Det::Definite) {
-                    self.resolve_definite(cx, &class)?
-                } else {
-                    None
-                };
-                let term = match resolved {
-                    Some(t) => Term::Const(t),
-                    None => {
-                        let t = match scope {
-                            Scope::Assert => {
-                                let lex = cx.lex;
-                                Term::Const(cx.discourse.skolem(&class, |n| lex.defined(n)))
-                            }
-                            Scope::Bound => {
-                                let v = cx.discourse.var("X");
-                                drs.bind(&v);
-                                Term::Var(v)
-                            }
-                        };
-                        drs.atom("instance", vec![t.clone(), Term::Const(class.clone())]);
-                        t
-                    }
-                };
-                (term, Some(class))
+            Head::Noun { word, .. }
+                if matches!(self.det, None | Some(Det::Definite)) && self.mods.is_empty() =>
+            {
+                if let Some(c) = cx.lex.named_instance(word) {
+                    cx.record(&c);
+                    return Ok(Realized {
+                        term: Term::Const(c.term),
+                        class: None,
+                        drs,
+                    });
+                }
+                self.realize_noun(cx, word, scope, &mut drs)?
             }
+            Head::Noun { word, .. } => self.realize_noun(cx, word, scope, &mut drs)?,
         };
         for m in &self.mods {
             let a = cx.lex.adjective(m).map_err(|r| cx.refused(r, self.start))?;
@@ -439,6 +452,44 @@ impl Np {
         Ok(Realized { term, class, drs })
     }
 
+    fn realize_noun(
+        &self,
+        cx: &mut Cx,
+        word: &str,
+        scope: Scope,
+        drs: &mut Drs,
+    ) -> Result<(Term, Option<String>), Refused> {
+        let choice = cx
+            .lex
+            .noun_class(word)
+            .map_err(|r| cx.refused(r, self.end - 1))?;
+        cx.record(&choice);
+        let class = choice.term.clone();
+        let resolved = if self.det == Some(Det::Definite) {
+            self.resolve_definite(cx, &class)?
+        } else {
+            None
+        };
+        let term = match resolved {
+            Some(t) => Term::Const(t),
+            None => {
+                let t = match scope {
+                    Scope::Assert => {
+                        let lex = cx.lex;
+                        Term::Const(cx.discourse.skolem(&class, |n| lex.defined(n)))
+                    }
+                    Scope::Bound => {
+                        let v = cx.discourse.var("X");
+                        drs.bind(&v);
+                        Term::Var(v)
+                    }
+                };
+                drs.atom("instance", vec![t.clone(), Term::Const(class.clone())]);
+                t
+            }
+        };
+        Ok((term, Some(class)))
+    }
     fn resolve_definite(&self, cx: &mut Cx, class: &str) -> Result<Option<String>, Refused> {
         let lex = cx.lex;
         let matches: Vec<String> = cx
@@ -469,10 +520,42 @@ pub trait SentenceRule: Send + Sync {
     fn apply(&self, cx: &mut Cx, at: usize) -> Step<Logic>;
 }
 
-/// A noun-phrase rule.
+/// A noun-phrase rule: every reading it allows at a position, longest
+/// first.  The sentence rule keeps the first reading under which the rest
+/// of the sentence parses, so the KB and lexicon disambiguate.
 pub trait NpRule: Send + Sync {
     fn name(&self) -> &'static str;
-    fn apply(&self, cx: &mut Cx, at: usize) -> Step<Np>;
+    fn candidates(&self, cx: &mut Cx, at: usize) -> Result<Vec<(Np, usize)>, Refused>;
+}
+
+/// Merge the outcomes of several parse attempts: a complete parse wins,
+/// then the first refusal, then the first partial parse, then a miss.
+pub fn best<T>(cx: &Cx, attempts: impl IntoIterator<Item = Step<T>>) -> Step<T> {
+    let mut refused: Option<Refused> = None;
+    let mut partial: Option<(T, usize)> = None;
+    for step in attempts {
+        match step {
+            Step::Hit(v, next) if cx.is_end(next) => return Step::Hit(v, next),
+            Step::Hit(v, next) => {
+                if partial.is_none() {
+                    partial = Some((v, next));
+                }
+            }
+            Step::Refuse(r) => {
+                if refused.is_none() {
+                    refused = Some(r);
+                }
+            }
+            Step::Miss => {}
+        }
+    }
+    if let Some(r) = refused {
+        return Step::Refuse(r);
+    }
+    if let Some((v, next)) = partial {
+        return Step::Hit(v, next);
+    }
+    Step::Miss
 }
 
 /// One row of the preposition table (CELT paper, Table 1): a preposition
@@ -569,10 +652,19 @@ impl Grammar {
                 ));
             }
             if let Some(c) = t.closed() {
-                if let Some((_, construct)) = self.prescan.iter().find(|(k, _)| *k == c) {
+                let after_noun = t.lower == "that" && i > 0 && cx.tokens[i - 1].is_open();
+                let construct = if after_noun {
+                    Some(Construct::RelativeClause)
+                } else {
+                    self.prescan
+                        .iter()
+                        .find(|(k, _)| *k == c)
+                        .map(|(_, c)| c.clone())
+                };
+                if let Some(construct) = construct {
                     return Err(cx.refused(
                         Refusal::Unsupported {
-                            construct: construct.clone(),
+                            construct,
                             at: t.text.clone(),
                         },
                         i,

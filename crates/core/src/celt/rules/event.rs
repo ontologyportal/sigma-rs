@@ -10,7 +10,7 @@
 //! `patient` of an intransitive verb otherwise.  Past tense adds
 //! `(before (EndFn (WhenFn ?E)) Now)` when the KB defines `Now`.
 
-use super::super::grammar::{attach_pp, Cx, Kind, Logic, Np, Pp, Scope, SentenceRule, Step};
+use super::super::grammar::{attach_pp, best, Cx, Kind, Logic, Np, Pp, Scope, SentenceRule, Step};
 use super::super::ir::{Drs, Term};
 use super::super::lookup::{Inflection, Verb};
 use super::super::refuse::{Construct, Refusal, Refused};
@@ -38,14 +38,32 @@ impl SentenceRule for Event {
                 i += 1;
             }
         }
-        let subject = match cx.np(i) {
-            Step::Hit(np, next) => {
-                i = next;
-                np
-            }
-            Step::Miss => return cx.miss(i, "a subject noun phrase"),
-            Step::Refuse(r) => return Step::Refuse(r),
+        let subjects = match cx.nps(i) {
+            Ok(v) if v.is_empty() => return cx.miss(i, "a subject noun phrase"),
+            Ok(v) => v,
+            Err(r) => return Step::Refuse(r),
         };
+        let mut attempts = Vec::new();
+        for (subject, next) in subjects {
+            let step = cx.attempt(|cx| self.with_subject(cx, aux, subject, next));
+            let done = matches!(&step, Step::Hit(_, n) if cx.is_end(*n));
+            attempts.push(step);
+            if done {
+                break;
+            }
+        }
+        best(cx, attempts)
+    }
+}
+
+impl Event {
+    fn with_subject(
+        &self,
+        cx: &mut Cx,
+        mut aux: Option<Tense>,
+        subject: Np,
+        mut i: usize,
+    ) -> Step<Logic> {
         let mut negated = false;
         if let Some(Closed::Aux(t, _)) = cx.tok(i).and_then(|t| t.closed()) {
             if aux.is_some() {
@@ -85,14 +103,44 @@ impl SentenceRule for Event {
             (None, Inflection::Past) => Tense::Past,
             (None, Inflection::Present) => Tense::Present,
         };
-        let object = match cx.np(i) {
-            Step::Hit(np, next) => {
-                i = next;
-                Some(np)
-            }
-            Step::Miss => None,
-            Step::Refuse(r) => return Step::Refuse(r),
+        // Object readings, longest first, then no object.
+        let mut objects: Vec<(Option<Np>, usize)> = match cx.nps(i) {
+            Ok(v) => v.into_iter().map(|(np, n)| (Some(np), n)).collect(),
+            Err(r) => return Step::Refuse(r),
         };
+        objects.push((None, i));
+        let mut attempts = Vec::new();
+        for (object, next) in objects {
+            let subject = subject.clone();
+            let verb = verb.clone();
+            let verb_word = vt.text.clone();
+            let step = cx.attempt(|cx| {
+                self.with_object(
+                    cx, subject, negated, verb, verb_word, verb_at, tense, object, next,
+                )
+            });
+            let done = matches!(&step, Step::Hit(_, n) if cx.is_end(*n));
+            attempts.push(step);
+            if done {
+                break;
+            }
+        }
+        best(cx, attempts)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn with_object(
+        &self,
+        cx: &mut Cx,
+        subject: Np,
+        negated: bool,
+        verb: Verb,
+        verb_word: String,
+        verb_at: usize,
+        tense: Tense,
+        object: Option<Np>,
+        mut i: usize,
+    ) -> Step<Logic> {
         let mut pps: Vec<Pp> = Vec::new();
         while cx.tok(i).is_some_and(|t| t.is(Closed::Preposition)) {
             match cx.pp(i) {
@@ -122,7 +170,7 @@ impl SentenceRule for Event {
             return cx.refuse(
                 Refusal::Unsupported {
                     construct: Construct::PastTense,
-                    at: vt.text.clone(),
+                    at: verb_word,
                 },
                 verb_at,
             );
@@ -133,7 +181,6 @@ impl SentenceRule for Event {
             Kind::Assert
         };
         let subject_force = force(&subject, false);
-        let verb_word = vt.text.clone();
         let result = frame(
             cx,
             &subject,
@@ -183,9 +230,7 @@ impl SentenceRule for Event {
             Err(r) => Step::Refuse(r),
         }
     }
-}
 
-impl Event {
     #[allow(clippy::too_many_arguments)]
     fn stative(
         cx: &mut Cx,

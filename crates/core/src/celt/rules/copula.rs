@@ -15,14 +15,17 @@
 //! | `no dog`               | any               | `(not (exists (?X) ...))`              |
 //! | `some dogs`            | any               | `(exists (?X) ...)`                    |
 
-use super::super::grammar::{attach_pp, Cx, Head, Kind, Logic, Np, Scope, SentenceRule, Step};
+use super::super::grammar::{
+    attach_pp, best, Cx, Head, Kind, Logic, Np, Scope, SentenceRule, Step,
+};
 use super::super::ir::{Drs, Term};
-use super::super::refuse::{Construct, Refusal};
+use super::super::refuse::{Construct, Refusal, Refused};
 use super::super::token::{Closed, Det};
 use super::{force, frame, Force};
 
 pub struct Copula;
 
+#[derive(Clone)]
 enum Pred {
     Nominal(Np),
     Adjective(String, usize),
@@ -43,18 +46,27 @@ impl SentenceRule for Copula {
             && cx
                 .tok(at)
                 .is_some_and(|t| matches!(t.closed(), Some(Closed::Copula(..))));
-        let mut i = at;
-        if inverted {
-            i += 1;
-        }
-        let subject = match cx.np(i) {
-            Step::Hit(np, next) => {
-                i = next;
-                np
-            }
-            Step::Miss => return cx.miss(i, "a subject noun phrase"),
-            Step::Refuse(r) => return Step::Refuse(r),
+        let i = if inverted { at + 1 } else { at };
+        let subjects = match cx.nps(i) {
+            Ok(v) if v.is_empty() => return cx.miss(i, "a subject noun phrase"),
+            Ok(v) => v,
+            Err(r) => return Step::Refuse(r),
         };
+        let mut attempts = Vec::new();
+        for (subject, next) in subjects {
+            let step = cx.attempt(|cx| self.with_subject(cx, inverted, subject, next));
+            let done = matches!(&step, Step::Hit(_, n) if cx.is_end(*n));
+            attempts.push(step);
+            if done {
+                break;
+            }
+        }
+        best(cx, attempts)
+    }
+}
+
+impl Copula {
+    fn with_subject(&self, cx: &mut Cx, inverted: bool, subject: Np, mut i: usize) -> Step<Logic> {
         if !inverted {
             match cx.tok(i).and_then(|t| t.closed()) {
                 Some(Closed::Copula(..)) => i += 1,
@@ -67,14 +79,32 @@ impl SentenceRule for Copula {
         } else {
             false
         };
-        let pred = match self.predicate(cx, i) {
-            Step::Hit(p, next) => {
-                i = next;
-                p
-            }
-            Step::Miss => return Step::Miss,
-            Step::Refuse(r) => return Step::Refuse(r),
+        let preds = match self.predicates(cx, i) {
+            Ok(v) if v.is_empty() => return Step::Miss,
+            Ok(v) => v,
+            Err(r) => return Step::Refuse(r),
         };
+        let mut attempts = Vec::new();
+        for (pred, next) in preds {
+            let subject = subject.clone();
+            let step = cx.attempt(|cx| self.with_predicate(cx, subject, negated, pred, next));
+            let done = matches!(&step, Step::Hit(_, n) if cx.is_end(*n));
+            attempts.push(step);
+            if done {
+                break;
+            }
+        }
+        best(cx, attempts)
+    }
+
+    fn with_predicate(
+        &self,
+        cx: &mut Cx,
+        subject: Np,
+        negated: bool,
+        pred: Pred,
+        i: usize,
+    ) -> Step<Logic> {
         let kind = if cx.question {
             Kind::Query
         } else {
@@ -111,16 +141,30 @@ impl SentenceRule for Copula {
             Head::Name(n) => cx.lex.has_ancestor(n, "Process"),
             Head::NewName(_) => false,
         };
+        let subject_class = match &subject.head {
+            Head::Noun { word, .. } => cx.lex.noun_class(word).ok().map(|c| c.term),
+            Head::Name(n) => Some(n.clone()),
+            Head::NewName(_) => Some("Human".into()),
+        };
         let result = frame(
             cx,
             &subject,
             negated,
             subject_force,
             |cx, subj, scope| match &pred {
-                Pred::Nominal(pn) => Self::nominal(cx, subj, pn, scope),
+                Pred::Nominal(pn) => {
+                    Self::nominal(cx, subj, pn, scope, subject_class.as_deref(), subject.start)
+                }
                 Pred::Adjective(w, at) => {
                     let a = cx.lex.adjective(w).map_err(|r| cx.refused(r, *at))?;
                     cx.record(&a);
+                    if let Term::Const(c) = subj {
+                        if *c == a.term {
+                            return Err(
+                                cx.refused(Refusal::TrivialFact { term: a.term }, subject.start)
+                            );
+                        }
+                    }
                     let mut d = Drs::default();
                     d.atom("attribute", vec![subj.clone(), Term::Const(a.term)]);
                     Ok(d)
@@ -142,62 +186,64 @@ impl SentenceRule for Copula {
             Err(r) => Step::Refuse(r),
         }
     }
-}
 
-impl Copula {
-    fn predicate(&self, cx: &mut Cx, at: usize) -> Step<Pred> {
+    /// Predicate readings at `at`: a prepositional phrase, a lone
+    /// adjective, or the noun-phrase readings (longest first).
+    fn predicates(&self, cx: &mut Cx, at: usize) -> Result<Vec<(Pred, usize)>, Refused> {
         if cx.tok(at).is_some_and(|t| t.is(Closed::Preposition)) {
             return match cx.pp(at) {
-                Step::Hit(pp, next) => Step::Hit(Pred::Pp(pp), next),
-                Step::Miss => Step::Miss,
-                Step::Refuse(r) => Step::Refuse(r),
+                Step::Hit(pp, next) => Ok(vec![(Pred::Pp(pp), next)]),
+                Step::Miss => Ok(Vec::new()),
+                Step::Refuse(r) => Err(r),
             };
         }
-        // A lone adjective: an open word with an adjective reading that is
-        // not followed by another open word.
+        let mut out = Vec::new();
+        // A lone adjectival word is an adjective, never a bare noun: "small"
+        // must not slide to the noun sense when the adjective is refused.
         if let Some(t) = cx.tok(at).filter(|t| t.is_open()) {
             let alone = !cx.tok(at + 1).is_some_and(|n| n.is_open());
             if alone && cx.lex.is_adjectival(&t.lower) {
-                return Step::Hit(Pred::Adjective(t.lower.clone(), at), at + 1);
+                out.push((Pred::Adjective(t.lower.clone(), at), at + 1));
+                return Ok(out);
             }
         }
-        match cx.np(at) {
-            Step::Hit(np, next) => {
-                match np.det {
-                    Some(Det::Definite) => {
-                        return cx.refuse(
-                            Refusal::Unsupported {
-                                construct: Construct::Identity,
-                                at: cx.text(np.start, np.end),
-                            },
-                            np.start,
-                        )
-                    }
-                    Some(Det::Universal | Det::Negative | Det::Some | Det::Demonstrative) => {
-                        return cx.refuse(
-                            Refusal::Unsupported {
-                                construct: Construct::QuantifiedPredicate,
-                                at: cx.text(np.start, np.end),
-                            },
-                            np.start,
-                        )
-                    }
-                    _ => {}
-                }
-                if matches!(np.head, Head::Name(_) | Head::NewName(_)) {
-                    return cx.refuse(
+        for (np, next) in cx.nps(at)? {
+            match np.det {
+                Some(Det::Definite) => {
+                    return Err(cx.refused(
                         Refusal::Unsupported {
                             construct: Construct::Identity,
                             at: cx.text(np.start, np.end),
                         },
                         np.start,
-                    );
+                    ))
                 }
-                Step::Hit(Pred::Nominal(np), next)
+                Some(Det::Universal | Det::Negative | Det::Some | Det::Demonstrative) => {
+                    return Err(cx.refused(
+                        Refusal::Unsupported {
+                            construct: Construct::QuantifiedPredicate,
+                            at: cx.text(np.start, np.end),
+                        },
+                        np.start,
+                    ))
+                }
+                _ => {}
             }
-            Step::Miss => cx.miss(at, "a predicate: a noun, an adjective or a preposition"),
-            Step::Refuse(r) => Step::Refuse(r),
+            if matches!(np.head, Head::Name(_) | Head::NewName(_)) {
+                return Err(cx.refused(
+                    Refusal::Unsupported {
+                        construct: Construct::Identity,
+                        at: cx.text(np.start, np.end),
+                    },
+                    np.start,
+                ));
+            }
+            out.push((Pred::Nominal(np), next));
         }
+        if out.is_empty() {
+            cx.miss::<()>(at, "a predicate: a noun, an adjective or a preposition");
+        }
+        Ok(out)
     }
 
     /// `(subclass S C)` for a class subject and a class predicate; `None`
@@ -251,15 +297,29 @@ impl Copula {
         subj: &Term,
         pred: &Np,
         _scope: Scope,
+        subject_class: Option<&str>,
+        subject_at: usize,
     ) -> Result<Drs, super::super::refuse::Refused> {
         let Head::Noun { word, .. } = &pred.head else {
-            unreachable!("predicate() rejects name predicates")
+            unreachable!("predicates() rejects name predicates")
         };
         let (choice, is_attr) = cx
             .lex
             .predicate_noun(word)
             .map_err(|r| cx.refused(r, pred.end - 1))?;
         cx.record(&choice);
+        if let (Some(sc), false) = (subject_class, is_attr) {
+            if let Some(category) = cx.lex.cross_category(sc, &choice.term) {
+                return Err(cx.refused(
+                    Refusal::CrossCategory {
+                        sub: sc.to_string(),
+                        sup: choice.term.clone(),
+                        category,
+                    },
+                    subject_at,
+                ));
+            }
+        }
         let mut d = Drs::default();
         let rel = if is_attr { "attribute" } else { "instance" };
         d.atom(rel, vec![subj.clone(), Term::Const(choice.term)]);
