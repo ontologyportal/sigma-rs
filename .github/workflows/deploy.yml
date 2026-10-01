@@ -91,15 +91,26 @@ jobs:
         if: steps.cache-vampire-wasm.outputs.cache-hit != 'true'
         run: npm run build --workspace @sigma/vampire
 
+      - name: Cache E WASM build output
+        uses: actions/cache@v4
+        with:
+          path: packages/eprover/dist
+          key: eprover-wasm-${{ runner.os }}-${{ hashFiles('packages/eprover/build.sh', 'packages/eprover/runner.mjs') }}
+
+      - name: Build and test the E WASM backend
+        run: |
+          npm run build --workspace @sigma/eprover
+          npm test --workspace @sigma/eprover
+
       - name: Build & stage the web app
         id: wapp
-        # SKIP_VAMPIRE/NO_REBUILD: both are already built by the steps above,
-        # so the mirror step only needs to copy Vampire into the site.
+        # All engines are already built above; mirror the external assets.
         #
         # Built twice because the mount point is baked into the bundle: Pages
         # serves this under /browse/, Cloudflare at its root. See vite.config.js.
         env:
           SKIP_VAMPIRE: '1'
+          SKIP_EPROVER: '1'
           NO_REBUILD: '1'
         run: |
           VITE_BASE=/ npm run build --workspace @sigma/web

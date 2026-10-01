@@ -1,0 +1,133 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>E integration test</title>
+  </head>
+  <body>
+    <main id="settings"></main>
+    <button id="smoke" disabled>Run E smoke checks</button>
+    <pre id="results">Booting isolated test worker...</pre>
+    <script type="module">
+      import { createApp, h } from "vue";
+      import { createPinia, setActivePinia } from "pinia";
+      import ProverSettings from "../src/components/ProverSettings.vue";
+      import { useProverStore } from "../src/stores/prover";
+      import * as rpc from "../src/services/sigma";
+      const pinia = createPinia();
+      setActivePinia(pinia);
+      createApp({ render: () => h(ProverSettings) })
+        .use(pinia)
+        .mount("#settings");
+      const store = useProverStore();
+      store.settingsOpen = true;
+      window.prover = store;
+      window.rpc = rpc;
+      rpc.connectVampire(new URL("../", location.href).href);
+      window.ready = rpc.call("boot");
+      const smoke = document.querySelector("#smoke");
+      const results = document.querySelector("#results");
+      window.ready
+        .then(() => {
+          smoke.disabled = false;
+          results.textContent = "Ready. Choose E and run the smoke checks.";
+        })
+        .catch((error) => {
+          results.textContent = String(error);
+        });
+      smoke.onclick = async () => {
+        smoke.disabled = true;
+        results.textContent = "";
+        const check = (ok, label, detail) => {
+          if (!ok) throw new Error(label + ": " + JSON.stringify(detail));
+          results.textContent += "PASS: " + label + "\n";
+        };
+        try {
+          check(store.backend === "e", "E selected", store.backend);
+          const config = {
+            ...store.config(),
+            selectionBudget: 10,
+            auditAxfilter: false,
+          };
+          const proof = (
+            await rpc.call("prove", {
+              assertions: "(likes Alice Bob)",
+              query: "(likes Alice Bob)",
+              config,
+            })
+          ).result;
+          check(
+            proof.status === "Proved" &&
+              proof.proof.length > 0 &&
+              proof.input_tptp,
+            "E proves a query and returns proof/TPTP",
+            proof,
+          );
+          await rpc.call("newSession");
+          await rpc.call("ingest", {
+            name: "contradiction.kif",
+            text: "(likes Alice Bob)\n(not (likes Alice Bob))",
+          });
+          await rpc.call("promoteAll", { names: ["contradiction.kif"] });
+          for (const auditAxfilter of [false, true]) {
+            const audit = (
+              await rpc.call("audit", {
+                config: { ...config, auditAxfilter },
+                request: { count: 2, limit: 5 },
+              })
+            ).result;
+            check(
+              audit.status === "Inconsistent" &&
+                audit.contradictions.length === 1,
+              auditAxfilter
+                ? "Filtered sampled audit finds one contradiction"
+                : "Sampled audit finds one contradiction",
+              audit,
+            );
+            check(
+              audit.contradictions[0].steps.some(
+                (s) => s.file === "contradiction.kif",
+              ),
+              "Proof retains source citations",
+              audit,
+            );
+          }
+          await rpc.call("newSession");
+          await rpc.call("ingest", {
+            name: "consistent.kif",
+            text: "(likes Alice Bob)",
+          });
+          await rpc.call("promoteAll", { names: ["consistent.kif"] });
+          const clean = (
+            await rpc.call("audit", {
+              config: { ...config, auditAxfilter: true },
+            })
+          ).result;
+          check(
+            clean.status === "Unknown",
+            "Clean subsets do not certify whole-KB consistency",
+            clean,
+          );
+          for (const backend of ["native", "vampire", "e"]) {
+            const switched = (
+              await rpc.call("prove", {
+                query: "(likes Alice Bob)",
+                config: { ...config, backend },
+              })
+            ).result;
+            check(
+              switched.status === "Proved",
+              "Switching to " + backend + " works",
+              switched,
+            );
+          }
+          results.textContent += "All smoke checks passed.\n";
+        } catch (error) {
+          results.textContent += "FAIL: " + error + "\n";
+        } finally {
+          smoke.disabled = false;
+        }
+      };
+    </script>
+  </body>
+</html>

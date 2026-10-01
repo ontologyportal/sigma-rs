@@ -2,12 +2,13 @@
 /**
  * Build the demo's inputs before Vite runs.
  *
- * Only Vampire is copied into public/: `sigmakee` is a workspace dependency
- * that Vite resolves and bundles itself, whereas the Vampire runner is fetched
+ * External provers are copied into public/: `sigmakee` is a workspace dependency
+ * that Vite resolves and bundles itself, whereas prover runners are fetched
  * at runtime as a static asset (see sigma.worker.js).
  *
  *   NO_REBUILD=1       skip the wasm rebuild (use whatever dist/ holds)
  *   SKIP_VAMPIRE=1     skip the Vampire build entirely
+ *   SKIP_EPROVER=1     reuse complete E output without rebuilding
  *   VAMPIRE_RECLONE=1  force a clean Vampire rebuild (passed through)
  */
 
@@ -72,5 +73,34 @@ if (vampireOk && vampireComplete) {
 } else if (existsSync(VAMPIRE_DIST)) {
   console.warn(
     "==> @sigma/vampire output is incomplete or stale; not mirroring it",
+  );
+}
+
+// E and its axiom filter share the same optional static-asset lifecycle.
+const eDist = join(REPO_ROOT, "packages", "eprover", "dist");
+const ePublic = join(WEB_DIR, "public", "eprover");
+const eOk = process.env.SKIP_EPROVER === "1" || build("@sigma/eprover");
+const eFiles = [
+  "eprover.js",
+  "eprover.wasm",
+  "e_axfilter.js",
+  "e_axfilter.wasm",
+  "runner.mjs",
+  "COPYING",
+];
+// Local development may not have emsdk activated even though E was already
+// built successfully. Keep that complete build usable; deployment separately
+// requires a successful E build and tests before reaching this mirror step.
+if (eFiles.every((file) => existsSync(join(eDist, file)))) {
+  if (!eOk)
+    console.warn(
+      "==> E rebuild failed; using the existing complete E build. Activate emsdk to rebuild it.",
+    );
+  rmSync(ePublic, { recursive: true, force: true });
+  cpSync(eDist, ePublic, { recursive: true });
+} else {
+  rmSync(ePublic, { recursive: true, force: true });
+  console.warn(
+    "==> E WASM assets are unavailable; the other backends remain available.",
   );
 }

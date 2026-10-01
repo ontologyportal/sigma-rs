@@ -15,7 +15,6 @@ pub mod vampire;
 /// E (eprover) backend: subprocess runner that drives the `eprover` binary
 /// over TPTP/SZS.  E ships no embeddable library, so there is no FFI peer to
 /// Vampire's `integrated` runner — the subprocess path is the whole backend.
-#[cfg(feature = "ask")]
 pub mod eprover;
 
 #[cfg(feature = "ask")]

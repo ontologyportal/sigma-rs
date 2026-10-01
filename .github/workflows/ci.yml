@@ -253,6 +253,9 @@ jobs:
       - name: Type-check (vue-tsc + worker tsconfig)
         run: npm run typecheck -w @sigma/web
 
+      - name: External prover bridge regression tests
+        run: node --test packages/web/src/worker/vampire-bridge.test.mjs
+
       # Boots every tab against the real upstream KB, so it is the slowest
       # and the only one that needs the network.
       - name: e2e -- smoke

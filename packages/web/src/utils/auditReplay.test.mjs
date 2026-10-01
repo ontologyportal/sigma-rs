@@ -208,6 +208,15 @@ test("rejects incomplete, malformed, unsafe, or ambiguous replay inputs", () => 
       r.config.backend = "vampire";
     },
     (r) => {
+      r.config.backend = "e";
+    },
+    (r) => {
+      r.config.selectionBudget = 1;
+    },
+    (r) => {
+      r.config.auditAxfilter = true;
+    },
+    (r) => {
       r.config.timeLimitSecs = 0;
     },
     (r) => {

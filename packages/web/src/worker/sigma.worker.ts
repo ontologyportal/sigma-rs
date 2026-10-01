@@ -27,7 +27,7 @@ self.onmessage = async (e) => {
   // The page's port to its Vampire worker (at boot and after a restart);
   // not an RPC, nothing to answer.
   if (cmd === "vampirePort") {
-    installVampireBridge(args.port);
+    installVampireBridge(args.port, args.backend);
     return;
   }
   try {

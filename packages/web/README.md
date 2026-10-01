@@ -2,6 +2,43 @@
 
 **COMING SOON**
 
+## E prover in the browser
+
+Open the gear beside **Prove** or **Run audit**, then choose **E** as the
+backend. E runs locally in a dedicated WASM worker. Proofs include source
+citations and the exact TPTP input can be downloaded from Ask/Tell.
+
+With an activated Emscripten SDK, build from the repository root:
+
+```bash
+npm install
+npm run build --workspace @sigma/eprover
+npm test --workspace @sigma/eprover
+SKIP_VAMPIRE=1 npm run build --workspace @sigma/web
+```
+
+The web build rebuilds sigmakee and mirrors E's generated assets into
+`public/eprover/`. Do not commit generated binaries or upstream caches.
+`SKIP_EPROVER=1` skips recompilation and reuses complete existing E output;
+Local startup also reuses complete existing output if recompilation fails
+(for example, because emsdk is not activated), with an explicit warning.
+Without those files, selecting E reports that its assets are unavailable.
+Serve with the existing COOP/COEP headers: external prover workers require
+cross-origin isolation and SharedArrayBuffer. Restart the server and reload
+after rebuilding WASM.
+
+An optional **Audit e_axfilter subsets** setting checks smaller subsets within
+each sampled audit neighborhood. No contradiction found does not establish
+whole-KB consistency. Its filter deadline and per-subset prover deadline are
+separate; timed-out workers are replaced so subsequent queries can run.
+Verified nightly-report replay and rechecks remain pinned to the report's
+SUPr configuration, independent of the currently selected backend.
+
+After mirroring the assets, run `npm run test:e2e:eprover --workspace @sigma/web`
+for real-browser coverage (requires Playwright Chromium and Vampire assets for
+the backend-switch regression). The isolated `e2e/eprover.html` page also
+provides a manual smoke-test button without loading or changing saved SUMO work.
+
 ## 3D hierarchy
 
 Under Explore, choose the **Visualize** tab. Entity starts at the center;

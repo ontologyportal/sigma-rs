@@ -146,7 +146,7 @@ onBeforeUnmount(() => clearTimeout(scratchTimer));
 // -- prove --------------------------------------------------------------------
 
 async function prove() {
-  const vampire = prover.vampireSelected;
+  const backend = prover.backendLabel;
   const config = prover.config();
   runLimitSecs.value = config.timeLimitSecs ?? 0;
   proving.value = true;
@@ -178,7 +178,7 @@ async function prove() {
     showDownloadTptp.value = !!lastVampireTptp;
     error.value = "";
     result.value = r;
-    resultBackend.value = vampire ? "Vampire" : "SUPr";
+    resultBackend.value = backend;
   } catch (e) {
     result.value = null;
     resultBackend.value = "";
@@ -190,7 +190,7 @@ async function prove() {
 
 function downloadVampireTptp() {
   if (!lastVampireTptp) return;
-  downloadText("vampire-input.tptp", lastVampireTptp);
+  downloadText("prover-input.tptp", lastVampireTptp);
 }
 
 // -- tests: open / save -------------------------------------------------------
@@ -346,7 +346,7 @@ async function saveTest() {
         class="btn ghost"
         type="button"
         v-show="showDownloadTptp"
-        title="Download the exact TPTP problem text handed to Vampire for the last run"
+        title="Download the exact TPTP input for the last external prover run"
         @click="downloadVampireTptp"
       >
         Download TPTP input

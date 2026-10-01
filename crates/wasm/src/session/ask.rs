@@ -111,11 +111,11 @@ impl Session {
                     dialect,
                 ))
             }
-            Backend::Vampire => {
+            Backend::Vampire | Backend::E => {
                 let opts = self.config.to_external_opts(axiom_count);
                 let mut view =
                     session_guard.ask_view_dialect(query, session.as_deref(), &opts, dialect);
-                view.input_tptp = self.vampire.last_tptp();
+                view.input_tptp = self.runner.last_tptp();
                 to_js(&view)
             }
         }
@@ -201,7 +201,7 @@ impl Session {
                 }
                 to_js(&session_guard.audit_view_native(opts, sample, scope))
             }
-            Backend::Vampire => {
+            Backend::Vampire | Backend::E => {
                 if focus.is_some() {
                     return Err(JsValue::from_str(
                         "Targeted audit rechecks require the native backend.",
@@ -209,6 +209,9 @@ impl Session {
                 }
                 let mut opts = self.config.to_external_opts(axiom_count);
                 req.size(&mut opts.selection);
+                self.runner.set_audit_limit(sample.limit);
+                self.runner
+                    .set_selection_budget(opts.selection.auto_budget.unwrap_or(axiom_count));
                 to_js(&session_guard.audit_view(opts, sample, scope))
             }
         }
@@ -410,7 +413,7 @@ mod recheck_tests {
     use sigmakee_rs_core::{KnowledgeBase, Prover};
 
     fn kb(text: &str) -> KnowledgeBase<super::super::NativeStack> {
-        let runner = std::sync::Arc::new(crate::vampire::WasmVampireRunner::default());
+        let runner = std::sync::Arc::new(crate::vampire::WasmExternalRunner::default());
         let mut kb = KnowledgeBase::new_external_native(Prover::Custom(runner));
         assert!(
             kb.load(
