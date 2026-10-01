@@ -6,7 +6,7 @@
  */
 
 import { useBootStore } from "../stores/boot";
-import { spawnVampireWorker } from "./vampire-host";
+import { spawnVampireWorker } from "./external-prover-host";
 import type { Handlers } from "../worker/handlers";
 
 /** A command the worker answers. */

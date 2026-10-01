@@ -254,7 +254,7 @@ jobs:
         run: npm run typecheck -w @sigma/web
 
       - name: External prover bridge regression tests
-        run: node --test packages/web/src/worker/vampire-bridge.test.mjs
+        run: node --test packages/web/src/worker/external-prover-bridge.test.mjs
 
       # Boots every tab against the real upstream KB, so it is the slowest
       # and the only one that needs the network.

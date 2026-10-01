@@ -5,7 +5,7 @@ import vm from "node:vm";
 import ts from "typescript";
 
 const source = ts.transpileModule(
-  readFileSync(new URL("./vampire-bridge.ts", import.meta.url), "utf8"),
+  readFileSync(new URL("./external-prover-bridge.ts", import.meta.url), "utf8"),
   {
     compilerOptions: {
       module: ts.ModuleKind.CommonJS,

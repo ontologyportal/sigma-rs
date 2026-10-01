@@ -21,7 +21,7 @@ use std::sync::Arc;
 use sigmakee_rs_sdk::{ExternalProverLayer, KnowledgeBase, Prover, ProverLayer, TranslationLayer};
 use wasm_bindgen::prelude::*;
 
-use crate::vampire::WasmExternalRunner;
+use crate::external_prover::WasmExternalRunner;
 use crate::Config;
 
 /// The layer stack behind the wasm facade: the external layer (driving the

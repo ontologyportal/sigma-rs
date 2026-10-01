@@ -49,7 +49,7 @@ impl Session {
     /// optional `session` support, with the backend the active [`Config`]
     /// selects (set via [`configure`](Session::configure)): the in-browser
     /// native prover, or the Emscripten Vampire through the page's bridge
-    /// (see [`crate::vampire`]).
+    /// (see [`crate::external_prover`]).
     ///
     /// The wall-clock deadline (`Config.timeLimitSecs`) is enforced through
     /// `Date.now()` for the native prover and passed as `-t` to Vampire;
@@ -413,7 +413,7 @@ mod recheck_tests {
     use sigmakee_rs_core::{KnowledgeBase, Prover};
 
     fn kb(text: &str) -> KnowledgeBase<super::super::NativeStack> {
-        let runner = std::sync::Arc::new(crate::vampire::WasmExternalRunner::default());
+        let runner = std::sync::Arc::new(crate::external_prover::WasmExternalRunner::default());
         let mut kb = KnowledgeBase::new_external_native(Prover::Custom(runner));
         assert!(
             kb.load(

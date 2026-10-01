@@ -47,7 +47,7 @@ pub(crate) enum Backend {
     #[default]
     Native,
     /// The Emscripten Vampire, through the page-installed bridge (see
-    /// [`crate::vampire`]).
+    /// [`crate::external_prover`]).
     Vampire,
     /// E through the browser worker bridge.
     E,

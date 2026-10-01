@@ -7,7 +7,7 @@
 // type-only to type `call`.
 
 import { handlers } from "./handlers";
-import { installVampireBridge } from "./vampire-bridge";
+import { installVampireBridge } from "./external-prover-bridge";
 
 /** Hand a result's byte payload over instead of copying it, when it owns its
  *  whole (non-shared) buffer. */

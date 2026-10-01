@@ -1,8 +1,8 @@
-// The dedicated Vampire (WASM) worker. Owns the Emscripten instance so the
+// The dedicated external prover (WASM) worker. Owns the Emscripten instance so the
 // sigma worker -- which drives it through the synchronous bridge in
-// vampire-bridge.ts -- can park on `Atomics.wait` while a run is in flight.
+// external-prover-bridge.ts -- can park on `Atomics.wait` while a run is in flight.
 //
-// The PAGE spawns this worker (services/vampire-host.ts) and hands the sigma
+// The PAGE spawns this worker (services/external-prover-host.ts) and hands the sigma
 // worker one end of a MessageChannel: a worker nested under the parked sigma
 // worker never gets to load or run, since its resource loading rides its
 // parent's thread.

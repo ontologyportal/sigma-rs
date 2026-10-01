@@ -1,6 +1,6 @@
 // Browser-driven check of the Vampire (WASM) backend end to end: the engine's
 // external prover layer drives the Emscripten Vampire through the
-// Atomics.wait bridge (src/worker/vampire-bridge.ts) on the Ask/Tell and
+// Atomics.wait bridge (src/worker/external-prover-bridge.ts) on the Ask/Tell and
 // Audit tabs, then the worker still answers ordinary requests.
 //
 //   BASE_URL=http://localhost:8080/ node packages/web/e2e/vampire.mjs

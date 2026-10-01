@@ -109,7 +109,7 @@ function makeConfig(o: ProverConfig = {}): Config {
   if (o.selectionTolerancePct)
     cfg.selectionTolerancePct = o.selectionTolerancePct;
   // Vampire (WASM) rides the same Config: the engine's external prover layer
-  // drives it through the bridge installed at boot (see vampire-bridge.ts),
+  // drives it through the bridge installed at boot (see external-prover-bridge.ts),
   // with the same time limit and selection budget the native backend reads.
   // The problem text is kept so the page can offer it as a download.
   if (o.backend) cfg.backend = o.backend;
