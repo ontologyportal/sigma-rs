@@ -484,12 +484,15 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
     ///      index maintained by `syntactic::symbols` -- O(log n + matches)
     ///      instead of a full-table scan). Covers exact and prefix name
     ///      matches: `search_rank`'s two highest name tiers.
-    ///   2. **Substring fallback**, a full scan for names that *contain* `q`
-    ///      without starting with it (the remaining, lowest name tier) -- no
-    ///      sorted index can accelerate an arbitrary substring query. Skipped
-    ///      entirely when `already_high_tier` (the caller's already-computed
-    ///      text-field hits) plus the fast path's own results already total
-    ///      at least `short_circuit_limit`: the prefix tier's rank floor (60)
+    ///   2. **Substring fallback**, a full scan for names that contain `q`
+    ///      without starting with it, as long as the match doesn't cross one
+    ///      of the name's own word boundaries (the remaining, lowest name
+    ///      tier) -- see [`contains_at_word_boundary`] for why a crossing
+    ///      match is rejected. No sorted index can accelerate an arbitrary
+    ///      substring query. Skipped entirely when `already_high_tier` (the
+    ///      caller's already-computed text-field hits) plus the fast path's
+    ///      own results already total at least `short_circuit_limit`: the
+    ///      prefix tier's rank floor (60)
     ///      strictly exceeds the substring tier's ceiling (name 40 + source
     ///      12 + position 4 + occurrence bonus <= 3 = 59), so no
     ///      substring-only hit could survive the caller's final sort +
@@ -576,7 +579,7 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
                 return;
             }
             let name = sym.name();
-            if !name.to_lowercase().contains(q) {
+            if !contains_at_word_boundary(&name, q) {
                 return;
             }
             build(sym_id, &name, &mut out);
@@ -842,6 +845,47 @@ pub(crate) fn is_scoped_variable_name(name: &str) -> bool {
     }
 }
 
+/// `true` if lowercased `q` occurs somewhere in `name` without its matched
+/// span crossing one of `name`'s own word boundaries -- see `is_boundary`
+/// below for exactly which positions count. `q` is assumed already
+/// lowercased; `name` is not.
+///
+/// A match entirely inside one word is fine even when it doesn't start at
+/// that word's own boundary -- "man" inside "HumanDoll" matches wholly
+/// within "Human" and must still be found, and "AA" inside "XAAContainer"
+/// matches wholly within the leading "XAA" acronym run. What must be
+/// rejected is a match that starts in one word and runs into the next,
+/// since two unrelated words can spell a third word purely by where they
+/// happen to join -- e.g. "DiseaseConditionsIssue" lowercases to
+/// "...disea-se-cond-itions...", which contains "second" only because
+/// "Disease" ends in "se" right where "Conditions" begins with "cond".
+fn contains_at_word_boundary(name: &str, q: &str) -> bool {
+    let chars: Vec<char> = name.chars().collect();
+    let lower: Vec<char> = chars.iter().map(|c| c.to_ascii_lowercase()).collect();
+    let q_chars: Vec<char> = q.chars().collect();
+    if q_chars.is_empty() || q_chars.len() > lower.len() {
+        return false;
+    }
+    // A new word starts at index 0, right after a `_`/`-` separator, at an
+    // uppercase letter right after a lowercase one (plain CamelCase), or --
+    // for a run of several uppercase letters in a row, e.g. the "XAA" in
+    // "XAAContainer" -- at the LAST uppercase letter of that run when it is
+    // immediately followed by a lowercase one, since that's the letter
+    // that actually starts the next word ("Container"), not the ones
+    // before it.
+    let is_boundary = |i: usize| {
+        if i == 0 || chars[i - 1] == '_' || chars[i - 1] == '-' {
+            return true;
+        }
+        chars[i].is_uppercase()
+            && (!chars[i - 1].is_uppercase() || chars.get(i + 1).is_some_and(|c| c.is_lowercase()))
+    };
+    (0..=lower.len() - q_chars.len()).any(|start| {
+        let end = start + q_chars.len();
+        lower[start..end] == q_chars[..] && !(start + 1..end).any(is_boundary)
+    })
+}
+
 /// Strips a single pair of surrounding double quotes from `s`, if present.
 fn strip_quotes(s: &str) -> String {
     let mut s = s.to_string();
@@ -863,6 +907,25 @@ mod tests {
         let r = kb.make_session_axiomatic("test.kif");
         assert!(r.is_ok(), "promotion failed: {:?}", r.err());
         kb
+    }
+
+    #[test]
+    fn substring_name_match_does_not_cross_word_boundaries() {
+        // "AseCond" lowercases to "asecond", which contains "second" purely
+        // by coincidence of where "Ase" ends and "Cond" begins -- neither
+        // word has anything to do with "second". "XyzSecond" contains it as
+        // a real compound word ("Second" is its own CamelCase word).
+        let kb = kb_from("(subclass AseCond Entity)\n(subclass XyzSecond Entity)\n");
+        let hits = kb.search("second", &SearchOpts::default());
+        let syms: Vec<&str> = hits.iter().map(|h| h.symbol.as_str()).collect();
+        assert!(
+            !syms.contains(&"AseCond"),
+            "a match spanning two unrelated words' boundary must not count: {syms:?}"
+        );
+        assert!(
+            syms.contains(&"XyzSecond"),
+            "a real compound-word match must still be found: {syms:?}"
+        );
     }
 
     #[test]
