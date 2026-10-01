@@ -399,9 +399,12 @@ export async function contributeFiles({
  *  signed-in user's own limit being exhausted (rare: 5000/hour) is a
  *  different problem logging in again can't fix, so that case is left as a
  *  plain error instead. */
-function githubApi<T = unknown>(path: string): Promise<T> {
+function githubApi<T = unknown>(
+  path: string,
+  opts: RequestInit = {},
+): Promise<T> {
   const auth = useAuthStore();
-  return api<T>(auth.token, path).catch((e) => {
+  return api<T>(auth.token, path, opts).catch((e) => {
     if (e instanceof GitHubError && e.rateLimited && !auth.token)
       auth.openLoginDialog();
     throw e;
@@ -651,4 +654,32 @@ export function fetchAppReleases(
   return githubApi<Release[]>(
     `/repos/${APP_REPO.owner}/${APP_REPO.repo}/releases?per_page=${perPage}&page=${page}`,
   );
+}
+
+/** Latest completed master audit, including failure (contradictions fail CI). */
+export async function fetchLatestMasterAudit() {
+  const result = await githubApi<
+    Res<"GET /repos/{owner}/{repo}/actions/workflows/{workflow_id}/runs">
+  >(
+    `/repos/${SUMO.owner}/${SUMO.repo}/actions/workflows/contradiction-audit.yml/runs?branch=master&status=completed&per_page=1`,
+    { cache: "no-store" },
+  );
+  const run = result.workflow_runs[0];
+  if (
+    !run ||
+    run.head_branch !== "master" ||
+    run.head_repository?.full_name !== `${SUMO.owner}/${SUMO.repo}` ||
+    !["schedule", "workflow_dispatch", "push"].includes(run.event)
+  )
+    throw new Error("No completed master contradiction audit is available.");
+  return run;
+}
+
+/** A live master ref read for replay validity, independent of commit-history caches. */
+export async function fetchAuditMasterSha(): Promise<string> {
+  const ref = await githubApi<GitRef>(
+    `/repos/${SUMO.owner}/${SUMO.repo}/git/ref/heads/master`,
+    { cache: "no-store" },
+  );
+  return ref.object.sha;
 }

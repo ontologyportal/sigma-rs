@@ -248,6 +248,19 @@ impl<L: crate::layer::TopLayer> KnowledgeBase<L> {
         self.layer.semantic().syntactic.file_fingerprints(file)
     }
 
+    /// Source formula fingerprints that produced a normalized sentence.
+    pub fn sentence_source_hashes(&self, sid: SentenceId) -> Vec<u64> {
+        self.layer.semantic().syntactic.fingerprints_producing(sid)
+    }
+
+    /// Normalized roots produced by one source formula fingerprint.
+    pub fn source_roots(&self, fingerprint: u64) -> Vec<SentenceId> {
+        self.layer
+            .semantic()
+            .syntactic
+            .roots_of_fingerprint(fingerprint)
+    }
+
     /// The root sentence ids a file produced. Order is unspecified.
     pub fn file_roots(&self, file: &str) -> Vec<SentenceId> {
         self.layer.semantic().syntactic.file_root_sids(file)

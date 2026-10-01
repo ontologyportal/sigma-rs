@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, reactive, ref, shallowRef, watch } from "vue";
+import { computed, onActivated, reactive, ref, shallowRef, watch } from "vue";
+import { onBeforeRouteLeave } from "vue-router";
 import type { AuditBatch, AuditResult } from "sigmakee/sdk";
 import { call, isWasmAbort } from "../services/sigma";
 import { errMsg } from "../utils/format";
@@ -9,6 +10,17 @@ import { useProverStore } from "../stores/prover";
 import BusyButton from "../components/BusyButton.vue";
 import { useElapsed } from "../composables/useElapsed";
 import Card from "../components/Card.vue";
+import BaseDialog from "../components/BaseDialog.vue";
+import {
+  latestAuditReport,
+  loadAuditReplay,
+  checkAuditReplay,
+} from "../services/audit-replay";
+import {
+  replayPositions,
+  replayAxiomKey,
+  type AuditReplay,
+} from "../utils/auditReplay";
 import Disclosure from "../components/Disclosure.vue";
 import ProofView from "../components/ProofView.vue";
 import ProverSettings from "../components/ProverSettings.vue";
@@ -82,6 +94,121 @@ const auditing = ref(false);
 const stopRequested = ref(false);
 const { label: elapsedLabel, lastLabel: tookLabel } = useElapsed(auditing);
 const error = ref("");
+const reportOpen = ref(false);
+const reportLoading = ref(false);
+const report = shallowRef<Awaited<ReturnType<typeof latestAuditReport>> | null>(
+  null,
+);
+const reportError = ref("");
+const replayBusy = ref(false);
+const replayMode = ref(false);
+const replayDone = ref(0);
+const replayMessage = ref("");
+const loadedReplay = shallowRef<AuditReplay | null>(null);
+const recheckReason = ref("");
+const recheckRevision = ref(0);
+const rechecking = ref(false);
+const lastRunRecheck = ref(false);
+
+async function refreshRecheck() {
+  if (!loadedReplay.value || replayBusy.value || auditing.value) return;
+  try {
+    const state = await call("auditRecheckStatus");
+    recheckReason.value = state.reason;
+    recheckRevision.value = state.revision;
+  } catch (e) {
+    recheckReason.value = errMsg(e);
+  }
+}
+onActivated(refreshRecheck);
+
+async function recheckContradictions() {
+  if (!loadedReplay.value || replayBusy.value || auditing.value) return;
+  replayBusy.value = true;
+  try {
+    const state = await call("auditRecheckStatus");
+    recheckReason.value = state.reason;
+    recheckRevision.value = state.revision;
+    if (state.reason) return;
+    rechecking.value = true;
+    await runAudit(loadedReplay.value);
+  } catch (e) {
+    recheckReason.value = errMsg(e);
+  } finally {
+    rechecking.value = false;
+    replayBusy.value = false;
+    await refreshRecheck();
+  }
+}
+
+onBeforeRouteLeave(() => !replayBusy.value);
+
+async function showMasterReport() {
+  reportOpen.value = true;
+  reportLoading.value = true;
+  report.value = null;
+  reportError.value = "";
+  replayMessage.value = "";
+  try {
+    report.value = await latestAuditReport();
+  } catch (e) {
+    reportError.value = errMsg(e);
+  } finally {
+    reportLoading.value = false;
+  }
+}
+
+async function confirmReplay() {
+  if (
+    !report.value ||
+    report.value.unavailable ||
+    replayBusy.value ||
+    auditing.value
+  )
+    return;
+  replayBusy.value = true;
+  reportError.value = "";
+  try {
+    const replay = report.value.replay;
+    loadedReplay.value = null;
+    await loadAuditReplay(replay, (message) => {
+      replayMessage.value = message;
+    });
+    loadedReplay.value = replay;
+    try {
+      const state = await call("prepareAuditRecheck", {
+        files: kb.constituents.map((c) => ({ name: c.file, text: c.text })),
+        positions: replayPositions(replay),
+        config: replay.config,
+        limit: replay.request.limit,
+      });
+      recheckReason.value = state.reason;
+      recheckRevision.value = state.revision;
+    } catch (e) {
+      recheckReason.value = errMsg(e);
+    }
+    prover.reset();
+    const { backend, ...settings } = replay.config;
+    prover.backend = backend;
+    Object.assign(prover.cfg, settings);
+    Object.assign(sweep, {
+      scope: "",
+      batch: 1,
+      count: 1,
+      budget: null,
+      depth: null,
+      timeLimit: replay.config.timeLimitSecs,
+      limit: replay.request.limit,
+    });
+    await runAudit(replay);
+    await checkAuditReplay(replay);
+  } catch (e) {
+    reportError.value = errMsg(e);
+    replayMessage.value = "Replay could not be completed or verified.";
+  } finally {
+    replayBusy.value = false;
+  }
+}
 
 const backendLabel = ref("");
 const contradictions = shallowRef<Contradiction[]>([]);
@@ -89,7 +216,9 @@ const batches = shallowRef<LogEntry[]>([]);
 const rawLines = shallowRef<string[]>([]);
 const run = reactive({ seed: 0, start: 0, next: 0, total: 0, planned: 0 });
 
-const checked = computed(() => run.next - run.start);
+const checked = computed(() =>
+  replayMode.value ? replayDone.value : run.next - run.start,
+);
 const progress = computed(() =>
   run.planned > 0 ? checked.value / run.planned : null,
 );
@@ -115,6 +244,10 @@ const verdict = computed(() => {
   return `No contradiction found in ${problems} (${parts.join(", ")}). This doesn't prove the KB consistent.`;
 });
 const positionText = computed(() => {
+  if (lastRunRecheck.value)
+    return `Rechecked ${replayDone.value} of ${run.planned} reported targets against local edits`;
+  if (replayMode.value)
+    return `Replayed ${replayDone.value} of ${run.planned} reported subproblems (intermediate steps skipped)`;
   const steps = `Seed ${run.seed} · steps ${run.start}–${run.next}`;
   if (!run.total) return steps;
   return (
@@ -138,22 +271,30 @@ const num = (v: unknown, dflt: number, min = 0) => {
 /** Run the sweep one subproblem per worker call, so progress shows, Stop
  *  takes effect between subproblems, and the worker stays responsive to the
  *  editor in between. */
-async function runAudit() {
+async function runAudit(replay?: AuditReplay) {
   // Audits get their own per-subproblem time limit: a browser subproblem can
   // need several GB, and the wasm heap stops at 4 GB.
-  const config = prover.config({ timeLimitSecs: num(sweep.timeLimit, 10) });
+  const config =
+    replay?.config ??
+    prover.config({ timeLimitSecs: num(sweep.timeLimit, 10) });
+  const positions = replay ? replayPositions(replay) : [];
+  replayMode.value = !!replay;
+  lastRunRecheck.value = rechecking.value;
+  replayDone.value = 0;
   const seed = num(sweep.seed, 0);
   const start = num(sweep.step, 0);
-  const count = num(sweep.count, 50, 1);
-  const batch = num(sweep.batch, 1, 1);
-  const limit = num(sweep.limit, 5, 1);
-  const extra = {
-    ...(sweep.budget ? { budget: num(sweep.budget, 1, 1) } : {}),
-    ...(sweep.depth ? { depth: num(sweep.depth, 1, 1) } : {}),
-    ...(sweep.scope ? { scope: sweep.scope } : {}),
-  };
+  const count = replay ? positions.length : num(sweep.count, 50, 1);
+  const batch = replay ? 1 : num(sweep.batch, 1, 1);
+  const limit = replay ? Number.MAX_SAFE_INTEGER : num(sweep.limit, 5, 1);
+  const extra = replay
+    ? {}
+    : {
+        ...(sweep.budget ? { budget: num(sweep.budget, 1, 1) } : {}),
+        ...(sweep.depth ? { depth: num(sweep.depth, 1, 1) } : {}),
+        ...(sweep.scope ? { scope: sweep.scope } : {}),
+      };
 
-  backendLabel.value = prover.vampireSelected ? "Vampire" : "SUPr";
+  backendLabel.value = !replay && prover.vampireSelected ? "Vampire" : "SUPr";
   contradictions.value = [];
   batches.value = [];
   rawLines.value = [];
@@ -169,23 +310,36 @@ async function runAudit() {
       checked.value < run.planned &&
       contradictions.value.length < limit
     ) {
-      const take = Math.min(batch, run.planned - checked.value);
+      const take = replay ? 1 : Math.min(batch, run.planned - checked.value);
+      const position = replay
+        ? positions[replayDone.value]
+        : { seed, step: run.next };
+      if (replay)
+        replayMessage.value = `${rechecking.value ? "Rechecking target" : "Replaying"} ${replayDone.value + 1}/${positions.length}: original seed ${position.seed}, step ${position.step}`;
       const started = performance.now();
       let result: AuditResult;
       try {
-        ({ result } = await call("audit", {
-          config,
-          request: {
-            seed,
-            step: run.next,
-            count: take,
-            batch,
-            limit: limit - contradictions.value.length,
-            ...extra,
-          },
-        }));
+        ({ result } = rechecking.value
+          ? await call("recheckAudit", {
+              index: replayDone.value,
+              revision: recheckRevision.value,
+            })
+          : await call("audit", {
+              config,
+              request: {
+                seed: position.seed,
+                step: position.step,
+                count: take,
+                batch,
+                limit: replay
+                  ? replay.request.limit
+                  : limit - contradictions.value.length,
+                ...extra,
+              },
+            }));
         crashes = 0;
       } catch (e) {
+        if (replay) throw e;
         if (!isWasmAbort(errMsg(e)) || ++crashes >= 3) throw e;
         // The engine restarts itself on a trap; skip the subproblem that
         // caused it (it would only crash again) and carry on.
@@ -206,7 +360,15 @@ async function runAudit() {
         continue;
       }
       run.total = result.total;
-      run.planned = Math.min(count, Math.max(0, result.total - start));
+      if (!replay)
+        run.planned = Math.min(count, Math.max(0, result.total - start));
+      if (
+        replay &&
+        result.next_step !== (rechecking.value ? 1 : position.step + 1)
+      )
+        throw new Error(
+          `Replay step ${position.step} was not checked by this engine.`,
+        );
       const fresh = result.contradictions.filter((c) => {
         const key = contradictionKey(c.steps);
         if (seen.has(key)) return false;
@@ -217,6 +379,11 @@ async function runAudit() {
         contradictions.value = [...contradictions.value, ...fresh];
       batches.value = [...batches.value, ...result.batches];
       rawLines.value = [...rawLines.value, result.raw_output];
+      if (replay) {
+        replayDone.value++;
+        run.next = result.next_step;
+        continue;
+      }
       if (result.next_step <= run.next) break;
       run.next = result.next_step;
       // Saved per subproblem, so leaving mid-run still resumes here.
@@ -224,10 +391,42 @@ async function runAudit() {
       sweep.step = run.next;
       saveSweep();
     }
+    if (rechecking.value) {
+      const s = summarizeBatches(batches.value);
+      const inconclusive = s.timeLimit + s.stepLimit + s.crashed + s.other;
+      replayMessage.value = stopRequested.value
+        ? `Recheck stopped after ${replayDone.value}/${positions.length} targets; remaining targets were not checked.`
+        : `Rechecked ${replayDone.value} reported targets against your edits: ${s.contradictory} still produced contradictions, ${s.clean} no longer reproduced a contradiction, ${inconclusive} inconclusive. This does not prove the entire knowledge base consistent.`;
+    } else if (replay) {
+      const expected = new Set(
+        replay.findings.map((f) => replayAxiomKey(f.axioms)),
+      );
+      const actual = new Set(
+        contradictions.value.map((c) =>
+          replayAxiomKey(
+            c.steps
+              .filter((s) => s.file != null)
+              .map((s) => ({
+                file: s.file ?? null,
+                line: s.line ?? null,
+                kif: s.kif,
+              })),
+          ),
+        ),
+      );
+      const missing = [...expected].filter((key) => !actual.has(key)).length;
+      const extra = [...actual].filter((key) => !expected.has(key)).length;
+      replayMessage.value = stopRequested.value
+        ? `Replay stopped after ${replayDone.value}/${positions.length} reported subproblems.`
+        : missing || extra
+          ? `Replay differs from the workflow: ${missing} reported contradiction(s) missing, ${extra} additional. See the subproblem log for time or step limits.`
+          : `Reproduced all ${expected.size} reported contradiction(s) in ${positions.length} subproblems.`;
+    }
   } catch (e) {
     error.value = isWasmAbort(errMsg(e))
       ? "Three subproblems in a row crashed the engine, most likely by running out of memory (a subproblem can need several GB; the browser allows 4 GB). Lower the time limit or the subproblem size and continue from the saved step."
       : errMsg(e);
+    if (replay) replayMessage.value = `Replay failed: ${error.value}`;
   } finally {
     auditing.value = false;
   }
@@ -241,6 +440,94 @@ function randomSeed() {
 
 <template>
   <div>
+    <BaseDialog
+      v-model="reportOpen"
+      title="Latest Contradiction Report"
+      width="min(800px, 94vw)"
+      :dismissible="!replayBusy"
+    >
+      <p>
+        SUMO runs a two-hour contradiction audit each night. This report records
+        the contradictions found and the steps that produced them. Continue to
+        synchronize your workspace with the report's verified master-branch
+        inputs and replay only those steps. Reports cannot be loaded if master
+        has changed since the audit ran.
+      </p>
+      <p>
+        After replaying, edit existing formulas and use Recheck reported
+        contradictions to test your changes without replacing your work. Adding
+        or removing formulas, or changes that make a target ambiguous,
+        invalidate rechecking. Keep this app session open while editing.
+      </p>
+      <p v-if="reportLoading" role="status">
+        Fetching the latest completed master audit...
+      </p>
+      <p v-if="reportError" class="hint bad" role="alert">{{ reportError }}</p>
+      <template v-if="report">
+        <p>
+          <a :href="report.runUrl" target="_blank" rel="noopener noreferrer"
+            >View workflow run</a
+          >
+        </p>
+        <p v-if="report.unavailable" class="hint bad" role="alert">
+          {{ report.unavailable }}
+        </p>
+        <p v-else-if="!report.replay.findings.length">
+          This audit reported no contradictions to replay.
+        </p>
+        <template v-else>
+          <p class="hint bad">
+            WARNING: Continuing will replace your loaded knowledge base and
+            prover settings with the workflow's exact inputs. This may overwrite
+            work you have saved, including local edits to loaded or audited
+            constituents. Save a separate copy of any work you want to keep.
+          </p>
+          <p>
+            Confirm to synchronize with contradiction report and replay the
+            reported contradiction steps.
+          </p>
+        </template>
+        <Disclosure summary="Read contradictions.md">
+          <pre class="report-text">{{
+            report.markdown.split("## Replay metadata")[0]
+          }}</pre>
+        </Disclosure>
+      </template>
+      <p v-if="replayMessage" role="status">{{ replayMessage }}</p>
+      <template #actions>
+        <button
+          class="btn ghost"
+          type="button"
+          :disabled="replayBusy"
+          @click="reportOpen = false"
+        >
+          Close
+        </button>
+        <button
+          v-if="replayBusy && auditing"
+          class="btn ghost"
+          type="button"
+          :disabled="stopRequested"
+          @click="stopRequested = true"
+        >
+          Stop after this subproblem
+        </button>
+        <button
+          class="btn"
+          type="button"
+          :disabled="
+            reportLoading ||
+            replayBusy ||
+            !report ||
+            !!report.unavailable ||
+            !report.replay.findings.length
+          "
+          @click="confirmReplay"
+        >
+          {{ replayBusy ? "Replaying..." : "Confirm: replace work and replay" }}
+        </button>
+      </template>
+    </BaseDialog>
     <Card>
       <div class="hint">
         Samples the loaded KB: picks axioms in a seeded pseudorandom order and
@@ -353,35 +640,60 @@ function randomSeed() {
           />
         </div>
       </div>
-      <div class="inline mt">
-        <BusyButton
-          :busy="auditing"
-          label="Run audit"
-          :busy-label="busyLabel"
-          :progress="progress"
-          @click="runAudit"
-        />
+      <div class="inline between mt">
         <button
-          v-if="auditing"
           class="btn ghost"
           type="button"
-          :disabled="stopRequested"
-          title="Stop after the current subproblem"
-          @click="stopRequested = true"
+          :disabled="auditing || replayBusy"
+          @click="showMasterReport"
         >
-          {{ stopRequested ? "Stopping…" : "Stop" }}
+          ⓘ Latest Contradiction Report
         </button>
         <button
-          class="cog"
+          v-if="loadedReplay"
+          class="btn ghost"
           type="button"
-          title="Prover settings (backend, step cap, selection budget)"
-          aria-label="Prover settings"
-          :aria-expanded="prover.settingsOpen"
-          @click="prover.toggleSettings()"
+          :disabled="auditing || replayBusy || !!recheckReason"
+          @click="recheckContradictions"
         >
-          ⚙
+          Recheck reported contradictions
         </button>
+        <div class="inline audit-run-controls">
+          <BusyButton
+            :disabled="replayBusy"
+            :busy="auditing"
+            label="Run audit"
+            :busy-label="busyLabel"
+            :progress="progress"
+            @click="runAudit()"
+          />
+          <button
+            v-if="auditing"
+            class="btn ghost"
+            type="button"
+            :disabled="stopRequested"
+            title="Stop after the current subproblem"
+            @click="stopRequested = true"
+          >
+            {{ stopRequested ? "Stopping…" : "Stop" }}
+          </button>
+          <button
+            class="cog"
+            type="button"
+            title="Prover settings (backend, step cap, selection budget)"
+            aria-label="Prover settings"
+            :aria-expanded="prover.settingsOpen"
+            @click="prover.toggleSettings()"
+          >
+            ⚙
+          </button>
+        </div>
       </div>
+      <p v-if="replayMessage" role="status">{{ replayMessage }}</p>
+      <p v-if="loadedReplay && recheckReason" class="hint bad" role="alert">
+        Recheck unavailable: {{ recheckReason }} Your edits have not been
+        replaced.
+      </p>
     </Card>
     <ProverSettings />
     <div>
@@ -450,6 +762,14 @@ function randomSeed() {
 </template>
 
 <style scoped>
+.audit-run-controls {
+  margin-inline-start: auto;
+}
+.report-text {
+  max-height: 45vh;
+  overflow: auto;
+  white-space: pre-wrap;
+}
 .sweep-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
