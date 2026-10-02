@@ -15,6 +15,19 @@ onMounted(() => {
 
 <template>
   <div v-if="!boot.finished" id="overlay">
+    <picture v-if="!boot.failed">
+      <!-- Static mascot for prefers-reduced-motion -- GIF animation has no
+           CSS pause/play, so swapping the whole source is the only way to
+           honor it without JS. -->
+      <source media="(prefers-reduced-motion: reduce)" srcset="/logo.png" />
+      <img
+        id="mascot"
+        src="/mascot-stomp.gif"
+        alt=""
+        width="140"
+        height="140"
+      />
+    </picture>
     <div id="overlayTitle">
       {{ boot.failed ? "Failed to load SUMO" : "Loading SUMO" }}
     </div>
@@ -47,6 +60,12 @@ onMounted(() => {
   gap: 10px;
   text-align: center;
   padding: 20px;
+}
+
+#mascot {
+  width: 140px;
+  height: 140px;
+  margin-bottom: 4px;
 }
 
 #overlayTitle {
