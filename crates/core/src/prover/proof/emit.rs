@@ -49,7 +49,7 @@ pub fn formula_to_ast(tptp: &str) -> Option<AstNode> {
 /// INPUT is what caused the conjecture-skolemization soundness bug — a
 /// stripped top-level `forall` on a conjecture flips its skolemization.
 fn normalize_display_quantifiers(node: AstNode) -> AstNode {
-    strip_top_level_foralls(collapse_like_quantifiers(node))
+    strip_top_level_foralls(collapse_display_groups(node))
 }
 
 /// The quantifier kind of a `(Q (vars…) body)` list, if it is one.
@@ -66,14 +66,43 @@ fn quant_kind(elements: &[AstNode]) -> Option<OpKind> {
 
 /// Bottom-up: `(Q (v1…) (Q (v2…) body))` → `(Q (v1… v2…) body)` for the
 /// SAME quantifier `Q` only.
-fn collapse_like_quantifiers(node: AstNode) -> AstNode {
+fn collapse_display_groups(node: AstNode) -> AstNode {
     let AstNode::List { elements, span } = node else {
         return node;
     };
-    let mut elements: Vec<AstNode> = elements
-        .into_iter()
-        .map(collapse_like_quantifiers)
-        .collect();
+    let mut elements: Vec<AstNode> = elements.into_iter().map(collapse_display_groups).collect();
+    // Flatten only directly nested conjunctions, preserving operand order
+    // and boundaries such as negation, disjunction, and quantifiers.
+    if matches!(
+        elements.first(),
+        Some(AstNode::Operator {
+            op: OpKind::And,
+            ..
+        })
+    ) {
+        let mut flattened = Vec::with_capacity(elements.len());
+        for element in elements {
+            match element {
+                AstNode::List {
+                    elements: inner, ..
+                } if matches!(
+                    inner.first(),
+                    Some(AstNode::Operator {
+                        op: OpKind::And,
+                        ..
+                    })
+                ) =>
+                {
+                    flattened.extend(inner.into_iter().skip(1));
+                }
+                other => flattened.push(other),
+            }
+        }
+        return AstNode::List {
+            elements: flattened,
+            span,
+        };
+    }
     if let Some(q) = quant_kind(&elements) {
         let body = elements.pop().expect("quantifier has a body");
         if let AstNode::List {

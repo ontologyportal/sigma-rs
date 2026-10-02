@@ -25,10 +25,10 @@ use crate::{DiagResult, ToDiagnostic};
 /// Directive head keywords that classify a top-level `(kw …)` list as a
 /// [`MetaNode`] rather than a logical statement.  `query` is **not** here —
 /// it carries a formula, so it becomes a `Conjecture` statement.
-const DIRECTIVES: &[&str] = &["note", "time", "answer", "file"];
+const DIRECTIVES: &[&str] = &["note", "time", "answer", "file", "category"];
 
 /// True when `name` heads a `.kif.tq` harness form: a [`MetaNode`] directive
-/// (`note` / `time` / `answer` / `file`) or the formula-bearing `query` /
+/// (`note` / `time` / `answer` / `file` / `category`) or the formula-bearing `query` /
 /// `ask`.  For editor tooling -- these deserve keyword-class highlighting in
 /// test files, where the KB can never classify them.
 pub fn is_tq_directive(name: &str) -> bool {
