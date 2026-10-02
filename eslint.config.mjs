@@ -21,6 +21,7 @@ export default tseslint.config(
       "**/worker-dist/",
       "**/out/",
       "packages/vampire/",
+      "packages/eprover/.eprover-cache/",
       "packages/web/public/",
       "packages/vscode/server/",
       "packages/sigmakee/dist/",

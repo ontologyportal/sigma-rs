@@ -147,7 +147,19 @@ export interface AuditReplay {
   engine: { commit: string; fingerprint: string };
   fingerprint: string;
   constituents: { name: string; sha256: string }[];
-  config: Required<Omit<ProverConfig, "vampireArgs">>;
+  config: Required<
+    Pick<
+      ProverConfig,
+      | "backend"
+      | "timeLimitSecs"
+      | "maxSteps"
+      | "maxLits"
+      | "forwardClose"
+      | "wantProof"
+      | "profile"
+      | "selectionTolerancePct"
+    >
+  >;
   request: { count: 1; batch: 1; limit: number };
   findings: { seed: number; step: number; axioms: ReplayAxiom[] }[];
 }
@@ -203,6 +215,19 @@ export function parseAuditReplay(markdown: string): AuditReplay {
   const c = r.config;
   if (
     !record(c) ||
+    Object.keys(c).some(
+      (key) =>
+        ![
+          "backend",
+          "timeLimitSecs",
+          "maxSteps",
+          "maxLits",
+          "forwardClose",
+          "wantProof",
+          "profile",
+          "selectionTolerancePct",
+        ].includes(key),
+    ) ||
     c.backend !== "native" ||
     !integer(c.timeLimitSecs, 1) ||
     !integer(c.maxSteps, 1) ||

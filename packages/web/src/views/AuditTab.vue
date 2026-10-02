@@ -294,7 +294,7 @@ async function runAudit(replay?: AuditReplay) {
         ...(sweep.scope ? { scope: sweep.scope } : {}),
       };
 
-  backendLabel.value = !replay && prover.vampireSelected ? "Vampire" : "SUPr";
+  backendLabel.value = replay ? "SUPr" : prover.backendLabel;
   contradictions.value = [];
   batches.value = [];
   rawLines.value = [];

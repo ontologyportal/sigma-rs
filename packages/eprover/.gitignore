@@ -1,0 +1,9 @@
+# Keep upstream sources and generated artifacts out of the repository.
+*
+!.gitignore
+!package.json
+!build.sh
+!build.test.mjs
+!README.md
+!runner.mjs
+!runner.test.mjs

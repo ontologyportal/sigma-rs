@@ -2,4 +2,6 @@
 worker-dist/
 dist/
 e2e/shots/
+
+/public/eprover/
 e2e/.old-app/

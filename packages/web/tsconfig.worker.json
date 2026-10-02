@@ -19,7 +19,7 @@
   "include": [
     "src/worker/sigma.worker.ts",
     "src/worker/handlers.ts",
-    "src/worker/vampire-bridge.ts",
-    "src/worker/vampire.worker.ts"
+    "src/worker/external-prover-bridge.ts",
+    "src/worker/external-prover.worker.ts"
   ]
 }

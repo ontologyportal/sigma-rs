@@ -11,10 +11,10 @@ pub use wasm_bindgen_rayon::init_thread_pool;
 
 pub mod config;
 mod console_log;
+pub mod external_prover;
 pub mod lsp;
 pub mod session;
 pub mod types;
-pub mod vampire;
 
 pub use config::*;
 pub use lsp::*;
