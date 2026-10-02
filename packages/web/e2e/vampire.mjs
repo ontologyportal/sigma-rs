@@ -79,9 +79,15 @@ await step("00-load", async () => {
 await step("01-select-vampire", async () => {
   await tab("Ask/Tell").click();
   await page.waitForSelector(".monaco-editor", { timeout: 60_000 });
-  await page.locator("button.cog").first().click();
-  await page.locator("select#proverBackend").selectOption("vampire");
-  await page.locator("button.cog").first().click();
+  await page
+    .getByRole("button", { name: /Options/ })
+    .first()
+    .click();
+  await page.getByRole("radio", { name: "Vampire" }).first().click();
+  await page
+    .getByRole("button", { name: /Options/ })
+    .first()
+    .click();
 });
 
 await step("02-prove-default-query", async () => {
@@ -91,8 +97,10 @@ await step("02-prove-default-query", async () => {
   const badge = await page.locator("text=via Vampire").count();
   if (!badge) throw new Error("result is not labelled 'via Vampire'");
   if (!/Proved/.test(status)) throw new Error("status: " + status);
-  const dl = page.locator("button.btn", { hasText: "Download TPTP input" });
+  await page.getByRole("button", { name: /More/ }).click();
+  const dl = page.locator(".dl-menu button", { hasText: "TPTP input" });
   if (!(await dl.isVisible())) throw new Error("no TPTP download offered");
+  await page.getByRole("button", { name: /More/ }).click();
   console.log(`     status=${status}`);
 });
 
@@ -104,23 +112,30 @@ await step("03-worker-still-answers", async () => {
 
 await step("04-audit", async () => {
   await tab("Audit").click();
-  await page.getByRole("button", { name: /Run audit/ }).click();
+  await page.getByRole("button", { name: /Run audit|Continue/ }).click();
   await page.waitForSelector(".audit-status", { timeout: 300_000 });
+  const stop = page.getByRole("button", { name: /^Stop/ });
+  if (await stop.isVisible()) await stop.click();
   const status = (
     await page.locator(".audit-status").first().innerText()
   ).trim();
   const badge = await page.locator("text=via Vampire").count();
   if (!badge) throw new Error("audit is not labelled 'via Vampire'");
-  if (!/Consistent|Inconsistent|Timeout/.test(status))
-    throw new Error("status: " + status);
+  if (!/contradiction/i.test(status)) throw new Error("status: " + status);
   console.log(`     audit status=${status}`);
 });
 
 await step("05-native-still-proves", async () => {
   await tab("Ask/Tell").click();
-  await page.locator("button.cog").first().click();
-  await page.locator("select#proverBackend").selectOption("native");
-  await page.locator("button.cog").first().click();
+  await page
+    .getByRole("button", { name: /Options/ })
+    .first()
+    .click();
+  await page.getByRole("radio", { name: "SUPr" }).first().click();
+  await page
+    .getByRole("button", { name: /Options/ })
+    .first()
+    .click();
   await page.locator("button.btn", { hasText: /^Prove/ }).click();
   await page.waitForSelector("text=via SUPr", { timeout: 180_000 });
   const status = (await page.locator(".status").first().innerText()).trim();

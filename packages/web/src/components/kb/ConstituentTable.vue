@@ -27,6 +27,16 @@ const library = useLibraryStore();
 
 const rowKey = (origin: Origin, name: string) => `${origin.kind}:${name}`;
 
+const staleTip = (reason: string) =>
+  `Stale: this file couldn't be fetched from its source (${reason}), so the ` +
+  `copy saved in this browser from an earlier load is in use instead. It may ` +
+  `be out of date, or the file may have been moved, renamed or deleted ` +
+  `upstream. It is fetched again on the next load.`;
+const unavailableTip = (reason: string) =>
+  `This file couldn't be fetched from its source (${reason}) and there is no ` +
+  `copy saved in this browser, so it isn't loaded. It is tried again on the ` +
+  `next load; tick it to retry now, or delete it to stop loading it.`;
+
 const rows = computed<FileRow[]>(() => {
   const out: FileRow[] = kb.constituents.map((c) => {
     const core = c.name === MERGE && c.origin.kind === "sumo";
@@ -40,8 +50,22 @@ const rows = computed<FileRow[]>(() => {
       locked: core,
       status: core ? "core" : "loaded",
       statusKind: core ? "locked" : "in",
+      ...(c.stale ? { flag: { label: "stale", tip: staleTip(c.stale) } } : {}),
     };
   });
+  for (const u of kb.unavailable)
+    out.push({
+      key: rowKey(u.origin, u.name),
+      name: u.name,
+      origin: u.origin,
+      source: sourceLabel(u.origin),
+      size: 0,
+      loaded: false,
+      deletable: true,
+      status: "",
+      statusKind: "out",
+      flag: { label: "unavailable", tip: unavailableTip(u.reason) },
+    });
   const loaded = new Set(out.map((r) => r.key));
   for (const e of library.entries) {
     if (!isKif(e.name)) continue;
@@ -86,6 +110,11 @@ const selected = ref(new Set<string>());
 const saving = ref(false);
 
 async function deleteRow(row: FileRow) {
+  if (row.flag?.label === "unavailable") {
+    kb.forgetUnavailable(row.name, row.origin.kind);
+    emit("log", `${row.name} will no longer be loaded.`);
+    return;
+  }
   if (!window.confirm(`Delete ${row.name} from the library?`)) return;
   try {
     await library.deleteEntry(row.name, row.origin.kind);
@@ -100,9 +129,14 @@ async function save(adds: FileRow[], removes: FileRow[]) {
   try {
     const failed: string[] = [];
     const texts = adds.length
-      ? await fetchAllTexts(adds, 6, (n) => {
-          emit("log", `Fetching ${n}/${adds.length}…`);
-        })
+      ? await fetchAllTexts(
+          adds,
+          6,
+          (n) => {
+            emit("log", `Fetching ${n}/${adds.length}…`);
+          },
+          kb.pinnedRef,
+        )
       : [];
     const add: { name: string; text: string; origin: Origin }[] = [];
     adds.forEach((row, i) => {
@@ -135,6 +169,7 @@ async function save(adds: FileRow[], removes: FileRow[]) {
 <template>
   <FileTable
     v-model:selected="selected"
+    checked-is-loaded
     :rows="rows"
     :saving="saving"
     :catalog-note="library.catalogNote.text"

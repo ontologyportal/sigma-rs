@@ -35,11 +35,20 @@ export class Constituent {
   name: string;
   origin: Origin;
   text: string;
+  /** Why the source couldn't be fetched when `text` came from the local copy
+   *  instead (e.g. `HTTP 404`); null when the text is current. */
+  stale: string | null;
 
-  constructor(name: string, origin: Origin, text = "") {
+  constructor(
+    name: string,
+    origin: Origin,
+    text = "",
+    stale: string | null = null,
+  ) {
     this.name = name;
     this.origin = origin;
     this.text = text;
+    this.stale = stale;
   }
 
   /** See `engineFile`. */

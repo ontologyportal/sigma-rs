@@ -132,8 +132,55 @@ function onReady(editor: Monaco.editor.IStandaloneCodeEditor, _m: MonacoNs) {
       navigate("browse", { sym: word.word });
     },
   });
+  editor.addAction({
+    id: "sumo.audit-sentence",
+    label: "Audit this sentence",
+    contextMenuGroupId: "navigation",
+    contextMenuOrder: 1,
+    run: (e) => {
+      const pos = ctxPos || e.getPosition();
+      ctxPos = null;
+      if (pos) auditSentenceAt(e, pos);
+    },
+  });
   resolveReady();
   scheduleValidate();
+}
+
+/** Open the Audit tab focused on the sentence at `pos`: the buffer is synced
+ *  into the live KB first, so the byte offset names the same sentence there. */
+async function auditSentenceAt(
+  editor: Monaco.editor.ICodeEditor,
+  pos: Monaco.IPosition,
+) {
+  const file = current.value;
+  const known =
+    file && !isTestFile(file.name)
+      ? kb.find(file.name, file.origin.kind)
+      : undefined;
+  const model = editor.getModel();
+  if (!known || !model) {
+    saveStatus.set("Only sentences of a loaded KB file can be audited.", true);
+    return;
+  }
+  const buffer = model.getValue();
+  const offset = new TextEncoder().encode(
+    buffer.slice(0, model.getOffsetAt(pos)),
+  ).length;
+  try {
+    await lspSyncDocument(known.file, buffer);
+    const { focus } = await call("sentenceAt", { file: known.file, offset });
+    if (!focus) {
+      saveStatus.set(
+        "No sentence there to audit: right-click inside a formula.",
+        true,
+      );
+      return;
+    }
+    navigate("audit", { focus: known.file, at: offset });
+  } catch (e) {
+    saveStatus.set("Could not start the audit: " + errMsg(e), true);
+  }
 }
 
 function onFailed(e: Error) {

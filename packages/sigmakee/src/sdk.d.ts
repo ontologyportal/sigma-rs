@@ -79,6 +79,39 @@ export interface AuditRequest {
   budget?: number;
   /** SInE expansion depth; omitted = unlimited / the config's. */
   depth?: number;
+  /** Audit only the sentence enclosing UTF-8 byte `offset` of loaded file
+   *  `file` instead of a sweep (`seed`/`scope` are ignored). Throws when no
+   *  sentence is there. */
+  at?: { file: string; offset: number };
+}
+
+/** One focus sentence of an audit subproblem (see {@link Session.sentenceAt}). */
+export interface AuditFocus {
+  kif: string;
+  file: string | null;
+  line: number | null;
+}
+
+/** `Config.selection`: SInE axiom-selection parameters (the engine's
+ *  `SineParams`, snake_case keys). Setting it takes a partial object. */
+export interface SelectionParams {
+  /** Trigger tolerance (>= 1); used only when `auto_budget` is `null`. */
+  tolerance: number;
+  /** SInE expansion depth; `null` = unlimited. */
+  depth_limit: number | null;
+  /** Largest selection the auto-tolerance picks; `null` = fixed `tolerance`. */
+  auto_budget: number | null;
+  /** Skip selection: the whole KB. */
+  select_all: boolean;
+  /** Widen/narrow the budget between reruns from prover feedback. */
+  autoscale: boolean;
+}
+
+/** One of `Config.strategyPresets()`: a named native-prover `Strategy`
+ *  (snake_case keys, the CLI's `--strategy` JSON shape). */
+export interface StrategyPreset {
+  name: string;
+  strategy: Record<string, unknown>;
 }
 
 /** Why one audit subproblem stopped without a verdict. `StepLimit` is
@@ -89,7 +122,7 @@ export type AuditStopReason =
 /** One subproblem of a sampled audit. */
 export interface AuditBatch {
   /** The sentences whose SInE neighborhood was checked. */
-  focus: Array<{ kif: string; file: string | null; line: number | null }>;
+  focus: AuditFocus[];
   /** `Consistent` means only that this neighborhood saturated clean. */
   status: "Consistent" | "Inconsistent" | "Timeout" | "InputError" | "Unknown";
   stop_reason: AuditStopReason | null;
@@ -542,6 +575,8 @@ export class Session {
   ask(query: string, opts?: AskOpts): AskResult;
   /** Sampled consistency audit with this session's backend: check `request`'s slice of the KB's seeded sweep, one SInE neighborhood per subproblem. */
   auditConsistency(request?: AuditRequest): AuditResult;
+  /** The root sentence enclosing UTF-8 byte `offset` of loaded file `file`, or `null`. */
+  sentenceAt(file: string, offset: number): AuditFocus | null;
   translate(opts?: TranslateOpts): string;
   lookup(pattern: string): string[];
   validate(): Diagnostic[];

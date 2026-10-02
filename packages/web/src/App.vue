@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, type LocationQuery } from "vue-router";
 import LoadingScreen from "./components/LoadingScreen.vue";
 import SettingsDialog from "./components/SettingsDialog.vue";
@@ -24,6 +24,23 @@ const auth = useAuthStore();
 const route = useRoute();
 
 const currentTab = computed(() => (route.name as TabName) ?? "browse");
+
+/** Load-time notice for constituents whose source couldn't be fetched. */
+const sourceNoticeDismissed = ref(false);
+const sourceNotice = computed(() => {
+  const stale = kb.constituents.filter((c) => c.stale).map((c) => c.name);
+  const missing = kb.unavailable.map((u) => u.name);
+  const parts: string[] = [];
+  if (stale.length)
+    parts.push(
+      `${stale.join(", ")} couldn't be fetched, so ${stale.length === 1 ? "its" : "their"} last saved ${stale.length === 1 ? "copy is" : "copies are"} in use (marked stale).`,
+    );
+  if (missing.length)
+    parts.push(
+      `${missing.join(", ")} couldn't be fetched and ${missing.length === 1 ? "has" : "have"} no saved copy, so ${missing.length === 1 ? "it isn't" : "they aren't"} loaded.`,
+    );
+  return parts.join(" ");
+});
 
 // A promote-gated tab that is showing when promotion starts is evicted to
 // Browse and restored once the KB is usable again. `router.replace`, not
@@ -204,14 +221,25 @@ onBeforeUnmount(() => {
       </div>
 
       <div
-        v-if="boot.loadErrors.length"
-        class="load-warning"
-        role="alert"
-        :title="boot.loadErrors.join('\n')"
+        v-if="sourceNotice && !sourceNoticeDismissed"
+        class="recover-banner source-banner"
+        role="status"
       >
-        Could not load {{ boot.loadErrors.length }} constituent
-        {{ boot.loadErrors.length === 1 ? "file" : "files" }}. The app is
-        running with the remaining constituents. {{ boot.loadErrors[0] }}
+        <span>
+          {{ sourceNotice }}
+          <a v-if="currentTab !== 'kb'" href="#" @click.prevent="navigate('kb')"
+            >Review in Knowledge base</a
+          >
+        </span>
+        <button
+          type="button"
+          class="dismiss"
+          aria-label="Dismiss"
+          title="Dismiss"
+          @click="sourceNoticeDismissed = true"
+        >
+          ×
+        </button>
       </div>
 
       <TabNav />
@@ -395,13 +423,31 @@ header {
     transform: rotate(360deg);
   }
 }
-.recover-banner,
-.load-warning {
-  margin: 0 0 12px;
+.recover-banner {
+  margin: 15px 0 12px;
   padding: 8px 12px;
   border-radius: 8px;
   border-left: 3px solid var(--warn);
   background: color-mix(in srgb, var(--warn) 12%, transparent);
   font-size: 13px;
+}
+.source-banner {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.source-banner .dismiss {
+  font: inherit;
+  font-size: 16px;
+  line-height: 1;
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0 2px;
+}
+.source-banner .dismiss:hover {
+  color: var(--fg);
 }
 </style>

@@ -1,6 +1,9 @@
 //! WASM bindings for Prover Options
+use serde::de::DeserializeOwned;
+use serde::Serialize;
+use sigmakee_rs_core::SineParams;
 use sigmakee_rs_sdk::manager::NativeProverConfig;
-use sigmakee_rs_sdk::{ExternalOpts, NativeOpts};
+use sigmakee_rs_sdk::{ExternalOpts, NativeOpts, Strategy};
 use wasm_bindgen::prelude::*;
 
 // -- Config --------------------------------------------------------------------
@@ -67,20 +70,34 @@ impl Config {
     }
 
     /// Build the external prover's [`ExternalOpts`] from these settings: the
-    /// same time limit and selection budget the native backend reads.
+    /// same time limit and selection the native backend reads.
     pub(crate) fn to_external_opts(&self, axiom_count: usize) -> ExternalOpts {
-        let mut opts = ExternalOpts {
+        ExternalOpts {
             timeout_secs: self.inner.time_limit_secs,
+            selection: self.resolved_selection(axiom_count),
             ..ExternalOpts::default()
-        };
+        }
+    }
+
+    /// [`selection`](Self::selection_js) with
+    /// [`selectionTolerancePct`](Self::selection_tolerance_pct), when set,
+    /// resolved against `axiom_count` into the starting budget (or whole-KB
+    /// mode at 100), and a positive `selectionBudget` then fixing the budget
+    /// with autoscaling off; the other selection fields are kept.
+    fn resolved_selection(&self, axiom_count: usize) -> SineParams {
+        let mut sel = self.inner.selection;
         if let Some(pct) = self.selection_tolerance_pct {
-            opts.selection = sigmakee_rs_core::SineParams::auto_pct(axiom_count, pct);
+            let budget = SineParams::auto_pct(axiom_count, pct);
+            sel.auto_budget = budget.auto_budget;
+            sel.select_all = budget.select_all;
+            sel.autoscale &= !budget.select_all;
         }
         if self.selection_budget > 0 {
-            opts.selection = sigmakee_rs_core::SineParams::auto(self.selection_budget as usize);
-            opts.selection.autoscale = false;
+            sel.auto_budget = Some(self.selection_budget as usize);
+            sel.select_all = false;
+            sel.autoscale = false;
         }
-        opts
+        sel
     }
 
     /// Build a runtime [`NativeOpts`] seeded with these defaults; per-query
@@ -92,15 +109,34 @@ impl Config {
     /// SInE auto-budget the engine actually takes.
     pub(crate) fn to_native_opts(&self, axiom_count: usize) -> NativeOpts {
         let mut opts = self.inner.to_native_opts();
-        if let Some(pct) = self.selection_tolerance_pct {
-            opts.selection = sigmakee_rs_core::SineParams::auto_pct(axiom_count, pct);
-        }
-        if self.selection_budget > 0 {
-            opts.selection = sigmakee_rs_core::SineParams::auto(self.selection_budget as usize);
-            opts.selection.autoscale = false;
-        }
+        opts.selection = self.resolved_selection(axiom_count);
         opts
     }
+}
+
+/// Serialize for JS with `None` as `null` (not `undefined`), so the object
+/// survives `JSON.stringify` and reads back unchanged -- the strategy and
+/// selection objects double as the CLI's JSON files.
+fn to_plain_js<T: Serialize>(value: &T) -> Result<JsValue, JsValue> {
+    value
+        .serialize(&serde_wasm_bindgen::Serializer::json_compatible())
+        .map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
+/// Deserialize a partial JS object over `T`'s defaults (`#[serde(default)]`);
+/// `null`/`undefined` yields the defaults.
+fn from_partial_js<T: DeserializeOwned + Default>(v: JsValue, what: &str) -> Result<T, JsValue> {
+    if v.is_null() || v.is_undefined() {
+        return Ok(T::default());
+    }
+    serde_wasm_bindgen::from_value(v).map_err(|e| JsValue::from_str(&format!("{what}: {e}")))
+}
+
+/// A named native-prover strategy, as [`Config::strategy_presets`] lists them.
+#[derive(Serialize)]
+struct StrategyPreset {
+    name: String,
+    strategy: Strategy,
 }
 
 #[wasm_bindgen]
@@ -294,11 +330,101 @@ impl Config {
     pub fn set_selection_tolerance_pct(&mut self, v: Option<f64>) {
         self.selection_tolerance_pct = v;
     }
+
+    /// SInE selection parameters (`SineParams`, snake_case keys:
+    /// `tolerance`, `depth_limit`, `auto_budget`, `select_all`, `autoscale`),
+    /// applied to both backends. The setter takes a partial object over the
+    /// defaults (`null` resets); a set
+    /// [`selectionTolerancePct`](Self::selection_tolerance_pct) still
+    /// overrides the budget.
+    #[wasm_bindgen(getter = selection)]
+    pub fn selection_js(&self) -> Result<JsValue, JsValue> {
+        to_plain_js(&self.inner.selection)
+    }
+    #[wasm_bindgen(setter = selection)]
+    pub fn set_selection_js(&mut self, v: JsValue) -> Result<(), JsValue> {
+        self.inner.selection = from_partial_js(v, "selection")?;
+        Ok(())
+    }
+
+    /// The native prover's search strategy (`Strategy`, snake_case keys),
+    /// the same object the CLI's `--strategy` JSON file holds. The setter
+    /// takes a partial object over the default strategy (`null` resets);
+    /// Vampire ignores it.
+    #[wasm_bindgen(getter = strategy)]
+    pub fn strategy_js(&self) -> Result<JsValue, JsValue> {
+        to_plain_js(&self.inner.strategy)
+    }
+    #[wasm_bindgen(setter = strategy)]
+    pub fn set_strategy_js(&mut self, v: JsValue) -> Result<(), JsValue> {
+        self.inner.strategy = from_partial_js(v, "strategy")?;
+        Ok(())
+    }
+
+    /// The default [`selection`](Self::selection_js) object.
+    #[wasm_bindgen(js_name = selectionDefaults)]
+    pub fn selection_defaults() -> Result<JsValue, JsValue> {
+        to_plain_js(&SineParams::default())
+    }
+
+    /// The built-in native strategies as `{ name, strategy }[]`: the shipping
+    /// default first, then the portfolio lanes and the TPTP regime.
+    #[wasm_bindgen(js_name = strategyPresets)]
+    pub fn strategy_presets() -> Result<JsValue, JsValue> {
+        let mut presets: Vec<StrategyPreset> = Vec::new();
+        for strategy in Strategy::default_portfolio()
+            .into_iter()
+            .chain([Strategy::tptp().named("tptp")])
+        {
+            if presets.iter().all(|p| p.name != strategy.name) {
+                presets.push(StrategyPreset {
+                    name: strategy.name.clone(),
+                    strategy,
+                });
+            }
+        }
+        to_plain_js(&presets)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn with_depth(depth: usize) -> Config {
+        let mut cfg = Config::new();
+        cfg.inner.selection.depth_limit = Some(depth);
+        cfg
+    }
+
+    #[test]
+    fn unset_pct_keeps_the_configured_selection() {
+        let cfg = with_depth(3);
+        assert_eq!(cfg.resolved_selection(1000), cfg.inner.selection);
+        assert_eq!(cfg.to_external_opts(1000).selection.depth_limit, Some(3));
+        assert_eq!(cfg.to_native_opts(1000).selection.depth_limit, Some(3));
+    }
+
+    #[test]
+    fn pct_sets_only_the_budget() {
+        let mut cfg = with_depth(3);
+        cfg.selection_tolerance_pct = Some(10.0);
+        let sel = cfg.resolved_selection(1000);
+        assert_eq!(sel.auto_budget, Some(100));
+        assert!(!sel.select_all);
+        assert!(sel.autoscale);
+        assert_eq!(sel.depth_limit, Some(3));
+    }
+
+    #[test]
+    fn full_pct_selects_the_whole_kb_without_autoscaling() {
+        let mut cfg = Config::new();
+        cfg.selection_tolerance_pct = Some(100.0);
+        let sel = cfg.resolved_selection(1000);
+        assert!(sel.select_all);
+        assert!(!sel.autoscale);
+        assert_eq!(cfg.to_external_opts(1000).selection, sel);
+    }
 
     #[test]
     fn explicit_selection_target_overrides_percentage_for_all_backends() {

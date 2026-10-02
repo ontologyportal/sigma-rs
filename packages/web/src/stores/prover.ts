@@ -1,178 +1,207 @@
 /**
- * Prover settings (the wasm `Config`), shared by Ask/Tell and Audit: one
- * settings panel, toggled from either tab's cog button. Values are read
- * fresh on each run and sent to the worker, which builds the Config there --
- * the page never holds a wasm object.
+ * Prover settings shared by Ask/Tell and Audit. Each tab owns a profile
+ * (its own time limit, selection and strategy -- an audit check wants a much
+ * shorter limit than a single query); the backend, Vampire args and the
+ * proof display options are shared. Values are read fresh on each run and
+ * sent to the worker, which builds the wasm Config there -- the page never
+ * holds a wasm object.
+ *
+ * Profiles, backend and Vampire args are remembered in localStorage as a
+ * per-viewer convenience; the page works without it.
  */
 
 import { defineStore } from "pinia";
+import { computed, reactive, ref, watch } from "vue";
+import type { SelectionParams, StrategyPreset } from "sigmakee/sdk";
+import { PROVER_SETTINGS_KEY } from "../constants";
+import { call } from "../services/sigma";
+import {
+  defaultProfile,
+  normalizeProfile,
+  profileChanges,
+  profileFromWire,
+  resetChange,
+  toWireConfig,
+  type Backend,
+  type Change,
+  type ProverProfile,
+  type ScalarOverrides,
+  type WireConfig,
+} from "../utils/proverOptions";
 
-/** Shape sent to the worker as a plain object (see sigma.worker.ts's
- *  makeConfig) -- every field optional, since only knobs the UI has touched
- *  (or an explicit override) are included. */
-export interface ProverConfig {
-  timeLimitSecs?: number;
-  maxSteps?: number;
-  maxLits?: number;
-  forwardClose?: boolean;
-  wantProof?: boolean;
-  profile?: boolean;
-  selectionTolerancePct?: number;
-  /** Which prover runs the query; the worker's Config carries it. */
-  backend?: "native" | "vampire" | "e";
-  /** Raw extra CLI text for the Vampire backend. */
-  vampireArgs?: string;
-  selectionBudget?: number;
-  auditAxfilter?: boolean;
-  auditSubsetLimit?: number;
-  selectionTimeLimitSecs?: number;
+export type ProfileName = "ask" | "audit";
+
+/** The plain config object sent to the worker (see worker/handlers.ts). */
+export type ProverConfig = WireConfig;
+
+const PROFILE_TIME: Record<ProfileName, number> = { ask: 30, audit: 10 };
+
+/** A fresh default profile for `name`. */
+export const profileDefaults = (name: ProfileName): ProverProfile =>
+  defaultProfile(PROFILE_TIME[name]);
+
+interface Saved {
+  profiles?: Partial<Record<ProfileName, unknown>>;
+  backend?: unknown;
+  vampireArgs?: unknown;
 }
 
-/** The Config knobs with every field present. */
-export interface ProverKnobs {
-  timeLimitSecs: number;
-  maxSteps: number;
-  maxLits: number;
-  forwardClose: boolean;
-  wantProof: boolean;
-  profile: boolean;
-  selectionTolerancePct: number;
-  selectionBudget: number;
-  auditAxfilter: boolean;
-  auditSubsetLimit: number;
-  selectionTimeLimitSecs: number;
+function loadSaved(): Saved {
+  try {
+    const v = JSON.parse(localStorage.getItem(PROVER_SETTINGS_KEY) || "null");
+    return v && typeof v === "object" ? v : {};
+  } catch {
+    return {};
+  }
 }
 
-// One descriptor per Config knob, driving the form, the summary and the
-// object sent to the worker.
-const CFG_KNOBS = [
-  { key: "timeLimitSecs", dflt: 30 },
-  { key: "maxSteps", dflt: 4000 },
-  { key: "maxLits", dflt: 8 },
-  { key: "forwardClose", dflt: true },
-  { key: "wantProof", dflt: true },
-  { key: "profile", dflt: false },
-  // 0 means "engine default" (sent to the worker as `null` -- see
-  // makeConfig in sigma.worker.ts -- never as a literal 0% budget). 100
-  // searches the whole KB, same as the old standalone "disable axiom
-  // selection" toggle.
-  { key: "selectionTolerancePct", dflt: 0 },
-  { key: "selectionBudget", dflt: 0 },
-  { key: "auditAxfilter", dflt: false },
-  { key: "auditSubsetLimit", dflt: 20 },
-  { key: "selectionTimeLimitSecs", dflt: 10 },
-] as const;
+export const useProverStore = defineStore("prover", () => {
+  const saved = loadSaved();
+  const profiles = reactive<Record<ProfileName, ProverProfile>>({
+    ask: normalizeProfile(saved.profiles?.ask, profileDefaults("ask")),
+    audit: normalizeProfile(saved.profiles?.audit, profileDefaults("audit")),
+  });
+  /** Which backend Ask/Tell and Audit prove against. */
+  const backend = ref<Backend>(
+    saved.backend === "vampire" || saved.backend === "e"
+      ? saved.backend
+      : "native",
+  );
+  /** Vampire's raw extra CLI args. */
+  const vampireArgs = ref(
+    typeof saved.vampireArgs === "string" ? saved.vampireArgs : "",
+  );
+  /** `"kif"` (default) or `"tptp"` -- which rendering of proof/contradiction
+   *  steps to show. On Ask/Tell it also selects the input dialect: `"tptp"`
+   *  parses the assertions pane as one TPTP problem. */
+  const proofLang = ref<"kif" | "tptp">("kif");
+  /** Render proof steps as unstyled plain text, one formula per line. */
+  const plainProof = ref(false);
+  /** Ask/Tell TPTP mode: prove against the whole loaded KB (decoding
+   *  SUMO-mangled names) instead of the problem standalone. */
+  const useSumo = ref(false);
+  /** The engine's default selection and strategy presets (first = the
+   *  shipping default), once {@link loadDefaults} has fetched them. */
+  const defaults = ref<{
+    selection: SelectionParams;
+    presets: StrategyPreset[];
+  } | null>(null);
+  let loading: Promise<void> | null = null;
 
-const CFG_DEFAULTS = Object.fromEntries(
-  CFG_KNOBS.map((k) => [k.key, k.dflt]),
-) as unknown as ProverKnobs;
-
-export const useProverStore = defineStore("prover", {
-  state: () => ({
-    /** The Config knobs; the settings form v-models straight onto these. */
-    cfg: { ...CFG_DEFAULTS } as ProverKnobs,
-    /** Which backend Ask/Tell and Audit prove against. */
-    backend: "native" as "native" | "vampire" | "e",
-    /** Vampire's raw extra CLI args (advanced knob; the native-backend knobs
-     *  sit beside it in the panel but don't apply to it). */
-    vampireArgs: "",
-    /** `"kif"` (default) or `"tptp"` -- which rendering of the
-     *  proof/contradiction transcript to show. For a result this is a pure
-     *  display choice: every step carries both renderings, so switching it
-     *  re-renders the last result. On Ask/Tell it ALSO selects the input
-     *  dialect: `"tptp"` parses the assertions/query text as TPTP, so
-     *  switching there live-revalidates the editors (the user must press
-     *  Prove again with the new input dialect). */
-    proofLang: "kif" as "kif" | "tptp",
-    /** Render proof/contradiction steps as unstyled plain text (no citation
-     *  footer, paraphrase, highlighting, or symbol links) -- one formula per
-     *  line in whichever dialect `proofLang` selects. Rendered in Ask/Tell's
-     *  result card but shared with Audit. */
-    plainProof: false,
-    /** Ask/Tell's TPTP-mode "Use SUMO" checkbox: off proves the pane's TPTP
-     *  problem standalone; on proves against the whole loaded KB with
-     *  SUMO-mangled symbol names (`s__foo`) decoded back to their real names
-     *  first. Meaningless outside TPTP mode. */
-    useSumo: false,
-    /** Whether the shared settings panel is open (Ask/Tell + Audit). */
-    settingsOpen: false,
-  }),
-  getters: {
-    vampireSelected: (state) => state.backend === "vampire",
-    externalSelected: (state) => state.backend !== "native",
-    backendLabel: (state) =>
-      state.backend === "e"
-        ? "E"
-        : state.backend === "vampire"
-          ? "Vampire"
-          : "SUPr",
-    /** One-line summary next to the cog, so non-default settings are visible
-     *  without opening the panel. */
-    cfgSummary: (state) => {
-      const diffs = (Object.keys(CFG_DEFAULTS) as (keyof ProverKnobs)[]).filter(
-        (k) => state.cfg[k] !== CFG_DEFAULTS[k],
-      );
-      return diffs.length
-        ? `${state.cfg.timeLimitSecs}s · ${state.cfg.maxSteps} steps · ${diffs.length} non-default`
-        : `${state.cfg.timeLimitSecs}s · ${state.cfg.maxSteps} steps · defaults`;
-    },
-    /** Live "N% of axioms" / "engine default" label under the selection-budget slider. */
-    selectionPctLabel: (state) => {
-      const pct = Number(state.cfg.selectionTolerancePct);
-      return pct === 0
-        ? "engine default — % of axioms a query-relevant selection may admit (applies to all provers; 100% searches the whole KB)"
-        : `${pct}% of axioms admitted into a query-relevant selection (applies to all provers; 100% searches the whole KB)`;
-    },
-    /** Vampire is a fixed-strategy refutation search, not a tunable
-     *  given-clause loop -- most of the native backend's knobs are silently
-     *  ignored if sent to it, so the panel greys them out and shows Vampire's
-     *  own knob (raw CLI args) instead. */
-    backendHint: (state) =>
-      state.backend !== "native"
-        ? "External provers use the time limit and selection budget. Native given-clause controls do not apply."
-        : "given-clause knobs below apply to the native backend only",
-  },
-  actions: {
-    /** Current settings as a plain object for the worker. Numeric fields
-     *  coerce to u32-safe ints (falling back to the default when not a
-     *  non-negative number); `overrides` wins, so callers with their own
-     *  input get the same coercion. */
-    config(overrides: ProverConfig = {}): ProverConfig {
-      const out: Record<string, number | boolean> = {};
-      for (const { key, dflt } of CFG_KNOBS) {
-        if (typeof dflt === "boolean") {
-          out[key] = this.cfg[key];
-          continue;
-        }
-        const raw =
-          key in overrides
-            ? (overrides as Record<string, unknown>)[key]
-            : this.cfg[key];
-        const v = Math.floor(Number(raw));
-        out[key] = Number.isFinite(v) && v >= 0 ? v : dflt;
+  watch(
+    [profiles, backend, vampireArgs],
+    () => {
+      try {
+        localStorage.setItem(
+          PROVER_SETTINGS_KEY,
+          JSON.stringify({
+            profiles,
+            backend: backend.value,
+            vampireArgs: vampireArgs.value,
+          }),
+        );
+      } catch {
+        /* storage unavailable */
       }
-      return {
-        ...(out as ProverConfig),
-        backend: this.backend,
-        vampireArgs: this.vampireArgs.trim(),
-      };
     },
+    { deep: true },
+  );
 
-    /** Reset every prover setting (Config knobs, proof language, plain
-     *  proof, use-SUMO) to its default -- the panel's "Reset to defaults". */
-    reset() {
-      Object.assign(this.cfg, CFG_DEFAULTS);
-      this.backend = "native";
-      this.vampireArgs = "";
-      this.proofLang = "kif";
-      this.plainProof = false;
-      this.useSumo = false;
-    },
+  const vampireSelected = computed(() => backend.value === "vampire");
+  /** Vampire or E: a fixed external search, without SUPr's given-clause and
+   *  strategy knobs. */
+  const externalSelected = computed(() => backend.value !== "native");
+  /** The backend's display name. */
+  const backendLabel = computed(() =>
+    backend.value === "e"
+      ? "E"
+      : backend.value === "vampire"
+        ? "Vampire"
+        : "SUPr",
+  );
+  const presets = computed<Record<string, Record<string, unknown>>>(() =>
+    Object.fromEntries(
+      (defaults.value?.presets ?? []).map((p) => [p.name, p.strategy]),
+    ),
+  );
+  /** The full default strategy, or null before {@link loadDefaults}. */
+  const baseStrategy = computed(
+    () => defaults.value?.presets[0]?.strategy ?? null,
+  );
 
-    /** Flip (or force) the shared settings panel; returns the new state. */
-    toggleSettings(force?: boolean): boolean {
-      this.settingsOpen = force !== undefined ? force : !this.settingsOpen;
-      return this.settingsOpen;
-    },
-  },
+  /** Fetch the engine defaults once (needed before a run that uses a named
+   *  strategy preset, and by the options form). */
+  function loadDefaults(): Promise<void> {
+    if (defaults.value) return Promise.resolve();
+    loading ??= call("proverDefaults")
+      .then((d) => {
+        defaults.value = d;
+      })
+      .catch((e) => {
+        loading = null;
+        throw e;
+      });
+    return loading;
+  }
+
+  /** `name`'s settings as the worker's config object; `overrides` wins for
+   *  the scalar knobs it names (coerced like the form's input). */
+  function config(
+    name: ProfileName = "ask",
+    overrides: ScalarOverrides = {},
+  ): ProverConfig {
+    const wire = toWireConfig(profiles[name], {
+      backend: backend.value,
+      vampireArgs: vampireArgs.value,
+      presets: presets.value,
+      overrides,
+    });
+    // The strategy/selection objects are reactive proxies, which
+    // postMessage can't clone; the config is plain JSON by construction.
+    return JSON.parse(JSON.stringify(wire));
+  }
+
+  /** `name`'s non-default settings that apply to the current backend. */
+  function changes(name: ProfileName): Change[] {
+    return profileChanges(profiles[name], profileDefaults(name), backend.value);
+  }
+
+  /** Put one setting of `name` (a {@link changes} id) back to its default. */
+  function resetOne(name: ProfileName, id: string): void {
+    resetChange(profiles[name], profileDefaults(name), id);
+  }
+
+  /** Put every setting of `name` back to its default. */
+  function reset(name: ProfileName): void {
+    Object.assign(profiles[name], profileDefaults(name));
+  }
+
+  /** Adopt a saved wire config (an audit report's) as the backend and
+   *  `name`'s settings, so the form shows what will run. */
+  function adoptConfig(name: ProfileName, wire: ProverConfig): void {
+    backend.value = wire.backend ?? "native";
+    vampireArgs.value = wire.vampireArgs ?? "";
+    Object.assign(profiles[name], profileFromWire(wire, profileDefaults(name)));
+  }
+
+  return {
+    profiles,
+    backend,
+    vampireArgs,
+    proofLang,
+    plainProof,
+    useSumo,
+    defaults,
+    vampireSelected,
+    externalSelected,
+    backendLabel,
+    presets,
+    baseStrategy,
+    loadDefaults,
+    config,
+    changes,
+    resetOne,
+    reset,
+    adoptConfig,
+  };
 });

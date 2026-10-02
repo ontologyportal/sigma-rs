@@ -21,6 +21,13 @@ vm.runInNewContext(
   ),
   { exports: utils },
 );
+const plan = {};
+vm.runInNewContext(
+  transpile(
+    readFileSync(new URL("../utils/auditPlan.ts", import.meta.url), "utf8"),
+  ),
+  { exports: plan },
+);
 const { descriptor } = parse(
   readFileSync(new URL("./AuditTab.vue", import.meta.url), "utf8"),
 );
@@ -91,18 +98,23 @@ function fixture({
     "../stores/kb": { useKBStore: () => ({ constituents: [] }) },
     "../stores/prover": {
       useProverStore: () => ({
-        reset: () => {
+        adoptConfig: () => {
           calls.push("settings");
         },
-        cfg: {},
         backend: "native",
+        backendLabel: "SUPr",
         vampireSelected: false,
       }),
     },
+    "../composables/useTabQuery": {
+      useTabQuery: () => ({ onQuery: () => {}, str: String }),
+    },
+    "../router": { updateParams: () => {} },
     "../composables/useElapsed": {
       useElapsed: () => ({ label: () => "", lastLabel: "" }),
     },
     "../utils/auditReplay": utils,
+    "../utils/auditPlan": plan,
     "../services/audit-replay": {
       latestAuditReport: async () => ({
         replay,

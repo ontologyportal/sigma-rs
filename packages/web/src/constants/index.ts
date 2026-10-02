@@ -39,6 +39,8 @@ export const EDITS_KEY = "sumoBrowserEdits";
 export const THEME_KEY = "sumoBrowserTheme";
 export const LAYOUT_KEY = "sumoBrowserLayout";
 export const SEEN_VERSION_KEY = "sumoBrowserSeenVersion";
+/** Prover profiles (Ask/Tell + Audit), backend and Vampire args. */
+export const PROVER_SETTINGS_KEY = "sumoProverSettings";
 /** Persisted on/off for the WordNet synonym-search lexicon -- absent or
  *  anything but the literal string `'false'` means enabled (see state.ts). */
 export const WORDNET_ENABLED_KEY = "sumoBrowserWordNetEnabled";

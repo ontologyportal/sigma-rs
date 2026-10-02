@@ -242,7 +242,10 @@ export const useTestsStore = defineStore("tests", {
       // Axioms-only test: nothing to prove, and `runAll` skips these too.
       const query = t.parsed.queryKif;
       if (!query) return;
-      const config = useProverStore().config(
+      const prover = useProverStore();
+      await prover.loadDefaults();
+      const config = prover.config(
+        "ask",
         t.parsed.timeout ? { timeLimitSecs: t.parsed.timeout } : {},
       );
       const { result } = await call("prove", {

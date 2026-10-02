@@ -6,6 +6,9 @@
 
 use wasm_bindgen::prelude::*;
 
+use sigmakee_rs_core::SentenceId;
+use sigmakee_rs_sdk::AuditFocusView;
+
 use crate::config::Backend;
 use crate::types::to_js;
 
@@ -129,12 +132,16 @@ impl Session {
     /// subproblem, and (native) its step cap.
     ///
     /// `request` is `{ seed?, step?, count?, batch?, limit?, scope?, budget?,
-    /// depth? }`: sweep seed (default 0), start position (0), sentences to
-    /// check (1), sentences per subproblem (1), distinct contradictions to
-    /// stop at (5), an optional loaded file tag to restrict the sweep to, and
-    /// the subproblem size -- the most axioms a neighborhood may select and
-    /// the SInE expansion depth -- overriding the config's selection budget
-    /// when given.
+    /// depth?, focus?, at? }`: sweep seed (default 0), start position (0),
+    /// sentences to check (1), sentences per subproblem (1), distinct
+    /// contradictions to stop at (5), an optional loaded file tag to restrict
+    /// the sweep to, and the subproblem size -- the most axioms a
+    /// neighborhood may select and the SInE expansion depth -- overriding the
+    /// config's selection budget when given. `focus` (a tracked source
+    /// formula, native only) or `at: { file, offset }` (the sentence enclosing
+    /// UTF-8 byte `offset` of loaded file `file`) audits that one sentence
+    /// instead of a sweep (`seed` and `scope` are then ignored), and fails
+    /// when it can't be resolved.
     ///
     /// Returns a JS object:
     ///
@@ -170,7 +177,6 @@ impl Session {
             batch: req.batch.max(1),
             limit: req.limit.max(1),
         };
-        let scope = req.scope.as_deref();
         let session_guard = self.session.read().expect("kb lock not poisoned");
         let focus = req
             .focus
@@ -179,27 +185,38 @@ impl Session {
                 resolve_audit_focus(session_guard.kb(), focus).map_err(|e| JsValue::from_str(&e))
             })
             .transpose()?;
-        if focus.is_some() {
+        let at = req
+            .at
+            .as_ref()
+            .map(|at| {
+                session_guard
+                    .kb()
+                    .sentence_at(&at.file, at.offset)
+                    .ok_or_else(|| {
+                        JsValue::from_str(&format!(
+                            "no sentence at byte {} of {}",
+                            at.offset, at.file
+                        ))
+                    })
+            })
+            .transpose()?;
+        let targeted: Vec<SentenceId> = focus.or(at).into_iter().collect();
+        if !targeted.is_empty() {
             sample.step = 0;
             sample.count = 1;
             sample.batch = 1;
         }
+        let target = if targeted.is_empty() {
+            sigmakee_rs_sdk::AuditTarget::Sweep(req.scope.as_deref())
+        } else {
+            sigmakee_rs_sdk::AuditTarget::Sentences(&targeted)
+        };
         let axiom_count = session_guard.kb().sine_axiom_count();
         match self.config.selected_backend() {
             Backend::Native => {
                 let mut opts = self.config.to_native_opts(axiom_count);
                 req.size(&mut opts.selection);
-                if let Some(sid) = focus {
-                    let kb = session_guard.kb();
-                    let audit = kb.audit_sampled_native(&[sid], sample, &opts);
-                    return to_js(&sigmakee_rs_sdk::session::views::AuditResultView::project(
-                        kb,
-                        sample,
-                        audit,
-                        sigmakee_rs_sdk::session::views::AuditStopReason::from_native,
-                    ));
-                }
-                to_js(&session_guard.audit_view_native(opts, sample, scope))
+                to_js(&session_guard.audit_view_native(opts, sample, target))
             }
             Backend::Vampire | Backend::E => {
                 if focus.is_some() {
@@ -212,7 +229,7 @@ impl Session {
                 self.runner.set_audit_limit(sample.limit);
                 self.runner
                     .set_selection_budget(opts.selection.auto_budget.unwrap_or(axiom_count));
-                to_js(&session_guard.audit_view(opts, sample, scope))
+                to_js(&session_guard.audit_view(opts, sample, target))
             }
         }
     }
@@ -286,6 +303,19 @@ impl Session {
             });
         }
         to_js(&out)
+    }
+
+    /// The root sentence enclosing UTF-8 byte `offset` of loaded file `file`,
+    /// as `{ kif, file, line }`, or `null` when none does (the file isn't
+    /// loaded, or the offset is outside every sentence).
+    #[wasm_bindgen(js_name = sentenceAt)]
+    pub fn sentence_at(&self, file: &str, offset: usize) -> Result<JsValue, JsValue> {
+        let session_guard = self.session.read().expect("kb lock not poisoned");
+        let kb = session_guard.kb();
+        match kb.sentence_at(file, offset) {
+            Some(sid) => to_js(&AuditFocusView::of(kb, sid)),
+            None => Ok(JsValue::NULL),
+        }
     }
 
     /// Clausify the KB and return its CNF form as SUO-KIF, via the native
@@ -376,6 +406,14 @@ struct AuditRequest {
     scope: Option<String>,
     budget: Option<usize>,
     depth: Option<usize>,
+    at: Option<FocusAt>,
+}
+
+/// A position in a loaded file: `{ file, offset }`, offset in UTF-8 bytes.
+#[derive(serde::Deserialize)]
+struct FocusAt {
+    file: String,
+    offset: usize,
 }
 
 impl AuditRequest {
@@ -403,6 +441,7 @@ impl Default for AuditRequest {
             scope: None,
             budget: None,
             depth: None,
+            at: None,
         }
     }
 }

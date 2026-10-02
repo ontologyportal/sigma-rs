@@ -29,6 +29,7 @@ import { call } from "../services/sigma";
 import { fetchAllTexts, fetchText, fromOrigin } from "../services/sources";
 import { lspReset, lspSyncDocument } from "../services/lsp";
 import {
+  readCachedText,
   scheduleSave as scheduleKbCacheSave,
   flushSave as flushKbCacheSave,
 } from "../services/kb-cache";
@@ -208,6 +209,9 @@ export const useKBStore = defineStore("kb", {
     updateBaselines: loadUpdateBaselines() as Record<string, string>,
     /** Update-check results awaiting the user's attention, newest last. */
     updateAlerts: [] as UpdateAlert[],
+    /** Saved constituents boot couldn't load at all: the source failed and
+     *  no local copy exists. They stay in `saved`, so the next boot retries. */
+    unavailable: [] as { name: string; origin: Origin; reason: string }[],
     /** The alerts the check run at load produced -- every source whose
      *  upstream moved since the last load. `SourcesChangedDialog` shows them
      *  until the user closes it. */
@@ -260,6 +264,19 @@ export const useKBStore = defineStore("kb", {
       (state) =>
       (origin: Origin): UpdatePref =>
         state.updatePrefs[originId(origin)] ?? defaultUpdatePref(origin.kind),
+    /** The commit a git source's files are loaded at: its last accepted
+     *  commit, unless the source is set to `auto-update` (or none has been
+     *  recorded yet), in which case undefined -- the branch tip. Pinning is
+     *  what keeps `auto-check`/`no-check` sources from changing under the
+     *  user between reviews. */
+    pinnedRef:
+      (state) =>
+      (origin: Origin): string | undefined => {
+        if (origin.kind !== "sumo") return undefined;
+        const key = originId(origin);
+        const pref = state.updatePrefs[key] ?? defaultUpdatePref(origin.kind);
+        return pref === "auto-update" ? undefined : state.updateBaselines[key];
+      },
   },
   actions: {
     /** Ingest one constituent's text into the worker session and track it.
@@ -270,8 +287,9 @@ export const useKBStore = defineStore("kb", {
       name: string,
       text: string,
       origin: Origin = GitOrigin.default(),
+      stale: string | null = null,
     ): Promise<{ added: boolean; notices: string[] }> {
-      const c = new Constituent(name, origin, text);
+      const c = new Constituent(name, origin, text, stale);
       if (this.byFile(c.file))
         return { added: false, notices: [`${name}: already loaded`] };
       const { notices } = await call("ingest", {
@@ -279,6 +297,9 @@ export const useKBStore = defineStore("kb", {
         text,
       });
       this.constituents.push(c);
+      this.unavailable = this.unavailable.filter(
+        (u) => !(u.name === name && u.origin.kind === origin.kind),
+      );
       useLibraryStore().ensureEntry(name, origin, text.length);
       if (
         !this.saved.some(
@@ -325,6 +346,7 @@ export const useKBStore = defineStore("kb", {
         name,
         this.constituents[idx].origin,
         text,
+        this.constituents[idx].stale,
       );
       this.constituents[idx] = updated;
       // In-place diff-commit instead of rebuildSession(): the LSP didChange
@@ -441,8 +463,11 @@ export const useKBStore = defineStore("kb", {
       onProgress?: (done: number, total: number) => void,
     ): Promise<{ added: number; failed: string[] }> {
       if (!entries.length) return { added: 0, failed: [] };
-      const texts = await fetchAllTexts(entries, 6, (n) =>
-        onProgress?.(n, entries.length),
+      const texts = await fetchAllTexts(
+        entries,
+        6,
+        (n) => onProgress?.(n, entries.length),
+        this.pinnedRef,
       );
       const add: { name: string; text: string; origin: Origin }[] = [];
       const failed: string[] = [];
@@ -543,25 +568,62 @@ export const useKBStore = defineStore("kb", {
       }
     },
 
+    /** Stop trying to load an unavailable constituent on boot. */
+    forgetUnavailable(name: string, kind: OriginKind) {
+      this.unavailable = this.unavailable.filter(
+        (u) => !(u.name === name && u.origin.kind === kind),
+      );
+      this.saved = this.saved.filter(
+        (c) =>
+          !(c.name === name && parseOrigin(c.origin, c.name).kind === kind),
+      );
+      persistSaved(this.saved);
+    },
+
     /** Fetch every saved constituent's text and ingest it, in order --
      *  boot's fetch+ingest loop. `onProgress` fires once per constituent,
-     *  before its fetch starts. A failed constituent is reported and skipped
-     *  so the remaining saved files can still load. */
+     *  before its fetch starts. A source that can't be fetched falls back to
+     *  the KB cache's copy (flagged stale); one with no copy, or whose ingest
+     *  fails, is skipped so the remaining saved files can still load. Returns
+     *  the skipped files as `name: reason`. */
     async loadSavedConstituents(
       onProgress?: (name: string, index: number, total: number) => void,
     ): Promise<string[]> {
       const total = this.saved.length;
       const failed: string[] = [];
       let i = 0;
+      this.unavailable = [];
       for (const { name, origin: json } of this.saved) {
         i += 1;
         onProgress?.(name, i, total);
+        const origin = parseOrigin(json, name);
+        let text: string;
+        let stale: string | null = null;
         try {
-          const origin = parseOrigin(json, name);
-          const text = await fromOrigin(name, origin);
-          await this.ingest(name, text, origin);
+          text = await fromOrigin(name, origin, this.pinnedRef(origin));
         } catch (e) {
-          failed.push(`${name}: ${errMsg(e)}`);
+          // One unreachable source (moved or deleted upstream, offline) must
+          // not keep the rest of the KB from loading: use the copy the KB
+          // cache kept, flagged stale, or skip the file.
+          const reason = errMsg(e);
+          const cached =
+            origin.kind === "sumo" ? await readCachedText(name) : null;
+          if (cached === null) {
+            console.warn(`${name}: not loaded -- ${reason}`);
+            this.unavailable.push({ name, origin, reason });
+            failed.push(`${name}: ${reason}`);
+            continue;
+          }
+          console.warn(`${name}: using the local copy -- ${reason}`);
+          text = cached;
+          stale = reason;
+        }
+        try {
+          await this.ingest(name, text, origin, stale);
+        } catch (e) {
+          const reason = errMsg(e);
+          this.unavailable.push({ name, origin, reason });
+          failed.push(`${name}: ${reason}`);
         }
       }
       return failed;

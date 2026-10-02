@@ -211,8 +211,8 @@ await step("11-kb-add-remove", async () => {
     null,
     { timeout: 180_000 },
   );
-  // Now loaded: selecting it again schedules a removal.
-  await row.locator('input[type="checkbox"]').check();
+  // Now loaded (ticked): unticking it schedules a removal.
+  await row.locator('input[type="checkbox"]').uncheck();
   await page.locator("button.btn", { hasText: "Save changes" }).click();
   await page.waitForSelector("text=/removed 1/", { timeout: 180_000 });
   await search.fill("");
@@ -412,18 +412,38 @@ await step("51-asktell-prove", async () => {
 });
 
 await step("52-asktell-settings", async () => {
-  await page.locator("button.cog").first().click();
+  await page
+    .getByRole("button", { name: /Options/ })
+    .first()
+    .click();
+  await page.waitForSelector(".prover-options", { timeout: 5000 });
   await page.waitForTimeout(500);
 });
 
 await step("60-audit", async () => {
   await tab("Audit").click();
   await page.waitForTimeout(1000);
-  const timeLimits = await page.locator('label:has-text("time limit")').count();
-  if (timeLimits !== 1)
+  const audit = page.locator("main");
+  // Simple mode: just what to audit and for how long.
+  if (await audit.locator('label:has-text("time per check")').count())
+    throw new Error("simple Audit form shows per-check fields");
+  await audit.getByRole("radio", { name: "Advanced" }).click();
+  await audit
+    .getByRole("button", { name: /Options/ })
+    .last()
+    .click();
+  await page.waitForTimeout(500);
+  const perCheck = await audit
+    .locator('label:has-text("time per check"):visible')
+    .count();
+  const timeLimits = await audit
+    .locator('label:has-text("time limit"):visible')
+    .count();
+  if (perCheck !== 1 || timeLimits !== 0)
     throw new Error(
-      `expected one time-limit field on Audit, found ${timeLimits}`,
+      `expected one time field on Advanced Audit, found ${perCheck} per-check + ${timeLimits} time-limit`,
     );
+  await audit.getByRole("radio", { name: "Simple" }).click();
 });
 
 await step("70-settings-dialog", async () => {

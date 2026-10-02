@@ -131,19 +131,27 @@ export async function tryRestore(
 ): Promise<boolean> {
   if (!kbCacheEligible()) return false;
   const kb = useKBStore();
+  // A pinned upstream (auto-check / no-check) is loaded at its accepted
+  // commit, not the tip, so the cache is valid exactly when it holds that
+  // commit -- however far upstream has moved since.
+  const pinned = kb.pinnedRef(GitOrigin.default());
   // Offline / rate-limited: trust whatever's cached rather than fail the
   // whole boot -- the normal path needs this same network access anyway, so a
   // cache miss here doesn't cost anything a fresh boot wasn't already risking.
-  let info: { sha: string | null } | null;
-  try {
-    info = await fetchLastCommitInfo();
-  } catch {
-    info = null;
-  }
+  let info: { sha: string | null } | null = null;
+  if (!pinned)
+    try {
+      info = await fetchLastCommitInfo();
+    } catch {
+      info = null;
+    }
   try {
     const dir = await getSumoCacheDir();
     const meta = JSON.parse(await readOpfsText(dir, SUMO_CACHE_META));
-    if (info && meta.commitSha !== info.sha) return false;
+    if (
+      pinned ? meta.commitSha !== pinned : info && meta.commitSha !== info.sha
+    )
+      return false;
     if (meta.fingerprint !== constituentsFingerprint()) return false;
 
     onProgress("Restoring from cache...");
@@ -153,6 +161,14 @@ export async function tryRestore(
       ).arrayBuffer(),
     );
     await call("restore", { bytes }, [bytes.buffer]);
+    // The snapshot covers the KB itself, not the lexicon (a separate sidecar,
+    // never part of the snapshot), so it's fetched fresh here too.
+    onProgress("Fetching WordNet lexicon...");
+    await useWordNetStore().install();
+    onProgress("Loading WordNet lexicon...");
+
+    const stale: Record<string, string> =
+      meta.stale && typeof meta.stale === "object" ? meta.stale : {};
     const built: Constituent[] = [];
     for (const { name, origin: json } of kb.saved) {
       const origin = parseOrigin(json, name);
@@ -161,7 +177,7 @@ export async function tryRestore(
           ? await readOpfsText(dir, opfsSafeName(name))
           : await fromOrigin(name, origin);
       if (origin.kind === "sumo") cachedText.set(name, text);
-      built.push(new Constituent(name, origin, text));
+      built.push(new Constituent(name, origin, text, stale[name] ?? null));
     }
     kb.constituents = built;
     // The restored KB is already promoted -- this is the read-only structural
@@ -171,6 +187,16 @@ export async function tryRestore(
     return true;
   } catch {
     return false; // no cache dir yet, a missing/corrupt entry, restore() rejected, ...
+  }
+}
+
+/** The copy of upstream file `name` kept by the last cache save, or null
+ *  when there is none -- the fallback when its source can't be fetched. */
+export async function readCachedText(name: string): Promise<string | null> {
+  try {
+    return await readOpfsText(await getSumoCacheDir(), opfsSafeName(name));
+  } catch {
+    return null;
   }
 }
 
@@ -187,8 +213,12 @@ async function save() {
   saveScheduled = false;
   if (!kbCacheEligible()) return;
   try {
-    const info = await fetchLastCommitInfo();
-    if (!info?.sha) return;
+    // The commit the loaded upstream text is at: the pinned one, else the tip
+    // (what an unpinned boot fetched).
+    const sha =
+      useKBStore().pinnedRef(GitOrigin.default()) ??
+      (await fetchLastCommitInfo())?.sha;
+    if (!sha) return;
     const bytes = (await call("snapshot")).bytes;
     const dir = await getSumoCacheDir();
     for (const { name, origin, text } of useKBStore().constituents) {
@@ -200,12 +230,18 @@ async function save() {
       cachedText.set(name, text);
     }
     await writeOpfsFile(dir, SUMO_CACHE_SNAPSHOT, bytes);
+    const stale = Object.fromEntries(
+      useKBStore()
+        .constituents.filter((c) => c.stale)
+        .map((c) => [c.name, c.stale]),
+    );
     await writeOpfsFile(
       dir,
       SUMO_CACHE_META,
       JSON.stringify({
-        commitSha: info.sha,
+        commitSha: sha,
         fingerprint: constituentsFingerprint(),
+        stale,
       }),
     );
   } catch (e) {

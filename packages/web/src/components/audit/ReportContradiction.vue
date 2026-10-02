@@ -14,7 +14,6 @@ import { lspSyncedText } from "../../services/lsp";
 import { useAuthStore } from "../../stores/auth";
 import { useChangesStore } from "../../stores/changes";
 import { useKBStore } from "../../stores/kb";
-import { useProverStore } from "../../stores/prover";
 import { useShellStore } from "../../stores/shell";
 import {
   axiomDiagnostics,
@@ -33,12 +32,13 @@ const props = defineProps<{
   prose?: string;
   /** Display name of the engine that found it ("SUPr", "Vampire"). */
   backend: string;
+  /** Per-check time limit the audit ran with (seconds; 0 = none). */
+  timeLimitSecs: number;
 }>();
 
 const kb = useKBStore();
 const changes = useChangesStore();
 const auth = useAuthStore();
-const prover = useProverStore();
 const shell = useShellStore();
 
 /** Loaded from the default SUMO repo, with no saved local edit and no unsaved
@@ -79,7 +79,6 @@ async function start() {
     const fingerprint = await contradictionFingerprint(props.steps);
     const commit = loadedCommit();
     const v = shell.version;
-    const cfg = prover.config();
     const issue = buildContradictionIssue({
       steps: props.steps,
       prose: props.prose,
@@ -88,7 +87,7 @@ async function start() {
       blobBase: `https://github.com/${SUMO.owner}/${SUMO.repo}/blob/${commit ?? SUMO.branch}`,
       context: [
         `Found by: ${props.backend} (Sigma consistency audit)`,
-        `Time limit: ${cfg.timeLimitSecs ?? "?"}s`,
+        `Time limit: ${props.timeLimitSecs ? `${props.timeLimitSecs}s per check` : "none"}`,
         `Sigma: ${v ? `${v.version} (build ${v.build}, ${v.commit})` : "unknown"}`,
         `Page: ${location.origin}${location.pathname}`,
       ],

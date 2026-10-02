@@ -11,9 +11,12 @@ export async function fetchText(url: string): Promise<string> {
   return r.text();
 }
 
+/** `name`'s text from `origin`. A git origin is read at `ref` (a commit
+ *  SHA) when given, else at its branch tip. */
 export async function fromOrigin(
   name: string,
   origin: Origin,
+  ref?: string,
 ): Promise<string> {
   switch (origin.kind) {
     case "sumo": {
@@ -24,7 +27,7 @@ export async function fromOrigin(
       const edited = await useChangesStore().readEdit(name, "sumo");
       if (edited !== null) return edited;
       const git = origin as GitOrigin;
-      return fetchText(git.rawUrl(git.pathOf(name)));
+      return fetchText(git.rawUrl(git.pathOf(name), ref));
     }
     case "url": {
       const edited = await useChangesStore().readEdit(name, "url");
@@ -39,11 +42,13 @@ export async function fromOrigin(
 /** Fetch every file's text, up to `limit` at once, returning texts in list
  *  order. A per-file failure is captured rather than thrown so one bad file
  *  cannot abandon the rest -- sequential fetching would make Full SUMO a
- *  minutes-long wait. */
+ *  minutes-long wait. `pin` names the commit to read an origin at (see
+ *  `fromOrigin`); omitted, every file is read at its branch tip. */
 export async function fetchAllTexts(
   files: { name: string; origin: Origin }[],
   limit: number,
   onDone: (done: number) => void,
+  pin?: (origin: Origin) => string | undefined,
 ): Promise<(string | Error)[]> {
   const out = new Array<string | Error>(files.length);
   let next = 0;
@@ -51,7 +56,8 @@ export async function fetchAllTexts(
   const worker = async () => {
     for (let i = next++; i < files.length; i = next++) {
       try {
-        out[i] = await fromOrigin(files[i].name, files[i].origin);
+        const { name, origin } = files[i];
+        out[i] = await fromOrigin(name, origin, pin?.(origin));
       } catch (e) {
         out[i] = e instanceof Error ? e : new Error(String(e));
       }

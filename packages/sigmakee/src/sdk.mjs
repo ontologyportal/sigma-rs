@@ -380,6 +380,17 @@ export class Session {
   }
 
   /**
+   * The root sentence enclosing UTF-8 byte `offset` of loaded file `file`
+   * (what an audit `focus` resolves to), or `null` when none does.
+   * @param {string} file
+   * @param {number} offset
+   * @returns {import('./sdk').AuditFocus | null}
+   */
+  sentenceAt(file, offset) {
+    return this.#kb.sentenceAt(file, offset);
+  }
+
+  /**
    * Render the whole KB as TPTP.
    * @param {{ lang?: "fof"|"tff", hideNumbers?: boolean }} [opts]
    */

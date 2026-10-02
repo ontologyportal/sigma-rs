@@ -15,7 +15,7 @@ const source = ts.transpileModule(
   },
 ).outputText;
 
-function fixture() {
+function fixture({ cached = {} } = {}) {
   setActivePinia(createPinia());
   const fetched = [];
   const imports = {
@@ -59,6 +59,7 @@ function fixture() {
     "../services/kb-cache": {
       scheduleSave: () => {},
       flushSave: async () => {},
+      readCachedText: async (name) => cached[name] ?? null,
     },
     "../utils/format": {
       errMsg: (e) => e.message,
@@ -102,4 +103,40 @@ test("saved constituent failures do not stop the remaining boot load", async () 
   assert.deepEqual(fetched, ["First.kif", "Missing.kif", "Last.kif"]);
   assert.deepEqual(ingested, ["First.kif", "Last.kif"]);
   assert.deepEqual(Array.from(failed), ["Missing.kif: HTTP 404"]);
+});
+
+test("an unreachable file falls back to its cached copy, flagged stale", async () => {
+  const { store } = fixture({ cached: { "Missing.kif": "(cached)" } });
+  store.saved = [
+    { name: "First.kif", origin: { kind: "sumo" } },
+    { name: "Missing.kif", origin: { kind: "sumo" } },
+  ];
+  const ingested = [];
+  store.ingest = async (name, text, origin, stale) => {
+    ingested.push([name, text, stale]);
+    return { added: true, notices: [] };
+  };
+
+  const failed = await store.loadSavedConstituents();
+
+  assert.deepEqual(Array.from(failed), []);
+  assert.deepEqual(JSON.parse(JSON.stringify(ingested)), [
+    ["First.kif", "(instance First.kif Entity)", null],
+    ["Missing.kif", "(cached)", "HTTP 404"],
+  ]);
+  assert.equal(store.unavailable.length, 0);
+});
+
+test("a file with no cached copy is unavailable and reported", async () => {
+  const { store } = fixture();
+  store.saved = [{ name: "Missing.kif", origin: { kind: "sumo" } }];
+  store.ingest = async () => ({ added: true, notices: [] });
+  const failed = await store.loadSavedConstituents();
+  assert.deepEqual(Array.from(failed), ["Missing.kif: HTTP 404"]);
+  assert.deepEqual(
+    JSON.parse(
+      JSON.stringify(store.unavailable.map((u) => [u.name, u.reason])),
+    ),
+    [["Missing.kif", "HTTP 404"]],
+  );
 });

@@ -26,6 +26,8 @@ export interface FileRow {
   deletable?: boolean;
   /** Small tag before the name (Inference Tests: "KIF" / "TPTP"). */
   badge?: string;
+  /** A warning pill after the status, explained by its hover tooltip. */
+  flag?: { label: string; tip: string };
   /** Status column text when the row has no pending change. */
   status: string;
   statusKind: "in" | "out" | "locked";
@@ -47,6 +49,9 @@ const props = withDefaults(
     /** "loading upstream file list..." or an error, shown after the hint. */
     catalogNote?: string;
     catalogError?: boolean;
+    /** Checkboxes show the state a save would leave (loaded rows ticked;
+     *  untick to take one out) instead of marking the rows to change. */
+    checkedIsLoaded?: boolean;
   }>(),
   {
     loadedWord: "load",
@@ -55,6 +60,7 @@ const props = withDefaults(
     saving: false,
     catalogNote: "",
     catalogError: false,
+    checkedIsLoaded: false,
   },
 );
 
@@ -148,15 +154,22 @@ const pendingTip = computed(
     `Unsaved change: nothing is ${props.loadedWord}ed or ${props.unloadedWord}ed until you click Save changes.`,
 );
 
-/** Toggle `row`; with Shift held, set the whole range from the last toggled
- *  row (in the current visible order) to the new state. */
+/** Whether `row`'s checkbox is ticked. `selected` always holds the rows
+ *  with a pending change; with `checkedIsLoaded` the box shows the state
+ *  after saving (loaded, flipped by a pending change) rather than the
+ *  pending mark itself. */
+const baseChecked = (r: FileRow) => props.checkedIsLoaded && r.loaded;
+const isChecked = (r: FileRow) => baseChecked(r) !== selected.value.has(r.key);
+
+/** Toggle `row`'s checkbox; with Shift held, set every box in the range from
+ *  the last toggled row (in the current visible order) to the same state. */
 function toggle(row: FileRow, e?: MouseEvent) {
   if (row.locked) return;
-  const on = !selected.value.has(row.key);
+  const want = !isChecked(row);
   const next = new Set(selected.value);
   const set = (r: FileRow) => {
     if (r.locked) return;
-    if (on) next.add(r.key);
+    if (want !== baseChecked(r)) next.add(r.key);
     else next.delete(r.key);
   };
   const list = visible.value;
@@ -222,8 +235,15 @@ function save() {
   </div>
 
   <div class="hint mt-sm">
-    Tick files to {{ loadedWord }} or {{ unloadedWord }} them, then save.
-    Shift-click selects a range.
+    <template v-if="checkedIsLoaded"
+      >Tick files to {{ loadedWord }} them and untick {{ loadedWord }}ed ones to
+      {{ unloadedWord }} them, then save.</template
+    >
+    <template v-else
+      >Tick files to {{ loadedWord }} or {{ unloadedWord }} them, then
+      save.</template
+    >
+    Shift-click sets a range.
     <span v-if="catalogNote" :class="{ bad: catalogError }">
       {{ catalogNote }}
     </span>
@@ -251,13 +271,21 @@ function save() {
           <td class="col-check">
             <input
               type="checkbox"
-              :checked="selected.has(row.key)"
+              :checked="isChecked(row)"
               :disabled="row.locked"
-              :aria-label="`Select ${row.name}`"
+              :aria-label="
+                checkedIsLoaded
+                  ? `${capitalize(loadedWord)} ${row.name}`
+                  : `Select ${row.name}`
+              "
               :title="
-                row.loaded
-                  ? `Tick to ${unloadedWord} on save`
-                  : `Tick to ${loadedWord} on save`
+                checkedIsLoaded
+                  ? row.loaded
+                    ? `Untick to ${unloadedWord} on save`
+                    : `Tick to ${loadedWord} on save`
+                  : row.loaded
+                    ? `Tick to ${unloadedWord} on save`
+                    : `Tick to ${loadedWord} on save`
               "
               @click.stop="toggle(row, $event)"
             />
@@ -287,6 +315,14 @@ function save() {
               row.status
             }}</span>
             <span v-else class="hint">{{ row.status }}</span>
+            <span
+              v-if="row.flag"
+              class="pill flag"
+              tabindex="0"
+              :title="row.flag.tip"
+              :aria-label="`${row.flag.label}: ${row.flag.tip}`"
+              >{{ row.flag.label }}</span
+            >
             <a
               v-if="row.deletable"
               class="hint delete"
@@ -317,8 +353,15 @@ function save() {
     <span class="inline tight center">
       <span class="pill pending" :title="pendingTip">Unsaved changes</span>
       <span class="hint">
-        {{ selectedRows.length }} selected — {{ loadedWord }}
-        {{ pendingAdds.length }}, {{ unloadedWord }}
+        {{ selectedRows.length }}
+        {{
+          checkedIsLoaded
+            ? selectedRows.length === 1
+              ? "change"
+              : "changes"
+            : "selected"
+        }}
+        — {{ loadedWord }} {{ pendingAdds.length }}, {{ unloadedWord }}
         {{ pendingRemoves.length }}
       </span>
     </span>
@@ -443,6 +486,13 @@ tbody tr.selected {
   font-size: 12px;
   background: color-mix(in srgb, var(--accent) 18%, transparent);
   color: var(--accent);
+}
+/* A row's warning (a stale or unavailable constituent). */
+.pill.flag {
+  margin-left: 6px;
+  background: color-mix(in srgb, var(--warn) 16%, transparent);
+  color: var(--warn);
+  cursor: help;
 }
 /* A ticked row's pending change: accent for taking in, amber for taking out. */
 .pill.pending {

@@ -1129,11 +1129,51 @@ impl AuditStopReason {
 
 /// One sentence a sampled-audit subproblem was focused on.
 #[cfg(any(feature = "external-prover", feature = "native-prover"))]
-#[derive(serde::Serialize)]
+#[derive(Debug, serde::Serialize)]
 pub struct AuditFocusView {
     pub kif: String,
     pub file: Option<String>,
     pub line: Option<u32>,
+}
+
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
+impl AuditFocusView {
+    /// Render `sid` as an audit focus: its plain KIF and source location.
+    pub fn of<L: TopLayer>(kb: &KnowledgeBase<L>, sid: sigmakee_rs_core::SentenceId) -> Self {
+        let span = sigmakee_rs_core::DiagnosticSource::sentence_location(kb, sid);
+        Self {
+            kif: kb.pretty_print_sentence_plain(sid, 0),
+            file: span.as_ref().map(|s| s.file.clone()),
+            line: span.as_ref().map(|s| s.line),
+        }
+    }
+}
+
+/// What a sampled audit walks: the seeded sweep over the KB (or over one
+/// loaded file tag), or an explicit list of focus sentences, checked in the
+/// order given.
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
+#[derive(Debug, Clone, Copy)]
+pub enum AuditTarget<'a> {
+    /// The pseudorandom sweep (`KnowledgeBase::audit_sweep_order`), whole KB
+    /// when `None`.
+    Sweep(Option<&'a str>),
+    /// Exactly these sentences; the sample's seed is ignored.
+    Sentences(&'a [sigmakee_rs_core::SentenceId]),
+}
+
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
+impl<'a> AuditTarget<'a> {
+    /// The sentence order to audit; `sweep` builds the sweep for a scope.
+    fn order(
+        self,
+        sweep: impl FnOnce(Option<&'a str>) -> Vec<sigmakee_rs_core::SentenceId>,
+    ) -> Vec<sigmakee_rs_core::SentenceId> {
+        match self {
+            Self::Sweep(scope) => sweep(scope),
+            Self::Sentences(sids) => sids.to_vec(),
+        }
+    }
 }
 
 /// One subproblem of a sampled audit: its focus sentences and how the check
@@ -1220,14 +1260,7 @@ impl AuditResultView {
                 focus: b
                     .focus
                     .iter()
-                    .map(|&sid| {
-                        let span = sigmakee_rs_core::DiagnosticSource::sentence_location(kb, sid);
-                        AuditFocusView {
-                            kif: kb.pretty_print_sentence_plain(sid, 0),
-                            file: span.as_ref().map(|s| s.file.clone()),
-                            line: span.as_ref().map(|s| s.line),
-                        }
-                    })
+                    .map(|&sid| AuditFocusView::of(kb, sid))
                     .collect(),
                 status: format!("{:?}", b.outcome.status),
                 stop_reason: classify(&b.outcome),
@@ -1641,17 +1674,17 @@ impl<S: TopLayer + 'static> Session<sigmakee_rs_core::ProverLayer<S>> {
         )
     }
 
-    /// Sampled consistency audit with the native saturation prover over the
-    /// sweep `scope` (a loaded file tag, or the whole KB) and `sample`'s
-    /// slice of it; `opts.selection` sizes each subproblem's neighborhood and
+    /// Sampled consistency audit with the native saturation prover over
+    /// `target` (a sweep of a loaded file tag or the whole KB, or explicit
+    /// sentences) and `sample`'s slice of it; `opts.selection` sizes each subproblem's neighborhood and
     /// `opts`' time limit and step cap bound each one.
     pub fn audit_view(
         &self,
         opts: sigmakee_rs_core::NativeOpts,
         sample: sigmakee_rs_core::AuditSample,
-        scope: Option<&str>,
+        target: AuditTarget<'_>,
     ) -> AuditResultView {
-        let order = self.kb.audit_sweep_order(scope, sample.seed);
+        let order = target.order(|scope| self.kb.audit_sweep_order(scope, sample.seed));
         let audit = self.kb.audit_sampled(&order, sample, &opts);
         AuditResultView::project(&self.kb, sample, audit, AuditStopReason::from_native)
     }
@@ -1703,9 +1736,9 @@ impl<T: sigmakee_rs_core::HasTranslation + 'static>
         &self,
         opts: sigmakee_rs_core::ExternalOpts,
         sample: sigmakee_rs_core::AuditSample,
-        scope: Option<&str>,
+        target: AuditTarget<'_>,
     ) -> AuditResultView {
-        let order = self.kb.audit_sweep_order(scope, sample.seed);
+        let order = target.order(|scope| self.kb.audit_sweep_order(scope, sample.seed));
         let audit = self.kb.audit_sampled(&order, sample, &opts);
         AuditResultView::project(&self.kb, sample, audit, AuditStopReason::from_external)
     }
@@ -1743,9 +1776,9 @@ impl<S: sigmakee_rs_core::HasTranslation + 'static>
         &self,
         opts: sigmakee_rs_core::NativeOpts,
         sample: sigmakee_rs_core::AuditSample,
-        scope: Option<&str>,
+        target: AuditTarget<'_>,
     ) -> AuditResultView {
-        let order = self.kb.audit_sweep_order(scope, sample.seed);
+        let order = target.order(|scope| self.kb.audit_sweep_order(scope, sample.seed));
         let audit = self.kb.audit_sampled_native(&order, sample, &opts);
         AuditResultView::project(&self.kb, sample, audit, AuditStopReason::from_native)
     }

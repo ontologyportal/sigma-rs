@@ -107,7 +107,9 @@ pub use session::views::{
     RankComponentView, ScratchValidationView, SearchHitView, SortView, TaxonomyView, TestCaseView,
 };
 #[cfg(any(feature = "external-prover", feature = "native-prover"))]
-pub use session::views::{AskResultView, AuditResultView, ContradictionView, ProofStepView};
+pub use session::views::{
+    AskResultView, AuditFocusView, AuditResultView, AuditTarget, ContradictionView, ProofStepView,
+};
 #[cfg(feature = "lexicon")]
 pub use session::views::{
     CappedView, WordNetDiagnosticsView, WordNetMappingCountsView, WordNetSynsetRowView,

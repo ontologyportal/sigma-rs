@@ -435,7 +435,7 @@ fof(goal, conjecture, animal(rex)).\n";
 
     #[test]
     fn sampled_audit_view_reports_per_subproblem_outcomes() {
-        use crate::session::views::AuditStopReason;
+        use crate::session::views::{AuditStopReason, AuditTarget};
         let mut s = Session::<ProverLayer>::new(SESSION.to_string());
         s.ingest(
             reader(
@@ -458,7 +458,7 @@ fof(goal, conjecture, animal(rex)).\n";
             forward_close: false,
             ..Default::default()
         };
-        let v = s.audit_view(capped, whole(100), None);
+        let v = s.audit_view(capped, whole(100), AuditTarget::Sweep(None));
         assert_eq!(v.status, "Unknown", "{}", v.raw_output);
         assert_eq!(v.batches.len(), 1);
         assert_eq!(
@@ -473,7 +473,7 @@ fof(goal, conjecture, animal(rex)).\n";
             forward_close: false,
             ..Default::default()
         };
-        let v = s.audit_view(default_cap, whole(1), None);
+        let v = s.audit_view(default_cap, whole(1), AuditTarget::Sweep(None));
         assert_eq!(
             v.status, "Unknown",
             "a sampled audit never claims Consistent"
@@ -488,6 +488,42 @@ fof(goal, conjecture, animal(rex)).\n";
             assert_eq!(b.focus.len(), 1);
             assert_eq!(b.focus[0].file.as_deref(), Some("c.kif"));
         }
+    }
+
+    #[test]
+    fn focused_audit_view_checks_only_the_given_sentence() {
+        use crate::session::views::{AuditFocusView, AuditTarget};
+        let text = "(p a)\n(barks Rex)\n(not (barks Rex))\n";
+        let mut s = Session::<ProverLayer>::new(SESSION.to_string());
+        s.ingest(reader("c.kif", text), true);
+        let offset = text.find("(not").unwrap() + 2;
+        let sid = s
+            .kb()
+            .sentence_at("c.kif", offset)
+            .expect("sentence at offset");
+        assert!(AuditFocusView::of(s.kb(), sid).kif.contains("barks"));
+
+        let sample = sigmakee_rs_core::AuditSample {
+            seed: 0,
+            step: 0,
+            count: 1,
+            batch: 1,
+            limit: 5,
+        };
+        let opts = NativeOpts {
+            time_limit_secs: 10,
+            ..Default::default()
+        };
+        let v = s.audit_view(opts, sample, AuditTarget::Sentences(&[sid]));
+        assert_eq!(v.status, "Inconsistent", "{}", v.raw_output);
+        assert_eq!(v.total, 1);
+        assert_eq!(v.batches.len(), 1);
+        assert_eq!(v.batches[0].focus[0].line, Some(3));
+
+        assert!(s.kb().sentence_at("c.kif", text.len() + 10).is_none());
+        let empty = s.audit_view(NativeOpts::default(), sample, AuditTarget::Sentences(&[]));
+        assert!(empty.batches.is_empty());
+        assert_eq!(empty.total, 0);
     }
 
     #[test]

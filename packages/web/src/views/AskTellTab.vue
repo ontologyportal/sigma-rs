@@ -15,12 +15,17 @@ import { call } from "../services/sigma";
 import { downloadText, errMsg } from "../utils/format";
 import { useProverStore } from "../stores/prover";
 import { useTestsStore, type TestEntry } from "../stores/tests";
+import type * as Monaco from "monaco-editor/esm/vs/editor/editor.api.js";
+import type { MonacoNs } from "../services/monaco";
 import BusyButton from "../components/BusyButton.vue";
 import { useElapsed } from "../composables/useElapsed";
 import Card from "../components/Card.vue";
+import DropMenu from "../components/DropMenu.vue";
 import MonacoEditor from "../components/MonacoEditor.vue";
 import ProofView from "../components/ProofView.vue";
-import ProverSettings from "../components/ProverSettings.vue";
+import ProverChips from "../components/ProverChips.vue";
+import ProverOptions from "../components/ProverOptions.vue";
+import Segmented from "../components/Segmented.vue";
 import StatusLine from "../components/StatusLine.vue";
 
 const prover = useProverStore();
@@ -47,8 +52,27 @@ const {
 const savingTest = ref(false);
 /** The save-test result line under the button row. */
 const testLog = useStatus();
-/** Transient note shown in place of the settings summary ("Enter a query first."). */
+/** Transient note beside the actions ("Enter a query first."). */
 const cfgNote = ref("");
+const optionsOpen = ref(false);
+const moreOpen = ref(false);
+const moreBtn = ref<HTMLElement | null>(null);
+
+const langOptions = [
+  {
+    value: "kif" as const,
+    label: "SUO-KIF",
+    title: "Assertions + query in SUO-KIF",
+  },
+  {
+    value: "tptp" as const,
+    label: "TPTP",
+    title: "One TPTP problem with an embedded conjecture",
+  },
+];
+const proveKey = /Mac|iPhone|iPad/.test(navigator.platform)
+  ? "⌘↵"
+  : "Ctrl+Enter";
 
 // The exact TPTP problem text handed to Vampire for the most recent Ask/Tell
 // run -- a Vampire result carries it as `input_tptp` (the worker's Config
@@ -119,7 +143,13 @@ async function runScratchValidate() {
   }
 }
 
-function onEditorReady() {
+function onEditorReady(
+  editor: Monaco.editor.IStandaloneCodeEditor,
+  m: MonacoNs,
+) {
+  editor.addCommand(m.KeyMod.CtrlCmd | m.KeyCode.Enter, () => {
+    if (!proving.value) prove();
+  });
   editorsReady += 1;
   if (editorsReady === 2) runScratchValidate();
 }
@@ -135,24 +165,20 @@ watch(
     showDownloadTptp.value = false;
   },
 );
-watch(
-  () => prover.cfgSummary,
-  () => {
-    cfgNote.value = "";
-  },
-);
 onBeforeUnmount(() => clearTimeout(scratchTimer));
 
 // -- prove --------------------------------------------------------------------
 
 async function prove() {
   const backend = prover.backendLabel;
-  const config = prover.config();
-  runLimitSecs.value = config.timeLimitSecs ?? 0;
+  cfgNote.value = "";
   proving.value = true;
   lastVampireTptp = null;
   showDownloadTptp.value = false;
   try {
+    await prover.loadDefaults();
+    const config = prover.config("ask");
+    runLimitSecs.value = config.timeLimitSecs ?? 0;
     let r: AskResult;
     let asserted = assertions.value.trim();
     let asked = tptpMode.value ? "" : query.value;
@@ -246,7 +272,7 @@ async function saveTest() {
       return;
     }
     text = formatTest({
-      timeout: prover.config().timeLimitSecs,
+      timeout: prover.profiles.ask.timeLimitSecs,
       assertions: assertions.value,
       query: q,
       expectedProof: true,
@@ -274,11 +300,27 @@ async function saveTest() {
 
 <template>
   <Card>
-    <label v-if="tptpMode"
-      >TPTP problem — axioms + an embedded <code>conjecture</code>, read as one
-      document</label
+    <div class="top">
+      <Segmented
+        v-model="prover.proofLang"
+        :options="langOptions"
+        label="Input language"
+      />
+      <span v-if="tests.openTest" class="hint editing">
+        Editing test: {{ tests.openTest.name }}
+        <button
+          class="btn ghost small"
+          type="button"
+          @click="navigate('edit', { file: tests.openTest.name })"
+        >
+          Edit raw test
+        </button>
+      </span>
+    </div>
+    <label v-if="tptpMode" class="mt"
+      >TPTP problem — axioms + an embedded <code>conjecture</code></label
     >
-    <label v-else
+    <label v-else class="mt"
       >Assertions — <code>tell</code> (added to the KB for this query)</label
     >
     <div class="pane-editor" :class="{ 'pane-editor-tall': tptpMode }">
@@ -301,7 +343,7 @@ async function saveTest() {
         />
       </div>
     </div>
-    <div v-show="tptpMode">
+    <div v-show="tptpMode" class="mt-sm">
       <label class="check"
         ><input type="checkbox" v-model="prover.useSumo" /> Use SUMO
         <span class="hint"
@@ -311,65 +353,68 @@ async function saveTest() {
         ></label
       >
     </div>
-    <div class="inline tight center mt">
+    <div class="actions mt">
       <BusyButton
         :busy="proving"
         label="Prove"
+        :title="`Prove (${proveKey})`"
         :busy-label="`Proving… ${elapsedLabel(runLimitSecs)}`"
         :progress="elapsedFraction(runLimitSecs)"
         @click="prove"
       />
-      <BusyButton
-        ghost
-        :busy="savingTest"
-        label="Save test"
-        title="Save the current assertions/query as a test in the library"
-        @click="saveTest"
-      />
       <button
+        ref="moreBtn"
         class="btn ghost"
         type="button"
-        title="Import, run, and open test files"
-        @click="navigate('problems')"
+        aria-haspopup="menu"
+        :aria-expanded="moreOpen"
+        @click="moreOpen = !moreOpen"
       >
-        Inference Tests
+        More ▾
       </button>
-      <button
-        v-if="tests.openTest"
-        class="btn ghost"
-        type="button"
-        @click="navigate('edit', { file: tests.openTest.name })"
-      >
-        Edit raw test
-      </button>
-      <button
-        class="btn ghost"
-        type="button"
-        v-show="showDownloadTptp"
-        title="Download the exact TPTP input for the last external prover run"
-        @click="downloadVampireTptp"
-      >
-        Download TPTP input
-      </button>
-      <button
-        class="cog"
-        type="button"
-        title="Prover settings"
-        aria-label="Prover settings"
-        :aria-expanded="prover.settingsOpen"
-        @click="prover.toggleSettings()"
-      >
-        ⚙
-      </button>
-      <span class="hint">{{ cfgNote || prover.cfgSummary }}</span>
+      <ProverChips v-model:open="optionsOpen" profile="ask" />
+      <span v-if="cfgNote" class="hint">{{ cfgNote }}</span>
     </div>
-    <div class="hint mt-sm">
-      {{ tests.openTest ? "Editing test: " + tests.openTest.name : "" }}
-    </div>
+    <DropMenu v-model="moreOpen" :anchor="moreBtn">
+      <template #default="{ close }">
+        <button
+          type="button"
+          role="menuitem"
+          :disabled="savingTest"
+          @click="
+            close();
+            saveTest();
+          "
+        >
+          Save as test
+        </button>
+        <button
+          type="button"
+          role="menuitem"
+          @click="
+            close();
+            navigate('problems');
+          "
+        >
+          Inference tests…
+        </button>
+        <button
+          v-if="showDownloadTptp"
+          type="button"
+          role="menuitem"
+          title="The exact TPTP input for the last external prover run"
+          @click="
+            close();
+            downloadVampireTptp();
+          "
+        >
+          Download the prover's TPTP input
+        </button>
+      </template>
+    </DropMenu>
+    <ProverOptions v-if="optionsOpen" profile="ask" :disabled="proving" />
     <StatusLine :text="testLog.text" :error="testLog.error" />
   </Card>
-
-  <ProverSettings />
 
   <Card v-if="error || result">
     <div class="inline between">
@@ -412,5 +457,28 @@ async function saveTest() {
 }
 .pane-editor-tall {
   height: 320px;
+}
+.top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.editing {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+button.small {
+  height: auto;
+  padding: 4px 10px;
+  font-size: 13px;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
 }
 </style>

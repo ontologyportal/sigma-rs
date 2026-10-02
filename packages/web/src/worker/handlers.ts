@@ -18,6 +18,7 @@ import {
 } from "sigmakee/sdk";
 import type {
   AskResult,
+  AuditFocus,
   AuditRequest,
   AuditResult,
   Diagnostic,
@@ -26,6 +27,8 @@ import type {
   ManPage,
   ParsedTest,
   SearchHit,
+  SelectionParams,
+  StrategyPreset,
   TaxConstraint,
   SumoSymbols,
   WordNetDiagnostics,
@@ -47,6 +50,10 @@ export interface ProverConfig {
   wantProof?: boolean;
   profile?: boolean;
   selectionTolerancePct?: number;
+  /** Partial SineParams (snake_case), over the engine defaults. */
+  selection?: Partial<SelectionParams>;
+  /** Partial native Strategy (snake_case), over the default strategy. */
+  strategy?: Record<string, unknown>;
   backend?: "native" | "vampire" | "e";
   vampireArgs?: string;
   selectionBudget?: number;
@@ -108,6 +115,8 @@ function makeConfig(o: ProverConfig = {}): Config {
   // pass a literal 0% budget. 100 searches the whole KB.
   if (o.selectionTolerancePct)
     cfg.selectionTolerancePct = o.selectionTolerancePct;
+  if (o.selection) cfg.selection = o.selection;
+  if (o.strategy) cfg.strategy = o.strategy;
   // Vampire (WASM) rides the same Config: the engine's external prover layer
   // drives it through the bridge installed at boot (see external-prover-bridge.ts),
   // with the same time limit and selection budget the native backend reads.
@@ -437,6 +446,25 @@ export const handlers = {
       recheck.tracker.invalid = e instanceof Error ? e.message : String(e);
       throw e;
     }
+  },
+
+  /** The engine's default selection params and built-in strategy presets
+   *  (the first is the shipping default), for the prover options form. */
+  proverDefaults(): {
+    selection: SelectionParams;
+    presets: StrategyPreset[];
+  } {
+    return {
+      selection: Config.selectionDefaults(),
+      presets: Config.strategyPresets(),
+    };
+  },
+
+  /** The sentence enclosing UTF-8 byte `offset` of loaded file `file`. */
+  sentenceAt({ file, offset }: { file: string; offset: number }): {
+    focus: AuditFocus | null;
+  } {
+    return { focus: active().sentenceAt(file, offset) };
   },
 };
 

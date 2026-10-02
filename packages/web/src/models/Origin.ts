@@ -59,8 +59,9 @@ export class GitOrigin extends Origin {
     return `${this.owner}/${this.repo}@${this.branch}`;
   }
 
-  rawUrl(path: string): string {
-    return `https://raw.githubusercontent.com/${this.owner}/${this.repo}/${this.branch}/${path}`;
+  /** `path`'s raw URL at `ref` (a commit SHA), or at the branch tip. */
+  rawUrl(path: string, ref: string = this.branch): string {
+    return `https://raw.githubusercontent.com/${this.owner}/${this.repo}/${ref}/${path}`;
   }
 
   /** The KB name of a repo path: bare for the default repo, prefixed with
