@@ -1,0 +1,19 @@
+name: Labeler
+
+# Applies the existing component-area labels (backend / web-ui / cli / nlp /
+# supr / vscode / testing-deployment) to a PR based on which paths it
+# touches -- see .github/labeler.yml. Deterministic and path-based, so a
+# label is never missing because whoever opened the PR forgot to add it.
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/labeler@v5
