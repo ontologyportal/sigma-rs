@@ -24,8 +24,8 @@ onMounted(() => {
         id="mascot"
         src="/mascot-stomp.gif"
         alt=""
-        width="140"
-        height="140"
+        width="180"
+        height="180"
       />
     </picture>
     <div id="overlayTitle">
@@ -63,8 +63,8 @@ onMounted(() => {
 }
 
 #mascot {
-  width: 140px;
-  height: 140px;
+  width: 180px;
+  height: 180px;
   margin-bottom: 4px;
 }
 
