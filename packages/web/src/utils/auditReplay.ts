@@ -205,7 +205,7 @@ export function parseAuditReplay(markdown: string): AuditReplay {
       (c: unknown) =>
         !record(c) ||
         typeof c.name !== "string" ||
-        !/^[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*\.kif$/.test(c.name) ||
+        !/^[A-Za-z0-9_&-]+(?:\/[A-Za-z0-9_&-]+)*\.kif$/.test(c.name) ||
         !sha(c.sha256, 64),
     ) ||
     new Set(r.constituents.map((c: { name: string }) => c.name)).size !==
