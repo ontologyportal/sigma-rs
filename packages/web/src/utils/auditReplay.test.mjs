@@ -181,6 +181,40 @@ test("reads versioned metadata and preserves exact replay settings", () => {
   );
 });
 
+test("accepts SUMO constituent names containing ampersands", () => {
+  for (const name of [
+    "Cellular&TelephoneArchitecture.kif",
+    "subdirectory/Cellular&TelephoneArchitecture.kif",
+  ]) {
+    const { replay } = fixture();
+    replay.constituents[0].name = name;
+    assert.equal(parseAuditReplay(report(replay)).constituents[0].name, name);
+  }
+});
+
+test("ampersand support preserves constituent safety checks", () => {
+  for (const name of [
+    "../Cellular&TelephoneArchitecture.kif",
+    "/Cellular&TelephoneArchitecture.kif",
+    "sub/../Cellular&TelephoneArchitecture.kif",
+    "sub//Cellular&TelephoneArchitecture.kif",
+    "%2e%2e/Cellular&TelephoneArchitecture.kif",
+    "Cellular&TelephoneArchitecture.kif?raw=1",
+    "Cellular&TelephoneArchitecture.kif#fragment",
+  ]) {
+    const { replay } = fixture();
+    replay.constituents[0].name = name;
+    assert.throws(() => parseAuditReplay(report(replay)), /Invalid or duplicate/);
+  }
+  for (const duplicate of [false, true]) {
+    const { replay } = fixture();
+    replay.constituents[0].name = "Cellular&TelephoneArchitecture.kif";
+    if (duplicate) replay.constituents.push({ ...replay.constituents[0] });
+    else replay.constituents[0].sha256 = "invalid";
+    assert.throws(() => parseAuditReplay(report(replay)), /Invalid or duplicate/);
+  }
+});
+
 test("rejects incomplete, malformed, unsafe, or ambiguous replay inputs", () => {
   for (const change of [
     (r) => {
