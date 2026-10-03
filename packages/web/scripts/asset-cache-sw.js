@@ -8,28 +8,28 @@ self.addEventListener("install", (event) => {
   event.waitUntil(
     (async () => {
       const cache = await caches.open(cacheName);
-      let next = 0;
-      // Bound concurrent downloads, including the large prover binaries.
-      const results = await Promise.allSettled(
-        Array.from({ length: 4 }, async () => {
-          for (let i = next++; i < urls.length; i = next++) {
-            const response = await fetch(urls[i], {
-              cache: "reload",
+      try {
+        // One low-priority download leaves room for tabs the user opens.
+        for (const url of urls) {
+          const immutable = url.startsWith(self.registration.scope + "assets/");
+          const previous = immutable ? await cached(url) : undefined;
+          const response =
+            previous ||
+            (await fetch(url, {
+              cache: immutable ? "default" : "no-cache",
+              priority: "low",
               signal: AbortSignal.timeout(120000),
-            });
-            if (
-              !response.ok ||
-              /text\/html/i.test(response.headers.get("content-type") || "")
-            )
-              throw new Error(`Could not cache ${urls[i]}`);
-            await cache.put(urls[i], response);
-          }
-        }),
-      );
-      const failure = results.find((result) => result.status === "rejected");
-      if (failure) {
+            }));
+          if (
+            !response.ok ||
+            /text\/html/i.test(response.headers.get("content-type") || "")
+          )
+            throw new Error(`Could not cache ${url}`);
+          await cache.put(url, response);
+        }
+      } catch (error) {
         await caches.delete(cacheName);
-        throw failure.reason;
+        throw error;
       }
     })(),
   );
@@ -79,14 +79,27 @@ self.addEventListener("fetch", (event) => {
       // Hashed chunks are immutable; stable prover URLs revalidate when online.
       if (hit && url.pathname.startsWith(base.pathname + "assets/")) return hit;
       try {
+        // Foreground requests bypass the background queue. Only bound the
+        // network wait when a cached response is available as a fallback.
         const response = await fetch(request, {
-          signal: AbortSignal.timeout(3000),
+          priority: "high",
+          ...(hit ? { signal: AbortSignal.timeout(3000) } : {}),
         });
         if (
           response.ok &&
           !/text\/html/i.test(response.headers.get("content-type") || "")
-        )
+        ) {
+          if (allowed.has(url.href)) {
+            const copy = response.clone();
+            event.waitUntil(
+              caches
+                .open(cacheName)
+                .then((cache) => cache.put(request, copy))
+                .catch(() => {}),
+            );
+          }
           return response;
+        }
         return hit || response;
       } catch (error) {
         if (hit) return hit;

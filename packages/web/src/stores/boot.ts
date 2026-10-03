@@ -3,6 +3,7 @@
  *  driving the LoadingScreen's progress bar until the app is usable. */
 
 import { defineStore } from "pinia";
+import { nextTick } from "vue";
 import { call, connectVampire, replaceWorker } from "../services/sigma";
 import { tryRestore } from "../services/kb-cache";
 import { BASE } from "../constants";
@@ -28,6 +29,7 @@ export const useBootStore = defineStore("boot", {
      *  loaded successfully. */
     loadErrors: [] as string[],
     assetCacheWarning: "",
+    assetCacheState: "idle" as "idle" | "caching" | "ready" | "failed",
     msg: "Starting the engine...",
     step: 0,
     total: 1,
@@ -98,16 +100,11 @@ export const useBootStore = defineStore("boot", {
       const wordnet = useWordNetStore();
       const tests = useTestsStore();
       this.assetCacheWarning = "";
-      const assets = cacheFeatureAssets().catch(() => {
-        this.assetCacheWarning =
-          "Feature caching did not finish. Some tabs or tools may need the deployment server until you reload successfully.";
-      });
+      this.assetCacheState = "idle";
       try {
         this.failed = false;
         this.error = "";
         this.loadErrors = [];
-        this.msg = "Caching tabs and tools...";
-        await assets;
         this.msg = "Starting the engine...";
         await this.bootWorker();
         this.opfsRoot = await navigator.storage.getDirectory();
@@ -133,6 +130,19 @@ export const useBootStore = defineStore("boot", {
         }
 
         this.finished = true;
+        if (import.meta.env.PROD) {
+          this.assetCacheState = "caching";
+          void nextTick()
+            .then(() => cacheFeatureAssets())
+            .then(() => {
+              this.assetCacheState = "ready";
+            })
+            .catch(() => {
+              this.assetCacheState = "failed";
+              this.assetCacheWarning =
+                "Disconnect protection is incomplete. You can keep using the app while connected; some tabs or tools may still need the server.";
+            });
+        }
         // Off the critical path: the app is usable (browse/search) before
         // the KB is fully axiomatized or the tests are back.
         if (!restored) kb.reprocess();

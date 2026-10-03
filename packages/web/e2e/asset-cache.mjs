@@ -23,6 +23,14 @@ const types = {
   ".gif": "image/gif",
   ".ico": "image/x-icon",
 };
+let releaseBackground;
+let markBackgroundStarted;
+const backgroundGate = new Promise((resolve) => {
+  releaseBackground = resolve;
+});
+const backgroundStarted = new Promise((resolve) => {
+  markBackgroundStarted = resolve;
+});
 const server = createServer(async (req, res) => {
   const path = new URL(req.url, "http://localhost").pathname;
   res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
@@ -36,6 +44,13 @@ const server = createServer(async (req, res) => {
   const relative = path.startsWith(base)
     ? path.slice(base.length)
     : path.slice(1);
+  if (
+    relative === "apple-touch-icon.png" &&
+    req.headers["sec-fetch-dest"] === "empty"
+  ) {
+    markBackgroundStarted();
+    await backgroundGate;
+  }
   try {
     const file = relative || "index.html";
     res.setHeader(
@@ -71,7 +86,37 @@ try {
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto(origin + base);
-  await page.waitForSelector("nav.tabs");
+  await page
+    .waitForSelector("nav.tabs", { timeout: 60000 })
+    .catch(async (error) => {
+      console.error("Startup:", await page.locator("body").innerText(), errors);
+      throw error;
+    });
+  let gateTimer;
+  try {
+    await Promise.race([
+      backgroundStarted,
+      new Promise((_, reject) => {
+        gateTimer = setTimeout(
+          () => reject(new Error("Background download never started")),
+          15000,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(gateTimer);
+  }
+  assert.equal(
+    await page.evaluate(
+      () =>
+        document
+          .querySelector("#app")
+          .__vue_app__.config.globalProperties.$pinia._s.get("boot")
+          .assetCacheState,
+    ),
+    "caching",
+  );
+  console.log("ok app opens while background caching is blocked");
   await page.waitForFunction(
     () =>
       !document
@@ -87,6 +132,29 @@ try {
           .assetCacheWarning,
     ),
     "",
+  );
+  await page.evaluate(async () => {
+    await document
+      .querySelector("#app")
+      .__vue_app__.config.globalProperties.$router.push({ name: "prover" });
+  });
+  await page.waitForSelector(".monaco-editor", { timeout: 15000 });
+  assert.equal(
+    await page.evaluate(
+      () =>
+        document.querySelector("#app").__vue_app__.config.globalProperties
+          .$router.currentRoute.value.name,
+    ),
+    "prover",
+  );
+  console.log("ok clicked tab and editor bypass the blocked background queue");
+  releaseBackground();
+  await page.waitForFunction(
+    () =>
+      document
+        .querySelector("#app")
+        .__vue_app__.config.globalProperties.$pinia._s.get("boot")
+        .assetCacheState === "ready",
   );
   assert.equal(
     await page.evaluate(() => !!navigator.serviceWorker.controller),
@@ -124,6 +192,31 @@ try {
   });
   await page.waitForSelector(".monaco-editor");
   console.log("ok editor loads after disconnect");
+
+  for (const editor of await page
+    .locator(".monaco-editor textarea.inputarea")
+    .all()) {
+    await editor.focus();
+    await page.keyboard.press("Control+a");
+    await page.keyboard.insertText("(likes Alice Bob)");
+  }
+  for (const backend of ["e", "vampire"]) {
+    await page.evaluate((backend) => {
+      document
+        .querySelector("#app")
+        .__vue_app__.config.globalProperties.$pinia._s.get("prover").backend =
+        backend;
+    }, backend);
+    await page.getByRole("button", { name: "Prove", exact: true }).click();
+    await page.waitForSelector(".status.Proved");
+    await page
+      .getByText(backend === "e" ? "via E" : "via Vampire", { exact: true })
+      .waitFor();
+    console.log(
+      "ok original app prover worker after background caching:",
+      backend,
+    );
+  }
 
   const assets = await readdir(join(dist, "assets"));
   const proofGraph = assets.find((name) => /^proof-graph-.*\.js$/.test(name));
@@ -206,6 +299,7 @@ try {
   console.log("ok core worker restarts after disconnect");
   assert.deepEqual(errors, []);
 } finally {
+  releaseBackground();
   await browser.close();
   server.closeAllConnections();
   await new Promise((resolve) => server.close(resolve));

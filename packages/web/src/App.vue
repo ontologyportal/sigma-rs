@@ -177,6 +177,24 @@ onBeforeUnmount(() => {
           </div>
         </div>
       </header>
+      <div
+        v-if="
+          boot.assetCacheState === 'caching' || boot.assetCacheState === 'ready'
+        "
+        class="hint"
+        role="status"
+        :title="
+          boot.assetCacheState === 'ready'
+            ? 'Tabs and bundled tools are cached. GitHub operations still need a connection.'
+            : 'Keep using the app. Tabs you open load on demand; remaining tools download in the background.'
+        "
+      >
+        {{
+          boot.assetCacheState === "ready"
+            ? "Ready for server disconnection"
+            : "Preparing disconnect protection in the background..."
+        }}
+      </div>
       <div v-if="boot.assetCacheWarning" class="recover-banner" role="status">
         {{ boot.assetCacheWarning }}
       </div>
