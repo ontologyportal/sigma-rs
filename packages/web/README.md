@@ -2,6 +2,33 @@
 
 **COMING SOON**
 
+## Deployment disconnection
+
+Production builds cache all shipped tab code, styles, editor and graph libraries,
+workers, and WASM binaries during startup. The loading screen waits for caching
+before opening the app. If caching fails (for example, storage quota or a missing
+asset), a banner warns that some features still need the deployment server.
+Optional prover assets are included only when those backends were built.
+
+After a successful load, the open page can switch tabs, edit, visualize, and run
+local provers even when the deployment server stops. GitHub requests, login,
+remote file downloads, and update checks still need their respective services.
+This is feature-asset caching, not an offline page-reload or data-sync mode.
+
+Caching requires HTTPS or localhost and runs only in a production build, including
+one served locally with `npm run preview --workspace @sigma/web`. Vite development
+mode keeps its normal live module loading. Close existing production tabs before
+using a development server at the same origin; use a separate port for development.
+Updated caches install in the background and activate after existing tabs close.
+The first load downloads all bundled tools, including optional prover binaries.
+
+Run `npm run test:asset-cache --workspace @sigma/web` for lifecycle tests. After
+building, `npm run test:e2e:asset-cache --workspace @sigma/web` starts an isolated
+production server, loads the app, disables the HTTP cache, stops the server, and
+exercises tabs, editors, graph libraries, provers, and worker recovery. It requires
+Playwright Chromium and both optional prover builds. The same test supports
+builds configured with `VITE_BASE=/browse/`.
+
 ## E prover in the browser
 
 Open the gear beside **Prove** or **Run audit**, then choose **E** as the

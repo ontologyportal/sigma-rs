@@ -11,6 +11,7 @@ import { useWordNetStore } from "./wordnet";
 import { useTestsStore } from "./tests";
 import { useChangesStore } from "./changes";
 import { useLibraryStore } from "./library";
+import { cacheFeatureAssets } from "../services/asset-cache";
 
 let recovery: Promise<void> | null = null;
 
@@ -26,6 +27,7 @@ export const useBootStore = defineStore("boot", {
      *  them failed. These are non-fatal: the app opens with the files that
      *  loaded successfully. */
     loadErrors: [] as string[],
+    assetCacheWarning: "",
     msg: "Starting the engine...",
     step: 0,
     total: 1,
@@ -95,10 +97,17 @@ export const useBootStore = defineStore("boot", {
       const kb = useKBStore();
       const wordnet = useWordNetStore();
       const tests = useTestsStore();
+      this.assetCacheWarning = "";
+      const assets = cacheFeatureAssets().catch(() => {
+        this.assetCacheWarning =
+          "Feature caching did not finish. Some tabs or tools may need the deployment server until you reload successfully.";
+      });
       try {
         this.failed = false;
         this.error = "";
         this.loadErrors = [];
+        this.msg = "Caching tabs and tools...";
+        await assets;
         this.msg = "Starting the engine...";
         await this.bootWorker();
         this.opfsRoot = await navigator.storage.getDirectory();

@@ -1,5 +1,7 @@
 import { defineConfig } from "vite";
 import vue from "@vitejs/plugin-vue";
+// @ts-expect-error Build-only JS plugin; Node types stay out of the app.
+import assetCache from "./scripts/asset-cache.mjs";
 
 function auditEngine() {
   try {
@@ -46,7 +48,7 @@ export default defineConfig({
     },
   },
 
-  plugins: [vue()],
+  plugins: [vue(), assetCache()],
 
   // Serve index.html for unmatched paths: they are client-side routes (see
   // src/router.ts's vue-router instance), not missing assets.
