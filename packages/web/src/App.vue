@@ -177,6 +177,9 @@ onBeforeUnmount(() => {
           </div>
         </div>
       </header>
+      <div v-if="boot.assetCacheWarning" class="recover-banner" role="status">
+        {{ boot.assetCacheWarning }}
+      </div>
       <div v-if="boot.recovering" class="recover-banner" role="status">
         The engine crashed (most likely out of memory) and is restarting —
         reloading the knowledge base…
