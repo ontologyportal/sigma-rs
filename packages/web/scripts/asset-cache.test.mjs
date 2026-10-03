@@ -56,7 +56,7 @@ test("feature manifest includes workers and public provers, excludes server data
   assert.equal(isFeatureAsset("something.map"), false);
 });
 
-async function workerHarness({ fail = false } = {}) {
+async function workerHarness({ fail = false, fetchHook } = {}) {
   const listeners = {};
   const storage = new Map();
   const caches = {
@@ -94,8 +94,9 @@ async function workerHarness({ fail = false } = {}) {
     caches,
     URL,
     AbortSignal,
-    async fetch(url) {
+    async fetch(url, options) {
       if (!online || fail) throw new Error("disconnected");
+      await fetchHook?.(url, options);
       return new Response(String(url), {
         headers: { "content-type": "application/octet-stream" },
       });
@@ -122,6 +123,9 @@ async function workerHarness({ fail = false } = {}) {
     request(path, overrides = {}) {
       let promise;
       listeners.fetch({
+        waitUntil(p) {
+          p.catch(() => {});
+        },
         request: {
           url: new URL(path, "https://example.test").href,
           method: "GET",
@@ -161,6 +165,63 @@ test("failed precache is rejected and discarded", async () => {
   const worker = await workerHarness({ fail: true });
   await assert.rejects(worker.lifecycle("install"), /disconnected/);
   assert.deepEqual(await worker.caches.keys(), []);
+});
+
+test("foreground loads bypass a blocked low-priority background download", async () => {
+  let release;
+  let started;
+  const blocked = new Promise((resolve) => {
+    release = resolve;
+  });
+  const backgroundStarted = new Promise((resolve) => {
+    started = resolve;
+  });
+  const calls = [];
+  const worker = await workerHarness({
+    async fetchHook(url, options) {
+      calls.push({ url: typeof url === "string" ? url : url.url, options });
+      if (options.priority === "low" && String(url).endsWith("tab.js")) {
+        started();
+        await blocked;
+      }
+    },
+  });
+  const install = worker.lifecycle("install");
+  await backgroundStarted;
+  try {
+    assert.equal(calls.length, 1);
+    const response = await worker.request("/browse/assets/clicked-tab.js");
+    assert.equal(response.status, 200);
+    assert.equal(calls[1].options.priority, "high");
+    assert.equal(calls[1].options.signal, undefined);
+  } finally {
+    release();
+    await install;
+  }
+});
+
+test("new builds reuse immutable assets but revalidate stable prover URLs", async () => {
+  const calls = [];
+  const worker = await workerHarness({
+    fetchHook(url, options) {
+      calls.push({ url, options });
+    },
+  });
+  const old = await worker.caches.open(
+    "sigma-features:https://example.test/browse/:old",
+  );
+  await old.put(
+    "https://example.test/browse/assets/tab.js",
+    new Response("unchanged"),
+  );
+  await worker.lifecycle("install");
+  assert.equal(calls.length, 1);
+  assert.equal(
+    calls[0].url,
+    "https://example.test/browse/eprover/eprover.wasm",
+  );
+  assert.equal(calls[0].options.cache, "no-cache");
+  assert.equal(calls[0].options.priority, "low");
 });
 
 test("activation retires only this deployment's old caches", async () => {

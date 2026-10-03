@@ -1,4 +1,4 @@
-/** Warm every deployed feature asset before startup completes. */
+/** Warm deployed feature assets after startup, without blocking navigation. */
 export async function cacheFeatureAssets(): Promise<void> {
   // Vite's live module graph must not be persisted across source edits.
   if (!import.meta.env.PROD) return;
@@ -9,7 +9,7 @@ export async function cacheFeatureAssets(): Promise<void> {
       new Promise<never>((_, reject) => {
         timer = setTimeout(
           () => reject(new Error("Feature caching timed out.")),
-          180000,
+          600000,
         );
       }),
     ]);
