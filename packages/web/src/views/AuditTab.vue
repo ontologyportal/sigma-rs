@@ -739,22 +739,23 @@ function randomSeed() {
           </Disclosure>
         </Card>
         <Card v-for="(c, i) in contradictions" :key="contradictionKey(c.steps)">
-          <div class="contradiction-hd">{{ heading(c, i) }}</div>
-          <ProofView
-            :steps="c.steps"
-            :prologue="c.proof_tptp_prologue"
-            :prose="c.prose"
-            :prose-missing="c.prose_missing"
-            :graphviz="c.graphviz"
-          />
-          <div class="contradiction-actions">
-            <DiagnoseContradiction :steps="c.steps" />
-            <ReportContradiction
+          <Disclosure :summary="heading(c, i)" primary>
+            <ProofView
               :steps="c.steps"
+              :prologue="c.proof_tptp_prologue"
               :prose="c.prose"
-              :backend="backendLabel"
+              :prose-missing="c.prose_missing"
+              :graphviz="c.graphviz"
             />
-          </div>
+            <div class="contradiction-actions">
+              <DiagnoseContradiction :steps="c.steps" />
+              <ReportContradiction
+                :steps="c.steps"
+                :prose="c.prose"
+                :backend="backendLabel"
+              />
+            </div>
+          </Disclosure>
         </Card>
       </template>
     </div>
@@ -822,9 +823,5 @@ button.small-btn {
   align-items: center;
   gap: 8px;
   margin-top: 10px;
-}
-.contradiction-hd {
-  font-weight: 600;
-  margin-bottom: 6px;
 }
 </style>

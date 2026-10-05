@@ -5,6 +5,7 @@
 defineProps<{
   summary: string;
   open?: boolean;
+  primary?: boolean;
 }>();
 
 const emit = defineEmits<{ toggle: [open: boolean] }>();
@@ -15,8 +16,13 @@ function onToggle(e: Event) {
 </script>
 
 <template>
-  <details class="disclosure" :open="open" @toggle="onToggle">
-    <summary class="hint">{{ summary }}</summary>
+  <details
+    class="disclosure"
+    :class="{ primary }"
+    :open="open"
+    @toggle="onToggle"
+  >
+    <summary :class="{ hint: !primary }">{{ summary }}</summary>
     <slot />
   </details>
 </template>
@@ -27,6 +33,13 @@ function onToggle(e: Event) {
 }
 summary {
   cursor: pointer;
+}
+.disclosure.primary {
+  margin-top: 0;
+}
+.disclosure.primary > summary {
+  color: var(--fg);
+  font-weight: 600;
 }
 .disclosure :deep(pre) {
   font-family: var(--mono);

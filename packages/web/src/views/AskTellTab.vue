@@ -18,6 +18,7 @@ import { useTestsStore, type TestEntry } from "../stores/tests";
 import BusyButton from "../components/BusyButton.vue";
 import { useElapsed } from "../composables/useElapsed";
 import Card from "../components/Card.vue";
+import Disclosure from "../components/Disclosure.vue";
 import MonacoEditor from "../components/MonacoEditor.vue";
 import ProofView from "../components/ProofView.vue";
 import ProverSettings from "../components/ProverSettings.vue";
@@ -70,6 +71,10 @@ const stepsText = computed(() => {
   return r && r.given_steps != null
     ? `${r.given_steps} given-clause steps`
     : "";
+});
+const proofHeading = computed(() => {
+  const count = result.value?.proof?.length ?? 0;
+  return `Proof — ${count} step${count === 1 ? "" : "s"}`;
 });
 
 // -- scratch validation -------------------------------------------------------
@@ -388,15 +393,16 @@ async function saveTest() {
         Proof</label
       >
     </div>
-    <ProofView
-      v-if="result"
-      :steps="result.proof || []"
-      :prologue="result.proof_tptp_prologue"
-      :prose="result.prose"
-      :prose-missing="result.prose_missing"
-      :graphviz="result.graphviz"
-      :raw-output="result.raw_output"
-    />
+    <Disclosure v-if="result" :summary="proofHeading" primary>
+      <ProofView
+        :steps="result.proof || []"
+        :prologue="result.proof_tptp_prologue"
+        :prose="result.prose"
+        :prose-missing="result.prose_missing"
+        :graphviz="result.graphviz"
+        :raw-output="result.raw_output"
+      />
+    </Disclosure>
   </Card>
 </template>
 
