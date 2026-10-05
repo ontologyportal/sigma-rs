@@ -2,7 +2,7 @@
 /** The WordNet lexicon card: the on/off toggle and the fetched mapping
  *  files with their sizes. Enable/disable acts on the LIVE session
  *  immediately (install / clear), separate from the persisted setting that
- *  decides what the NEXT boot does. */
+ *  permits loading on first use. */
 import { computed, ref } from "vue";
 import { useWordNetStore } from "../../stores/wordnet";
 import { formatSize } from "../../utils/format";
@@ -42,7 +42,13 @@ async function onChange(e: Event) {
     <li v-if="!wordnet.enabled" class="hint">
       Disabled — search runs without WordNet synonym expansion.
     </li>
-    <li v-else-if="!wordnet.files.length" class="hint">Loading…</li>
+    <li v-else-if="wordnet.loading" class="hint">Loading WordNet...</li>
+    <li v-else-if="!wordnet.files.length" class="hint">
+      Downloads when first used for search or WordNet views.
+      <button type="button" class="btn" @click="wordnet.install()">
+        Load WordNet now
+      </button>
+    </li>
     <template v-else>
       <li v-for="f in wordnet.files" :key="f.name" class="loaded-row">
         <span class="mono">{{ f.name }}</span>

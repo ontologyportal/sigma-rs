@@ -1,4 +1,4 @@
-/* global VERSION, ASSETS */
+/* global VERSION, ASSETS, PRECACHE */
 const prefix = `sigma-features:${self.registration.scope}:`;
 const cacheName = prefix + VERSION;
 const urls = ASSETS.map((path) => new URL(path, self.location.origin).href);
@@ -10,7 +10,8 @@ self.addEventListener("install", (event) => {
       const cache = await caches.open(cacheName);
       try {
         // One low-priority download leaves room for tabs the user opens.
-        for (const url of urls) {
+        for (const path of PRECACHE) {
+          const url = new URL(path, self.location.origin).href;
           const immutable = url.startsWith(self.registration.scope + "assets/");
           const previous = immutable ? await cached(url) : undefined;
           const response =

@@ -185,14 +185,14 @@ onBeforeUnmount(() => {
         role="status"
         :title="
           boot.assetCacheState === 'ready'
-            ? 'Tabs and bundled tools are cached. GitHub operations still need a connection.'
-            : 'Keep using the app. Tabs you open load on demand; remaining tools download in the background.'
+            ? 'Tabs and editing tools are cached. External provers and graph libraries need a connection on first use; GitHub operations need a connection.'
+            : 'Keep using the app while editing tools are cached. External provers and graph libraries download only when used.'
         "
       >
         {{
           boot.assetCacheState === "ready"
-            ? "Ready for server disconnection"
-            : "Preparing disconnect protection in the background..."
+            ? "Editing ready for server disconnection"
+            : "Preparing editing disconnect protection..."
         }}
       </div>
       <div v-if="boot.assetCacheWarning" class="recover-banner" role="status">

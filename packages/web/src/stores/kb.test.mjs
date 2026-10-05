@@ -63,7 +63,7 @@ function fixture() {
     "../utils/format": {
       errMsg: (e) => e.message,
     },
-    "./wordnet": { useWordNetStore: () => ({ install: async () => {} }) },
+    "./wordnet": { useWordNetStore: () => ({ reinstall: async () => {} }) },
     "./changes": {
       blobSha: async () => "sha",
       useChangesStore: () => ({}),

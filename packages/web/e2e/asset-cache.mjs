@@ -31,6 +31,7 @@ const backgroundGate = new Promise((resolve) => {
 const backgroundStarted = new Promise((resolve) => {
   markBackgroundStarted = resolve;
 });
+const downloads = new Set();
 const server = createServer(async (req, res) => {
   const path = new URL(req.url, "http://localhost").pathname;
   res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
@@ -44,6 +45,7 @@ const server = createServer(async (req, res) => {
   const relative = path.startsWith(base)
     ? path.slice(base.length)
     : path.slice(1);
+  downloads.add(relative);
   if (
     relative === "apple-touch-icon.png" &&
     req.headers["sec-fetch-dest"] === "empty"
@@ -73,7 +75,7 @@ try {
   await context.addInitScript(() => {
     localStorage.setItem("sumoFiles", "[]");
     localStorage.setItem("sumoTests", "[]");
-    localStorage.setItem("sumoBrowserWordNetEnabled", "false");
+    localStorage.setItem("sumoBrowserWordNetEnabled", "true");
   });
   await context.route("https://api.github.com/**", (route) =>
     route.fulfill({
@@ -82,6 +84,14 @@ try {
     }),
   );
   const page = await context.newPage();
+  let wordnetDownloads = 0;
+  await context.route(
+    "https://raw.githubusercontent.com/**/WordNetMappings/**",
+    (route) => {
+      wordnetDownloads += 1;
+      return route.fulfill({ contentType: "text/plain", body: "" });
+    },
+  );
   page.setDefaultTimeout(60000);
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
@@ -160,6 +170,71 @@ try {
     await page.evaluate(() => !!navigator.serviceWorker.controller),
     true,
   );
+  assert.deepEqual(
+    [...downloads].filter((file) =>
+      /^(vampire\/|eprover\/|assets\/cytoscape)/.test(file),
+    ),
+    [],
+  );
+  console.log("ok startup and opening Ask/Tell do not download optional tools");
+  assert.equal(wordnetDownloads, 0);
+
+  for (const editor of await page
+    .locator(".monaco-editor .inputarea, .monaco-editor .native-edit-context")
+    .all()) {
+    await editor.focus();
+    await page.keyboard.press("Control+a");
+    // Monaco supplies the closing parenthesis.
+    await page.keyboard.type("(likes Alice Bob");
+  }
+  for (const backend of ["e", "vampire"]) {
+    await page.evaluate((backend) => {
+      document
+        .querySelector("#app")
+        .__vue_app__.config.globalProperties.$pinia._s.get("prover").backend =
+        backend;
+    }, backend);
+    await page.getByRole("button", { name: "Prove", exact: true }).click();
+    await page
+      .getByText(backend === "e" ? "via E" : "via Vampire", { exact: true })
+      .waitFor({ timeout: 30000 })
+      .catch(async (error) => {
+        console.error(
+          "Prover first use:",
+          await page.locator("body").innerText(),
+          errors,
+        );
+        throw error;
+      });
+    await page.waitForSelector(".status.Proved");
+    assert.ok(
+      downloads.has(
+        backend === "e" ? "eprover/eprover.wasm" : "vampire/vampire.wasm",
+      ),
+    );
+    if (backend === "e")
+      assert.equal(
+        [...downloads].some((file) => file.startsWith("vampire/")),
+        false,
+      );
+    console.log("ok optional prover downloads on first use:", backend);
+  }
+  const assets = await readdir(join(dist, "assets"));
+  for (const name of assets.filter((name) => /^cytoscape.*\.js$/.test(name)))
+    await page.evaluate(
+      (url) => import(url).then(() => true),
+      origin + base + "assets/" + name,
+    );
+  // A successful first use should persist every requested optional asset.
+  await page.waitForFunction(async (base) => {
+    const cache = await caches.open(
+      (await caches.keys()).find((name) => name.startsWith("sigma-features:")),
+    );
+    return (
+      !!(await cache.match(base + "vampire/vampire.wasm")) &&
+      !!(await cache.match(base + "eprover/eprover.wasm"))
+    );
+  }, origin + base);
   const session = await context.newCDPSession(page);
   await session.send("Network.enable");
   await session.send("Network.setCacheDisabled", { cacheDisabled: true });
@@ -194,11 +269,11 @@ try {
   console.log("ok editor loads after disconnect");
 
   for (const editor of await page
-    .locator(".monaco-editor textarea.inputarea")
+    .locator(".monaco-editor .inputarea, .monaco-editor .native-edit-context")
     .all()) {
     await editor.focus();
     await page.keyboard.press("Control+a");
-    await page.keyboard.insertText("(likes Alice Bob)");
+    await page.keyboard.type("(likes Alice Bob");
   }
   for (const backend of ["e", "vampire"]) {
     await page.evaluate((backend) => {
@@ -218,7 +293,6 @@ try {
     );
   }
 
-  const assets = await readdir(join(dist, "assets"));
   const proofGraph = assets.find((name) => /^proof-graph-.*\.js$/.test(name));
   await page.evaluate(
     async (url) => {
@@ -291,12 +365,77 @@ try {
     console.log("ok disconnected prover:", backend);
   }
   await page.evaluate(async () => {
+    await document
+      .querySelector("#app")
+      .__vue_app__.config.globalProperties.$router.push({ name: "edit" });
+  });
+  const editor = page
+    .locator(
+      ".edit-tab .monaco-editor .inputarea, .edit-tab .monaco-editor .native-edit-context",
+    )
+    .first();
+  await editor.focus();
+  await page.keyboard.press("Control+a");
+  const savedText =
+    ";; saved with the deployment disconnected\n(likes Alice Bob)\n";
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.evaluate((text) => navigator.clipboard.writeText(text), savedText);
+  await page.keyboard.press("Control+v");
+  page.once("dialog", (dialog) => dialog.accept("disconnect.kif"));
+  await page
+    .getByRole("button", {
+      name: "Save to the in-browser knowledge base",
+      exact: true,
+    })
+    .click();
+  await page
+    .getByText("Saved disconnect.kif.", { exact: true })
+    .waitFor({ timeout: 15000 })
+    .catch(async (error) => {
+      console.error(
+        "Disconnected save:",
+        await page.locator("body").innerText(),
+        errors,
+      );
+      throw error;
+    });
+  assert.equal(
+    await page.evaluate(async () => {
+      const app =
+        document.querySelector("#app").__vue_app__.config.globalProperties;
+      const library = app.$pinia._s.get("library");
+      return library.readLocal("disconnect.kif");
+    }),
+    savedText,
+  );
+  console.log("ok editing and saving to browser storage after disconnect");
+  assert.equal(wordnetDownloads, 0);
+  await page.evaluate(async () => {
+    await document
+      .querySelector("#app")
+      .__vue_app__.config.globalProperties.$router.push({
+        name: "browse",
+        query: { q: "dog" },
+      });
+  });
+  await page.waitForFunction(
+    () =>
+      document
+        .querySelector("#app")
+        .__vue_app__.config.globalProperties.$pinia._s.get("wordnet").installed,
+  );
+  assert.equal(wordnetDownloads, 7);
+  console.log(
+    "ok WordNet downloads only on first search, after editing and saving",
+  );
+  await page.evaluate(async () => {
     const boot = document
       .querySelector("#app")
       .__vue_app__.config.globalProperties.$pinia._s.get("boot");
     await boot.recoverWorker();
   });
   console.log("ok core worker restarts after disconnect");
+  assert.equal(wordnetDownloads, 7);
   assert.deepEqual(errors, []);
 } finally {
   releaseBackground();

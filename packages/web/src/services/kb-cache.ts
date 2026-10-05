@@ -34,7 +34,6 @@ import { GitOrigin, originId, parseOrigin } from "../models/Origin";
 import { useBootStore } from "../stores/boot";
 import { useKBStore } from "../stores/kb";
 import { useChangesStore, opfsSafeName } from "../stores/changes";
-import { useWordNetStore } from "../stores/wordnet";
 
 const SUMO_CACHE_DIR = "sumo-cache";
 const SUMO_CACHE_META = "meta.json";
@@ -154,12 +153,6 @@ export async function tryRestore(
       ).arrayBuffer(),
     );
     await call("restore", { bytes }, [bytes.buffer]);
-    // The snapshot covers the KB itself, not the lexicon (a separate sidecar,
-    // never part of the snapshot), so it's fetched fresh here too.
-    onProgress("Fetching WordNet lexicon...");
-    await useWordNetStore().install();
-    onProgress("Loading WordNet lexicon...");
-
     const built: Constituent[] = [];
     for (const { name, origin: json } of kb.saved) {
       const origin = parseOrigin(json, name);
