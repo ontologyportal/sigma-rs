@@ -9,6 +9,7 @@ import Row from "../Row.vue";
 import Col from "../Col.vue";
 import { ManPage } from "sigmakee/sdk";
 import { useShellStore } from "../../stores/shell.ts";
+import { useWordNetStore } from "../../stores/wordnet";
 
 type View = "overview" | "formulas" | "wordnet";
 
@@ -25,12 +26,15 @@ const props = defineProps<{
 const emit = defineEmits<{ back: []; "update:view": [view: View] }>();
 
 const shell = useShellStore();
+const wordnet = useWordNetStore();
 const isCompact = computed(() => shell.effectiveLayout == "comfortable");
 
 const root = ref<HTMLElement | null>(null);
 useSymbolLinks(root);
 
-const hasWordnet = computed(() => (props.page?.wordnet?.length ?? 0) > 0);
+const hasWordnet = computed(
+  () => wordnet.enabled || (props.page?.wordnet?.length ?? 0) > 0,
+);
 
 const subtab = computed<View>(() => {
   if (props.view === "formulas") return "formulas";
@@ -76,7 +80,10 @@ const subtab = computed<View>(() => {
             :aria-selected="subtab === 'wordnet'"
             @click="emit('update:view', 'wordnet')"
           >
-            WordNet <span class="hint">({{ page.wordnet.length }})</span>
+            WordNet
+            <span v-if="wordnet.installed" class="hint"
+              >({{ page.wordnet.length }})</span
+            >
           </button>
         </div>
       </div>
@@ -84,6 +91,7 @@ const subtab = computed<View>(() => {
         <ManPageOverview v-show="subtab === 'overview'" :page="page" />
         <ManPageFormulas v-show="subtab === 'formulas'" :page="page" />
         <div v-if="hasWordnet" v-show="subtab === 'wordnet'">
+          <p v-if="wordnet.loading" class="hint">Loading WordNet...</p>
           <WordNetEntry v-for="(m, i) in page.wordnet" :key="i" :entry="m" />
         </div>
       </div>
@@ -106,6 +114,7 @@ const subtab = computed<View>(() => {
           </Col>
         </Row>
         <div v-if="hasWordnet" v-show="subtab === 'wordnet'">
+          <p v-if="wordnet.loading" class="hint">Loading WordNet...</p>
           <WordNetEntry v-for="(m, i) in page.wordnet" :key="i" :entry="m" />
         </div>
       </div>

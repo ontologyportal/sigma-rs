@@ -20,6 +20,7 @@ const MAPPING_FILES: [string, string][] = [
 ];
 const INDEX_SENSE = "index.sense";
 const EXC_FILES = ["noun.exc", "verb.exc"];
+let installation: Promise<void> | null = null;
 
 /** Byte size of `text` as UTF-8 -- `.length` undercounts any non-ASCII
  *  content (rare in these files, but the glosses do carry the occasional
@@ -50,6 +51,8 @@ export const useWordNetStore = defineStore("wordnet", {
      *  later reinstall (session rebuild, re-enabling) never re-fetches the
      *  ~23 MB of mapping text. */
     payload: null as WordNetPayload | null,
+    installed: false,
+    loading: false,
   }),
   actions: {
     setEnabled(enabled: boolean) {
@@ -121,19 +124,37 @@ export const useWordNetStore = defineStore("wordnet", {
      *  enhancement, never a hard dependency of a usable KB, so a fetch/
      *  install failure is logged and swallowed. No-op when disabled. */
     async install() {
-      if (!this.enabled) return;
-      try {
-        const payload = await this.fetchPayload();
-        // A reactive proxy cannot be structured-cloned across postMessage.
-        await call("loadWordNet", { ...toRaw(payload) });
-      } catch (e) {
-        console.warn("WordNet lexicon install failed:", e);
-      }
+      if (!this.enabled || this.installed) return;
+      if (installation) return installation;
+      this.loading = true;
+      installation = (async () => {
+        try {
+          const payload = await this.fetchPayload();
+          if (!this.enabled) return;
+          // A reactive proxy cannot be structured-cloned across postMessage.
+          await call("loadWordNet", { ...toRaw(payload) });
+          this.installed = true;
+        } catch (e) {
+          console.warn("WordNet lexicon install failed:", e);
+        } finally {
+          this.loading = false;
+          installation = null;
+        }
+      })();
+      return installation;
+    },
+
+    /** Restore a used lexicon after session replacement, without first-use downloads. */
+    async reinstall() {
+      this.installed = false;
+      if (this.payload) await this.install();
     },
 
     /** Drop the currently installed lexicon from the worker's session. */
     async clear() {
+      await installation;
       await call("clearWordNet");
+      this.installed = false;
     },
   },
 });

@@ -17,6 +17,7 @@ import {
 import { navigate, updateParams } from "../router";
 import { call } from "../services/sigma";
 import { useKBStore } from "../stores/kb";
+import { useWordNetStore } from "../stores/wordnet";
 import { useShellStore } from "../stores/shell";
 import { useTabQuery } from "../composables/useTabQuery";
 import { errMsg } from "../utils/format";
@@ -79,6 +80,8 @@ async function runSearch(text: string) {
   lastSearch = { query: text, language, ...opts };
   searchError.value = "";
   try {
+    await useWordNetStore().install();
+    if (seq !== searchSeq) return;
     let { hits: found } = await call("search", {
       query: text,
       limit: 100,
@@ -138,6 +141,7 @@ async function openManPage(symbol: string) {
   const seq = ++pageSeq;
   shownSym = symbol;
   try {
+    if (view.value === "wordnet") await useWordNetStore().install();
     const { page: p } = await call("manpage", { symbol });
     if (seq !== pageSeq) return;
     page.value = p ?? null;
@@ -171,6 +175,9 @@ function sync() {
 }
 
 onQuery(sync);
+watch(view, () => {
+  if (sym.value && view.value === "wordnet") openManPage(sym.value);
+});
 onActivated(() => {
   active.value = true;
   sync();

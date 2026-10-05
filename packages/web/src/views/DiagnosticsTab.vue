@@ -5,6 +5,7 @@ import Card from "../components/Card.vue";
 import CopyButton from "../components/CopyButton.vue";
 import SourceLoc from "../components/SourceLoc.vue";
 import WordNetDiagnosticsCard from "../components/diagnostics/WordNetDiagnosticsCard.vue";
+import { useWordNetStore } from "../stores/wordnet";
 import { useTabQuery } from "../composables/useTabQuery";
 import { updateParams } from "../router";
 import { call } from "../services/sigma";
@@ -287,19 +288,30 @@ let flashTimer: ReturnType<typeof setTimeout> | null = null;
 // WordNet<->KB diagnostics (see WordNetDiagnosticsCard): a separate report,
 // not part of `kb.diagnostics` or its count pill -- refetched whenever the
 // KB's own diagnostics are (re)computed, since that's the same "the KB just
-// changed" signal. `null` (including on a failed/no-lexicon RPC) hides the
-// WordNet sub-tab entirely rather than showing an empty one.
+// changed" signal. The lexicon is downloaded only when its view is opened.
 const wordNetDiag = ref<WordNetDiagnostics | null>(null);
+const wordnet = useWordNetStore();
 async function loadWordNetDiagnostics() {
   try {
+    if (str(query.value.view) === "wordnet") await wordnet.install();
+    if (!wordnet.installed) {
+      wordNetDiag.value = null;
+      return;
+    }
     wordNetDiag.value = (await call("wordnetDiagnostics")).diagnostics;
   } catch {
     wordNetDiag.value = null;
   }
 }
-watch(() => kb.diagnostics, loadWordNetDiagnostics, { immediate: true });
+watch(
+  () => [kb.diagnostics, query.value.view, wordnet.installed],
+  loadWordNetDiagnostics,
+  { immediate: true },
+);
 
-const hasWordNet = computed(() => wordNetDiag.value !== null);
+const hasWordNet = computed(
+  () => wordnet.enabled || wordNetDiag.value !== null,
+);
 type Subtab = "diagnostics" | "wordnet";
 const subtab = computed<Subtab>(() =>
   str(query.value.view) === "wordnet" && hasWordNet.value
@@ -636,6 +648,15 @@ onQuery((q) => {
       </Card>
     </Col>
   </Row>
+  <p v-if="subtab === 'wordnet' && wordnet.loading" class="hint">
+    Loading WordNet...
+  </p>
+  <p v-else-if="subtab === 'wordnet' && !wordnet.installed" class="hint">
+    WordNet is not loaded.
+    <button type="button" class="btn" @click="loadWordNetDiagnostics">
+      Retry
+    </button>
+  </p>
   <WordNetDiagnosticsCard
     v-if="wordNetDiag"
     v-show="subtab === 'wordnet'"

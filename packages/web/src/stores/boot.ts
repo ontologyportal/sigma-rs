@@ -8,7 +8,6 @@ import { call, connectVampire, replaceWorker } from "../services/sigma";
 import { tryRestore } from "../services/kb-cache";
 import { BASE } from "../constants";
 import { useKBStore } from "./kb";
-import { useWordNetStore } from "./wordnet";
 import { useTestsStore } from "./tests";
 import { useChangesStore } from "./changes";
 import { useLibraryStore } from "./library";
@@ -97,7 +96,6 @@ export const useBootStore = defineStore("boot", {
 
     async start() {
       const kb = useKBStore();
-      const wordnet = useWordNetStore();
       const tests = useTestsStore();
       this.assetCacheWarning = "";
       this.assetCacheState = "idle";
@@ -114,16 +112,10 @@ export const useBootStore = defineStore("boot", {
             /* an unsupported browser: nothing to adopt */
           });
 
-        // A cache hit is a short, fixed sequence (restore, WordNet fetch +
-        // install, cache restored); a miss is one step per saved constituent
-        // plus two for WordNet.
-        this.resetProgress(4);
+        this.resetProgress(2);
         const restored = await tryRestore((msg) => this.progress(msg));
         if (!restored) {
-          this.resetProgress(kb.saved.length + 2);
-          this.progress("Fetching WordNet lexicon...");
-          await wordnet.install();
-          this.progress("Loading WordNet lexicon...");
+          this.resetProgress(kb.saved.length);
           this.loadErrors = await kb.loadSavedConstituents((name, i, total) => {
             this.progress(`Fetching ${name} (${i}/${total})`);
           });

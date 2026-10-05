@@ -346,7 +346,7 @@ export const useKBStore = defineStore("kb", {
         await call("ingest", { name: c.file, text: c.text });
       // newSession() drops any installed WordNet lexicon; reinstall it (from
       // the cached fetch, so this never re-downloads).
-      await useWordNetStore().install();
+      await useWordNetStore().reinstall();
     },
 
     /** Drop every constituent and start an empty session (presets replace
@@ -360,7 +360,7 @@ export const useKBStore = defineStore("kb", {
       persistSaved(this.saved);
       await call("newSession");
       lspReset();
-      await useWordNetStore().install();
+      await useWordNetStore().reinstall();
     },
 
     /** Untrack `entries`, then rebuild the session and post-process ONCE for

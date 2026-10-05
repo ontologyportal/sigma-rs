@@ -4,7 +4,10 @@ import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import vm from "node:vm";
-import assetCache, { isFeatureAsset } from "./asset-cache.mjs";
+import assetCache, {
+  isFeatureAsset,
+  isPrecachedAsset,
+} from "./asset-cache.mjs";
 
 test("feature manifest includes workers and public provers, excludes server data", async () => {
   const root = await mkdtemp(join(tmpdir(), "sigma-assets-"));
@@ -15,6 +18,9 @@ test("feature manifest includes workers and public provers, excludes server data
       "assets/tab.js",
       "assets/editor.worker.js",
       "assets/font.ttf",
+      "assets/cytoscape.esm-abc.js",
+      "assets/cytoscape-dagre-abc.js",
+      "assets/cytoscape-node-html-label-abc.js",
       "eprover/runner.mjs",
       "eprover/eprover.wasm",
       "index.html",
@@ -35,6 +41,15 @@ test("feature manifest includes workers and public provers, excludes server data
     );
     assert.match(first, /\/browse\/assets\/editor.worker.js/);
     assert.match(first, /\/browse\/eprover\/eprover.wasm/);
+    const manifest = vm.runInNewContext(
+      first.split("/* global")[0] + "({ ASSETS, PRECACHE })",
+    );
+    assert.ok(manifest.ASSETS.includes("/browse/eprover/eprover.wasm"));
+    assert.deepEqual(Array.from(manifest.PRECACHE), [
+      "/browse/assets/editor.worker.js",
+      "/browse/assets/font.ttf",
+      "/browse/assets/tab.js",
+    ]);
     assert.doesNotMatch(first, /version.json|index.html|_headers/);
     await plugin.closeBundle();
     assert.equal(
@@ -54,6 +69,10 @@ test("feature manifest includes workers and public provers, excludes server data
     await rm(root, { recursive: true, force: true });
   }
   assert.equal(isFeatureAsset("something.map"), false);
+  assert.equal(isPrecachedAsset("vampire/vampire.wasm"), false);
+  assert.equal(isPrecachedAsset("eprover/e_axfilter.wasm"), false);
+  assert.equal(isPrecachedAsset("assets/editor.api-abc.js"), true);
+  assert.equal(isPrecachedAsset("assets/sigma.worker-abc.js"), true);
 });
 
 async function workerHarness({ fail = false, fetchHook } = {}) {
@@ -83,6 +102,7 @@ async function workerHarness({ fail = false, fetchHook } = {}) {
   const context = {
     VERSION: "test",
     ASSETS: ["/browse/assets/tab.js", "/browse/eprover/eprover.wasm"],
+    PRECACHE: ["/browse/assets/tab.js"],
     self: {
       registration: { scope: "https://example.test/browse/" },
       location: { origin: "https://example.test" },
@@ -122,9 +142,10 @@ async function workerHarness({ fail = false, fetchHook } = {}) {
     },
     request(path, overrides = {}) {
       let promise;
+      const writes = [];
       listeners.fetch({
         waitUntil(p) {
-          p.catch(() => {});
+          writes.push(p);
         },
         request: {
           url: new URL(path, "https://example.test").href,
@@ -136,18 +157,24 @@ async function workerHarness({ fail = false, fetchHook } = {}) {
           promise = p;
         },
       });
-      return promise;
+      return promise?.then(async (response) => {
+        await Promise.all(writes);
+        return response;
+      });
     },
   };
 }
 
-test("installed feature assets survive server failure; API, navigation, and external data bypass cache", async () => {
+test("editing assets survive server failure; unused optional tools need the server", async () => {
   const worker = await workerHarness();
   await worker.lifecycle("install");
   await worker.lifecycle("activate");
   worker.disconnect();
-  for (const path of ["/browse/assets/tab.js", "/browse/eprover/eprover.wasm"])
-    assert.equal((await worker.request(path)).status, 200);
+  assert.equal((await worker.request("/browse/assets/tab.js")).status, 200);
+  await assert.rejects(
+    worker.request("/browse/eprover/eprover.wasm"),
+    /disconnected/,
+  );
   for (const path of [
     "/api/me",
     "/browse/version.json",
@@ -200,7 +227,7 @@ test("foreground loads bypass a blocked low-priority background download", async
   }
 });
 
-test("new builds reuse immutable assets but revalidate stable prover URLs", async () => {
+test("new builds reuse immutable assets without downloading optional tools", async () => {
   const calls = [];
   const worker = await workerHarness({
     fetchHook(url, options) {
@@ -215,13 +242,49 @@ test("new builds reuse immutable assets but revalidate stable prover URLs", asyn
     new Response("unchanged"),
   );
   await worker.lifecycle("install");
-  assert.equal(calls.length, 1);
-  assert.equal(
-    calls[0].url,
-    "https://example.test/browse/eprover/eprover.wasm",
+  assert.equal(calls.length, 0);
+});
+
+test("optional tools cache on first use and survive a later disconnect", async () => {
+  const calls = [];
+  const worker = await workerHarness({
+    fetchHook(url, options) {
+      calls.push({ url: typeof url === "string" ? url : url.url, options });
+    },
+  });
+  await worker.lifecycle("install");
+  await worker.lifecycle("activate");
+  assert.deepEqual(
+    calls.map((call) => call.url),
+    ["https://example.test/browse/assets/tab.js"],
   );
-  assert.equal(calls[0].options.cache, "no-cache");
-  assert.equal(calls[0].options.priority, "low");
+  assert.equal(
+    (await worker.request("/browse/eprover/eprover.wasm")).status,
+    200,
+  );
+  assert.equal(calls[1].options.priority, "high");
+  worker.disconnect();
+  assert.equal(
+    (await worker.request("/browse/eprover/eprover.wasm")).status,
+    200,
+  );
+});
+
+test("a failed optional download does not discard editing protection", async () => {
+  const worker = await workerHarness({
+    fetchHook(url) {
+      if ((typeof url === "string" ? url : url.url).includes("/eprover/"))
+        throw new Error("prover unavailable");
+    },
+  });
+  await worker.lifecycle("install");
+  await worker.lifecycle("activate");
+  await assert.rejects(
+    worker.request("/browse/eprover/eprover.wasm"),
+    /prover unavailable/,
+  );
+  worker.disconnect();
+  assert.equal((await worker.request("/browse/assets/tab.js")).status, 200);
 });
 
 test("activation retires only this deployment's old caches", async () => {

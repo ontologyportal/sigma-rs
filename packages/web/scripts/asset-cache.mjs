@@ -7,6 +7,15 @@ export function isFeatureAsset(file) {
   return /\.(?:js|mjs|css|wasm|woff2?|ttf|png|svg|ico|gif)$/.test(file);
 }
 
+/** Keep optional prover binaries and graph libraries on demand. */
+export function isPrecachedAsset(file) {
+  return (
+    isFeatureAsset(file) &&
+    !/^(?:vampire|eprover)\//.test(file) &&
+    !/^assets\/cytoscape[^/]*\.js$/.test(file)
+  );
+}
+
 async function filesIn(dir, prefix = "") {
   const files = [];
   for (const entry of await readdir(dir, { withFileTypes: true })) {
@@ -19,7 +28,7 @@ async function filesIn(dir, prefix = "") {
   return files.sort();
 }
 
-/** Include nested workers and public prover binaries from the finished build. */
+/** Precache editing assets; allow optional tools to be cached on first use. */
 export default function assetCache() {
   let config;
   return {
@@ -44,7 +53,7 @@ export default function assetCache() {
       const version = hash.digest("hex").slice(0, 20);
       await writeFile(
         join(dir, "asset-cache-sw.js"),
-        `const VERSION = ${JSON.stringify(version)};\nconst ASSETS = ${JSON.stringify(files.map((file) => config.base + file))};\n${source}`,
+        `const VERSION = ${JSON.stringify(version)};\nconst ASSETS = ${JSON.stringify(files.map((file) => config.base + file))};\nconst PRECACHE = ${JSON.stringify(files.filter(isPrecachedAsset).map((file) => config.base + file))};\n${source}`,
       );
     },
   };

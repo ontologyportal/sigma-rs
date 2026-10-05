@@ -4,17 +4,21 @@
 
 ## Deployment disconnection
 
-Production builds cache all shipped tab code, styles, editor and graph libraries,
-workers, and WASM binaries in the background after the app opens. A status line
-shows when disconnect protection is ready. Background downloads run one at a time
+Production builds cache tab code, styles, the editor, and core engine assets
+in the background after the app opens. Vampire, E (including e_axfilter), and
+Cytoscape graph libraries download and cache only when used. A status line
+shows when editing disconnect protection is ready. Background downloads run one at a time
 at low priority; opening a tab uses its normal on-demand load without waiting for
 the background queue. Unchanged hashed assets are reused across deployments.
 If caching fails (for example, storage quota or a missing asset), a banner warns
 that some features still need the deployment server; the app remains usable.
-Optional prover assets are included only when those backends were built.
+Optional prover assets are available only when those backends were built.
 
-Once disconnect protection is ready, the open page can switch tabs, edit, visualize, and run
-local provers even when the deployment server stops. GitHub requests, login,
+Once editing disconnect protection is ready, the open page can switch tabs,
+edit, and save locally even when the deployment server stops. Optional tools
+need a connection on first use; after their assets are cached, they also work
+when the server stops. Saving work uses browser storage and does not require
+downloading prover binaries. GitHub requests, login,
 remote file downloads, and update checks still need their respective services.
 This is feature-asset caching, not an offline page-reload or data-sync mode.
 
@@ -23,13 +27,18 @@ one served locally with `npm run preview --workspace @sigma/web`. Vite developme
 mode keeps its normal live module loading. Close existing production tabs before
 using a development server at the same origin; use a separate port for development.
 Updated caches install in the background and activate after existing tabs close.
-The first load downloads all bundled tools, including optional prover binaries.
+The first load does not download optional prover binaries or graph libraries.
+The optional WordNet lexicon (about 23 MB of mapping text) also stays off the
+startup path. It loads on the first search, a WordNet view, or an explicit
+**Load WordNet now** action, and its payload is reused for the rest of the session.
+Opening the editor or saving files does not download WordNet.
 
 Run `npm run test:asset-cache --workspace @sigma/web` for lifecycle tests. After
 building, `npm run test:e2e:asset-cache --workspace @sigma/web` starts an isolated
 production server, stalls a background download, verifies that startup and a clicked
-tab still complete, then waits for caching, disables the HTTP cache, stops the server, and
-exercises tabs, editors, graph libraries, provers, and worker recovery. It requires
+tab still complete, and checks that optional tools have not been downloaded.
+It exercises online first use, then disables the HTTP cache, stops the server,
+and exercises tabs, local editing/saving, cached optional tools, and worker recovery. It requires
 Playwright Chromium and both optional prover builds. The same test supports
 builds configured with `VITE_BASE=/browse/`.
 

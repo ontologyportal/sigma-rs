@@ -1,4 +1,4 @@
-/** Warm deployed feature assets after startup, without blocking navigation. */
+/** Warm editing assets after startup; optional tools are cached on demand. */
 export async function cacheFeatureAssets(): Promise<void> {
   // Vite's live module graph must not be persisted across source edits.
   if (!import.meta.env.PROD) return;
