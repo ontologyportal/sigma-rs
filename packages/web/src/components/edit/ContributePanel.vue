@@ -28,7 +28,6 @@ import {
   hasRepoPath,
   type ChangeRow,
 } from "../../stores/changes";
-import { useKBStore } from "../../stores/kb";
 import type { Origin } from "../../models/Origin";
 import { errMsg } from "../../utils/format";
 
@@ -48,10 +47,9 @@ const emit = defineEmits<{
 
 const auth = useAuthStore();
 const changes = useChangesStore();
-const kb = useKBStore();
 
 const rowKey = (r: { name: string; origin: string }) => `${r.origin}:${r.name}`;
-const textOf = (r: ChangeRow) => kb.find(r.name, r.origin)?.text ?? "";
+const textOf = (r: ChangeRow) => changes.trackedText(r);
 
 // Which rows go in the next pull request, and the repo path chosen for each
 // local file. Keyed by `origin:name` and reset when the row disappears.

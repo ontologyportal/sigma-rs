@@ -21,6 +21,7 @@ import { fetchText } from "../services/sources";
 import { errMsg } from "../utils/format";
 import { useBootStore } from "./boot";
 import { opfsSafeName } from "./changes";
+import { useKBStore } from "./kb";
 import { isTestFile } from "./tests";
 
 /** A registered git repository + branch (GitHub only for now). */
@@ -159,6 +160,8 @@ export const useLibraryStore = defineStore("library", {
     /** Per repo id: its KIF and test-file blobs, or null until listed. */
     catalogs: {} as Record<string, CatalogEntry[] | null>,
     catalogErrors: {} as Record<string, string>,
+    /** Per repo id: the ref its catalog was listed at. */
+    catalogRefs: {} as Record<string, string>,
   }),
   getters: {
     defaultRepo: (state) => state.repos.find(isDefaultRepo) ?? DEFAULT_REPO,
@@ -176,6 +179,11 @@ export const useLibraryStore = defineStore("library", {
       ),
     /** One line for the tables' hint: the catalogs still listing, or the
      *  repos whose listing failed. */
+    /** The ref a repo's files are listed and loaded at: its accepted commit
+     *  when the source is pinned (auto-check / no-check), else its branch. */
+    catalogRef: () => (repo: RepoRef) =>
+      useKBStore().pinnedRef(originForRepo(repo)) ??
+      (isDefaultRepo(repo) ? SUMO.ref : repo.branch),
     catalogNote: (state): { text: string; error: boolean } => {
       const errors = state.repos
         .map((r) => {
@@ -204,15 +212,11 @@ export const useLibraryStore = defineStore("library", {
      *  with the change tracker for the default repo (which reads `SUMO.ref`). */
     async loadCatalog(repo: RepoRef, { force = false } = {}): Promise<void> {
       const id = repoId(repo);
-      if (this.catalogs[id] && !force) return;
+      const ref = this.catalogRef(repo);
+      if (this.catalogs[id] && this.catalogRefs[id] === ref && !force) return;
       delete this.catalogErrors[id];
       try {
-        const tree = await fetchRepoTree(
-          repo.owner,
-          repo.repo,
-          isDefaultRepo(repo) ? SUMO.ref : repo.branch,
-          { force },
-        );
+        const tree = await fetchRepoTree(repo.owner, repo.repo, ref, { force });
         this.catalogs[id] = tree
           .filter((e) => e.type === "blob" && isLibraryFile(e.path))
           .map((e) => ({
@@ -220,6 +224,7 @@ export const useLibraryStore = defineStore("library", {
             size: Number(e.size) || 0,
           }))
           .sort((a, b) => a.path.localeCompare(b.path));
+        this.catalogRefs[id] = ref;
       } catch (e) {
         this.catalogErrors[id] = errMsg(e);
         throw e;
@@ -266,6 +271,7 @@ export const useLibraryStore = defineStore("library", {
       if (isDefaultRepo(r)) return;
       this.repos = this.repos.filter((x) => !sameRepo(x, r));
       delete this.catalogs[repoId(r)];
+      delete this.catalogRefs[repoId(r)];
       delete this.catalogErrors[repoId(r)];
       this.persist();
     },

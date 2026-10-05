@@ -16,6 +16,7 @@ import type { SelectionParams, StrategyPreset } from "sigmakee/sdk";
 import { PROVER_SETTINGS_KEY } from "../constants";
 import { call } from "../services/sigma";
 import {
+  DEFAULT_PRESET,
   defaultProfile,
   normalizeProfile,
   profileChanges,
@@ -136,12 +137,27 @@ export const useProverStore = defineStore("prover", () => {
     loading ??= call("proverDefaults")
       .then((d) => {
         defaults.value = d;
+        repairProfiles();
       })
       .catch((e) => {
         loading = null;
         throw e;
       });
     return loading;
+  }
+
+  /** Saved profiles outlive engine versions: a preset that no longer exists
+   *  falls back to the default, and overrides of strategy fields the engine
+   *  no longer has are dropped -- either would fail every run. */
+  function repairProfiles() {
+    const base = baseStrategy.value;
+    for (const p of Object.values(profiles)) {
+      if (p.preset !== DEFAULT_PRESET && !(p.preset in presets.value))
+        p.preset = DEFAULT_PRESET;
+      if (base)
+        for (const k of Object.keys(p.strategy))
+          if (!(k in base)) delete p.strategy[k];
+    }
   }
 
   /** `name`'s settings as the worker's config object; `overrides` wins for

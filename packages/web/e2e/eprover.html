@@ -11,20 +11,23 @@
     <script type="module">
       import { createApp, h } from "vue";
       import { createPinia, setActivePinia } from "pinia";
-      import ProverSettings from "../src/components/ProverSettings.vue";
+      import ProverOptions from "../src/components/ProverOptions.vue";
       import { useProverStore } from "../src/stores/prover";
       import * as rpc from "../src/services/sigma";
       const pinia = createPinia();
       setActivePinia(pinia);
-      createApp({ render: () => h(ProverSettings) })
-        .use(pinia)
-        .mount("#settings");
       const store = useProverStore();
-      store.settingsOpen = true;
       window.prover = store;
       window.rpc = rpc;
       rpc.connectVampire(new URL("../", location.href).href);
-      window.ready = rpc.call("boot");
+      // The options panel loads the engine's defaults on mount, so it mounts
+      // once the worker has booted. The Audit profile carries E's subset
+      // settings.
+      window.ready = rpc.call("boot").then(() => {
+        createApp({ render: () => h(ProverOptions, { profile: "audit" }) })
+          .use(pinia)
+          .mount("#settings");
+      });
       const smoke = document.querySelector("#smoke");
       const results = document.querySelector("#results");
       window.ready
@@ -45,7 +48,7 @@
         try {
           check(store.backend === "e", "E selected", store.backend);
           const config = {
-            ...store.config(),
+            ...store.config("audit"),
             selectionBudget: 10,
             auditAxfilter: false,
           };

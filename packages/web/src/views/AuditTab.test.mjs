@@ -285,3 +285,63 @@ test("recheck timeouts are inconclusive, not repaired contradictions", async () 
     f.scope.stop();
   }
 });
+
+test("contradiction proofs fold individually and all at once", async () => {
+  const f = fixture();
+  try {
+    await f.view.showMasterReport();
+    await f.view.confirmReplay();
+    const [c] = f.view.contradictions.value;
+    assert.ok(c);
+    assert.equal(f.view.isCollapsed(c), false);
+    f.view.setCollapsed(c, true);
+    f.view.setCollapsed(c, true); // idempotent, as a programmatic toggle event is
+    assert.equal(f.view.isCollapsed(c), true);
+    assert.match(
+      f.view.proofSummary(c),
+      /^proof \(1 step\) · cites Merge\.kif:1/,
+    );
+    assert.equal(f.view.allCollapsed.value, true);
+    assert.match(f.view.citedSummary(c), /Merge\.kif:1/);
+    f.view.setAllCollapsed(false);
+    assert.equal(f.view.isCollapsed(c), false);
+    f.view.setAllCollapsed(true);
+    assert.equal(f.view.allCollapsed.value, true);
+  } finally {
+    f.scope.stop();
+  }
+});
+
+test("a finished sweep starts a new one instead of resuming at its end", async () => {
+  const f = fixture();
+  try {
+    Object.assign(f.view.sweep, { seed: 5, step: 1000, total: 1000 });
+    assert.equal(f.view.sweepDone.value, true);
+    assert.equal(f.view.canContinue.value, false);
+    f.view.start(false);
+    assert.equal(f.view.sweep.step, 0);
+    assert.notEqual(f.view.sweep.seed, 5);
+    f.view.stopRequested.value = true;
+  } finally {
+    f.scope.stop();
+  }
+});
+
+test("a KB with no saved sweep starts its own instead of inheriting one", () => {
+  const f = fixture();
+  try {
+    Object.assign(f.view.sweep, {
+      seed: 9,
+      step: 400,
+      total: 900,
+      scope: "Old.kif",
+    });
+    f.view.loadSweep(); // the fixture's storage has nothing for this KB
+    assert.equal(f.view.sweep.step, 0);
+    assert.equal(f.view.sweep.total, 0);
+    assert.equal(f.view.sweep.seed, 0);
+    assert.equal(f.view.sweep.scope, "");
+  } finally {
+    f.scope.stop();
+  }
+});

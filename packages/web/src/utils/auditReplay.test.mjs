@@ -204,14 +204,20 @@ test("ampersand support preserves constituent safety checks", () => {
   ]) {
     const { replay } = fixture();
     replay.constituents[0].name = name;
-    assert.throws(() => parseAuditReplay(report(replay)), /Invalid or duplicate/);
+    assert.throws(
+      () => parseAuditReplay(report(replay)),
+      /Invalid or duplicate/,
+    );
   }
   for (const duplicate of [false, true]) {
     const { replay } = fixture();
     replay.constituents[0].name = "Cellular&TelephoneArchitecture.kif";
     if (duplicate) replay.constituents.push({ ...replay.constituents[0] });
     else replay.constituents[0].sha256 = "invalid";
-    assert.throws(() => parseAuditReplay(report(replay)), /Invalid or duplicate/);
+    assert.throws(
+      () => parseAuditReplay(report(replay)),
+      /Invalid or duplicate/,
+    );
   }
 });
 

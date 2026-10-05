@@ -218,9 +218,15 @@ export function formatKif(text: string, opts?: { indentUnit?: string }): string;
 /** A parsed `.kif.tq` test file (see {@link parseTest}). */
 export interface ParsedTest {
   name: string;
+  /** `(note ...)`, else the file name (see `noteGiven`). */
   note: string;
-  /** `(time N)` directive; 0 when absent. */
+  /** `(time N)` in seconds, else the harness default (see `timeGiven`). */
   timeout: number;
+  /** Whether `note` / `timeout` came from directives rather than defaults. */
+  noteGiven: boolean;
+  timeGiven: boolean;
+  /** Every `(category ...)` value, in source order. */
+  categories: string[];
   /** The `(query …)` formula, or `null` for an axioms-only file. */
   queryKif: string | null;
   /** Hypotheses as newline-joined KIF. */
@@ -258,10 +264,18 @@ export function parseTptpTest(
 /** Render an Ask/Tell pair as `.kif.tq` text (pure; the inverse of {@link parseTest}). */
 export function formatTest(opts?: {
   note?: string;
+  /** `(time N)`; omitted when 0. */
   timeout?: number;
+  /** One `(category ...)` directive each. */
+  categories?: string[];
+  /** One `(file ...)` directive each. */
+  extraFiles?: string[];
   assertions?: string;
   query?: string;
+  /** `(answer yes|no)`; `null` writes no answer. */
   expectedProof?: boolean | null;
+  /** Bindings-style `(answer A B ...)`; wins over `expectedProof` when non-empty. */
+  expectedAnswer?: string[] | null;
 }): string;
 
 export interface AskOpts {

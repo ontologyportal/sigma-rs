@@ -168,10 +168,9 @@ if command -v npm >/dev/null 2>&1 && [ -f "package.json" ] && [ -d "node_modules
         echo "⚠️  Playwright's Chromium not installed — skipping web e2e." >&2
         echo "   Install it with: npx playwright install chromium" >&2
     else
-        run_step "e2e smoke"         npm run -s test:e2e -w @sigma/web
-        run_step "e2e kb-updates"    npm run -s test:e2e:kb-updates -w @sigma/web
+        run_step "e2e upgrade"    npm run -s test:e2e:upgrade -w @sigma/web
+        run_step "e2e version"    npm run -s test:e2e:version -w @sigma/web
         run_step "e2e edit-survival" npm run -s test:e2e:edit-survival -w @sigma/web
-        run_step "e2e version-notes" npm run -s test:e2e:version -w @sigma/web
 
         # The Vampire suite needs the Emscripten build, which is gitignored
         # and takes minutes to produce -- run it only where it exists.

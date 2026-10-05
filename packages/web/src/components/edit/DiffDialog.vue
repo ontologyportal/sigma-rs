@@ -8,8 +8,6 @@ import { computed, ref, watch } from "vue";
 import BaseDialog from "../BaseDialog.vue";
 import MonacoDiff from "../MonacoDiff.vue";
 import { useChangesStore, type ChangeRow } from "../../stores/changes";
-import { useKBStore } from "../../stores/kb";
-import { originForKind } from "../../models/Origin";
 import { errMsg } from "../../utils/format";
 
 const props = defineProps<{
@@ -30,7 +28,6 @@ const emit = defineEmits<{
 }>();
 
 const changes = useChangesStore();
-const kb = useKBStore();
 
 const upstream = ref<string | null>(null);
 const status = ref("");
@@ -52,7 +49,7 @@ const takeLabel = computed(() =>
     : "Revert to upstream",
 );
 const localText = computed(() =>
-  props.row ? (kb.find(props.row.name, props.row.origin)?.text ?? "") : "",
+  props.row ? changes.trackedText(props.row) : "",
 );
 
 function close() {
@@ -93,7 +90,7 @@ async function take() {
     // Saving upstream's own content is what clears the tracking: recordSave
     // drops any record whose content matches upstream, so "revert" and "take
     // the newer upstream copy" are the same operation as an ordinary save.
-    await kb.updateConstituentText(row.name, text, originForKind(row.origin));
+    await changes.saveTracked(row, text);
     emit("taken", text);
     close();
   } catch (e) {

@@ -1,4 +1,5 @@
-/** Real workers and WASM, with a small isolated KB and the shared settings UI. */
+/** Real workers and WASM, with a small isolated KB and the shared prover
+ *  options panel (Audit profile). */
 import assert from "node:assert/strict";
 import { chromium } from "playwright";
 import { createServer } from "vite";
@@ -11,6 +12,22 @@ await server.listen();
 const browser = await chromium.launch({
   executablePath: process.env.PLAYWRIGHT_CHROMIUM || undefined,
 });
+const backend = (page, label) =>
+  page.getByRole("radio", { name: label, exact: true }).click();
+/** A fixed selection target with autoscaling off -- the panel's form of the
+ *  engine's `selectionBudget`. */
+async function axiomTarget(page, n) {
+  await page.locator("select[id$='-budget']").selectOption("axioms");
+  await page.locator('input[aria-label="Maximum axioms"]').fill(String(n));
+  const details = page.locator("summary", {
+    hasText: "Axiom selection details",
+  });
+  const autoscale = page
+    .locator("label.check", { hasText: "autoscale" })
+    .locator("input");
+  if (!(await autoscale.isVisible())) await details.click();
+  await autoscale.uncheck();
+}
 try {
   const page = await browser.newPage();
   page.setDefaultTimeout(60000);
@@ -19,14 +36,15 @@ try {
   );
   await page.evaluate(() => window.ready);
   assert.equal(await page.evaluate(() => crossOriginIsolated), true);
-  await page.locator("#proverBackend").selectOption("e");
-  await page.locator("#cfgSelectionBudget").fill("1");
-  assert.equal(await page.locator("#cfgMaxSteps").count(), 0);
+  await page.locator(".prover-options").waitFor();
+  await backend(page, "E");
+  await axiomTarget(page, 1);
+  assert.equal(await page.locator("#audit-steps").count(), 0);
   const proof = await page.evaluate(async () => {
     const { result } = await window.rpc.call("prove", {
       assertions: "(likes Alice Bob)",
       query: "(likes Alice Bob)",
-      config: window.prover.config(),
+      config: window.prover.config("audit"),
     });
     return result;
   });
@@ -36,7 +54,7 @@ try {
   console.log(
     "ok E Ask/Tell retains mandatory assertions under a small selection target",
   );
-  await page.locator("#cfgSelectionBudget").fill("10");
+  await axiomTarget(page, 10);
 
   await page.evaluate(async () => {
     await window.rpc.call("newSession");
@@ -50,7 +68,7 @@ try {
     async () =>
       (
         await window.rpc.call("audit", {
-          config: window.prover.config(),
+          config: window.prover.config("audit"),
         })
       ).result,
   );
@@ -63,14 +81,18 @@ try {
   );
   console.log("ok E audit exposes proof and source citations");
 
-  await page.locator("#cfgAuditAxfilter").check();
-  await page.locator("#cfgSelectionBudget").fill("10");
-  await page.locator("#cfgSubsetLimit").fill("10");
+  await page.locator("summary", { hasText: "E audit subsets" }).click();
+  await page
+    .locator("label.check", { hasText: "e_axfilter subsets" })
+    .locator("input")
+    .check();
+  await axiomTarget(page, 10);
+  await page.locator("#audit-subsets").fill("10");
   const subsets = await page.evaluate(
     async () =>
       (
         await window.rpc.call("audit", {
-          config: window.prover.config(),
+          config: window.prover.config("audit"),
           request: { count: 2, limit: 5 },
         })
       ).result,
@@ -97,33 +119,36 @@ try {
   });
   const limited = await page.evaluate(
     async () =>
-      (await window.rpc.call("audit", { config: window.prover.config() }))
-        .result,
+      (
+        await window.rpc.call("audit", {
+          config: window.prover.config("audit"),
+        })
+      ).result,
   );
   assert.equal(limited.status, "Unknown", limited.raw_output);
   assert.match(limited.raw_output, /does not establish whole-KB consistency/);
   console.log("ok subset satisfiability does not claim whole-KB consistency");
 
-  await page.locator("#proverBackend").selectOption("native");
+  await backend(page, "SUPr");
   const native = await page.evaluate(
     async () =>
       (
         await window.rpc.call("prove", {
           query: "(likes Alice Bob)",
-          config: window.prover.config(),
+          config: window.prover.config("audit"),
         })
       ).result,
   );
   assert.equal(native.status, "Proved", native.raw_output);
   console.log("ok switching back to SUPr still proves");
 
-  await page.locator("#proverBackend").selectOption("vampire");
+  await backend(page, "Vampire");
   const vampire = await page.evaluate(
     async () =>
       (
         await window.rpc.call("prove", {
           query: "(likes Alice Bob)",
-          config: window.prover.config(),
+          config: window.prover.config("audit"),
         })
       ).result,
   );
@@ -145,7 +170,11 @@ try {
         await window.rpc.call("prove", {
           assertions: "(likes Alice Bob)",
           query: "(likes Alice Bob)",
-          config: { ...window.prover.config(), backend: "e", timeLimitSecs: 1 },
+          config: {
+            ...window.prover.config("audit"),
+            backend: "e",
+            timeLimitSecs: 1,
+          },
         })
       ).result,
   );
@@ -158,7 +187,7 @@ try {
           assertions: "(likes Alice Bob)",
           query: "(likes Alice Bob)",
           config: {
-            ...window.prover.config(),
+            ...window.prover.config("audit"),
             backend: "e",
             timeLimitSecs: 10,
           },

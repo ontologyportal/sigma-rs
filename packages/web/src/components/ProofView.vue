@@ -21,7 +21,14 @@ const props = defineProps<{
   graphviz?: string;
   /** The engine's raw textual output. */
   rawOutput?: string;
+  /** When given, the step list folds into a disclosure with this summary
+   *  (the prose, graph and raw output stay outside it). */
+  stepsSummary?: string;
+  /** Whether that disclosure is open (default true). */
+  stepsOpen?: boolean;
 }>();
+
+const emit = defineEmits<{ stepsToggle: [open: boolean] }>();
 
 const prover = useProverStore();
 
@@ -64,33 +71,41 @@ const missingNote = computed(() =>
 
 <template>
   <div>
-    <ol class="refs">
-      <li v-if="prover.plainProof">
-        <pre class="ref-kif">{{ plainText }}</pre>
-      </li>
-      <template v-else>
-        <li v-if="showPrologue">
-          <div class="hint">type declarations</div>
-          <pre class="ref-kif" v-html="prologueHtml"></pre>
+    <component
+      :is="stepsSummary ? Disclosure : 'div'"
+      v-bind="
+        stepsSummary ? { summary: stepsSummary, open: stepsOpen !== false } : {}
+      "
+      @toggle="emit('stepsToggle', $event)"
+    >
+      <ol class="refs">
+        <li v-if="prover.plainProof">
+          <pre class="ref-kif">{{ plainText }}</pre>
         </li>
-        <CiteRow
-          v-for="(s, i) in steps"
-          :key="i"
-          :kif="s.kif"
-          :tptp="s.tptp"
-          :lang="prover.proofLang"
-          :file="s.file"
-          :line="s.line"
-        >
-          <template #header>
-            <span class="step-num">{{ stepNumber(s, i) }}.</span> {{ s.rule
-            }}<span v-if="premiseRefs(s)" class="hint premises">{{
-              premiseRefs(s)
-            }}</span>
-          </template>
-        </CiteRow>
-      </template>
-    </ol>
+        <template v-else>
+          <li v-if="showPrologue">
+            <div class="hint">type declarations</div>
+            <pre class="ref-kif" v-html="prologueHtml"></pre>
+          </li>
+          <CiteRow
+            v-for="(s, i) in steps"
+            :key="i"
+            :kif="s.kif"
+            :tptp="s.tptp"
+            :lang="prover.proofLang"
+            :file="s.file"
+            :line="s.line"
+          >
+            <template #header>
+              <span class="step-num">{{ stepNumber(s, i) }}.</span> {{ s.rule
+              }}<span v-if="premiseRefs(s)" class="hint premises">{{
+                premiseRefs(s)
+              }}</span>
+            </template>
+          </CiteRow>
+        </template>
+      </ol>
+    </component>
     <Disclosure summary="proof in plain English">
       <div class="prose">{{ prose || "" }}</div>
       <div v-if="missingNote" class="hint mt-sm">{{ missingNote }}</div>

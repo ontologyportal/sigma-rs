@@ -19,6 +19,8 @@ function fixture() {
   setActivePinia(createPinia());
   const files = new Map();
   const calls = [];
+  const edits = [];
+  const configs = [];
   let chosen = "copy.kif.tq";
   class LocalOrigin {
     kind = "file";
@@ -33,8 +35,11 @@ function fixture() {
       parseOrigin: (o) => o,
     },
     "../services/sigma": {
-      async call(method, { text }) {
+      async call(method, args) {
         calls.push(method);
+        if (method === "prove")
+          return { result: { status: "Proved", proved: true } };
+        const { text } = args;
         if (!text.trim() || text === "malformed")
           throw new Error("Invalid test");
         return { test: { queryKif: text } };
@@ -42,7 +47,22 @@ function fixture() {
     },
     "../services/sources": {},
     "../utils/format": {},
-    "./prover": {},
+    "./prover": {
+      useProverStore: () => ({
+        async loadDefaults() {},
+        config: (_name, overrides) => {
+          configs.push(overrides);
+          return { ...overrides };
+        },
+      }),
+    },
+    "./changes": {
+      useChangesStore: () => ({
+        async recordSave(name, kind, text, pristine) {
+          edits.push([name, kind, text, pristine]);
+        },
+      }),
+    },
     "./library": {
       useLibraryStore: () => ({
         async writeLocal(name, text) {
@@ -64,6 +84,8 @@ function fixture() {
     store,
     files,
     calls,
+    edits,
+    configs,
     local: new LocalOrigin(),
     choose: (s) => {
       chosen = s;
@@ -128,22 +150,50 @@ test("TPTP raw saves use the TPTP parser", async () => {
   assert.equal(f.files.get("a.p"), "fof(q, conjecture, p).");
 });
 
-test("remote tests save as local copies and cancellation preserves the original", async () => {
+test("remote tests save in place as a local edit, never to the library", async () => {
   const f = fixture();
   const origin = { kind: "url", url: "https://example.org/a.kif.tq" };
   await f.store.add("a.kif.tq", "old", origin);
-  const target = { name: "a.kif.tq", origin };
-  f.choose(null);
-  assert.equal((await f.store.saveCurrent("new", "kif", target)).saved, false);
+  f.choose(null); // a prompt would cancel the save
+  const r = await f.store.saveCurrent("new", "kif", {
+    name: "a.kif.tq",
+    origin,
+  });
+  assert.equal(r.saved, true);
+  assert.equal(r.overwritten, true);
+  assert.equal(f.store.find("a.kif.tq").text, "new");
+  assert.equal(f.store.find("a.kif.tq").origin.kind, "url");
+  assert.deepEqual(f.edits, [["a.kif.tq", "url", "new", "old"]]);
   assert.equal(f.files.size, 0);
-  f.choose("a.kif.tq");
   await assert.rejects(
-    f.store.saveCurrent("new", "kif", target),
-    /another source/,
+    f.store.saveCurrent("malformed", "kif", { name: "a.kif.tq", origin }),
+    /Invalid test/,
   );
-  assert.equal(f.files.size, 0);
-  f.choose("copy.kif.tq");
-  await f.store.saveCurrent("new", "kif", target);
-  assert.equal(f.store.find("a.kif.tq").text, "old");
-  assert.equal(f.store.find("copy.kif.tq").origin.kind, "file");
+  assert.equal(f.store.find("a.kif.tq").text, "new");
+  assert.equal(f.edits.length, 1);
+});
+
+test("a remote test of the other dialect still saves as a new local file", async () => {
+  const f = fixture();
+  const origin = { kind: "sumo" };
+  await f.store.add("t.kif.tq", "old", origin);
+  f.choose("t.p");
+  await f.store.saveCurrent("problem", "tptp", { name: "t.kif.tq", origin });
+  assert.equal(f.store.find("t.p").origin.kind, "file");
+  assert.equal(f.edits.length, 0);
+});
+
+test("a test overrides the time limit only when it has a (time) directive", async () => {
+  const f = fixture();
+  const run = (parsed) =>
+    f.store.run({
+      name: "t.kif.tq",
+      parsed: { queryKif: "(p)", axiomKif: "", ...parsed },
+    });
+  await run({ timeout: 30, timeGiven: false });
+  await run({ timeout: 12, timeGiven: true });
+  assert.deepEqual(JSON.parse(JSON.stringify(f.configs)), [
+    {},
+    { timeLimitSecs: 12 },
+  ]);
 });

@@ -68,18 +68,36 @@ export function parseTptpTest(name, text, remap = false) {
 export function formatTest({
   note = "",
   timeout = 0,
+  categories = [],
+  extraFiles = [],
   assertions = "",
   query = "",
   expectedProof = null,
+  expectedAnswer = null,
 } = {}) {
+  // A single KIF token is written bare, like hand-written tests; anything
+  // else is quoted (.tq strings have no escape syntax).
+  const value = (v) => {
+    const t = String(v).trim();
+    return /^[A-Za-z0-9_.-]+$/.test(t) ? t : `"${t.replace(/"/g, "'")}"`;
+  };
   const out = [];
-  if (note) out.push(`(note "${String(note).replace(/"/g, "'")}")`); // .tq notes have no escape syntax
+  if (note) out.push(`(note ${value(note)})`);
+  for (const c of categories)
+    if (String(c).trim()) out.push(`(category ${value(c)})`);
   if (timeout > 0) out.push(`(time ${Math.round(timeout)})`);
+  for (const f of extraFiles)
+    if (String(f).trim())
+      out.push(`(file "${String(f).trim().replace(/"/g, "'")}")`);
   const a = assertions.trim();
   if (a) out.push(a);
   const q = query.trim();
   if (q) out.push(`(query ${q})`);
-  if (expectedProof !== null)
+  const bindings = (expectedAnswer ?? [])
+    .map((b) => String(b).trim())
+    .filter(Boolean);
+  if (bindings.length) out.push(`(answer ${bindings.join(" ")})`);
+  else if (expectedProof !== null)
     out.push(`(answer ${expectedProof ? "yes" : "no"})`);
   return out.join("\n") + "\n";
 }

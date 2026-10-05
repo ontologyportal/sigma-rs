@@ -22,11 +22,17 @@
 
 import { defineStore } from "pinia";
 import { EDITS_KEY, rawUrl } from "../constants";
-import type { OriginKind } from "../models/Origin";
+import { originForKind, type OriginKind } from "../models/Origin";
 import { fetchBlobText, fetchPullRequest, fetchSumoTree } from "../api/github";
 import type { PullRequest } from "../api/github";
 import { useBootStore } from "./boot";
 import { useKBStore } from "./kb";
+import {
+  isTestFile,
+  testDialect,
+  useTestsStore,
+  type SavedTest as SavedTarget,
+} from "./tests";
 
 const EDITS_DIR = "edits";
 
@@ -197,13 +203,12 @@ export const useChangesStore = defineStore("changes", {
         .sort()
         .join("|"),
 
-    /** Rows for every loaded constituent with something unpushed (see
-     *  `ChangeRow`), sorted by origin then name. */
+    /** Rows for every loaded constituent and imported test with something
+     *  unpushed (see `ChangeRow`), sorted by origin then name. */
     rows(state): ChangeRow[] {
       const kb = useKBStore();
-      const loaded = new Set(
-        kb.constituents.map((c) => key(c.name, c.origin.kind)),
-      );
+      const files = [...kb.constituents, ...useTestsStore().tests];
+      const loaded = new Set(files.map((c) => key(c.name, c.origin.kind)));
       const rows: ChangeRow[] = [];
       for (const rec of Object.values(state.index)) {
         if (!loaded.has(key(rec.name, rec.origin))) continue; // no longer in the KB
@@ -223,7 +228,7 @@ export const useChangesStore = defineStore("changes", {
               : "local",
         });
       }
-      for (const c of kb.constituents) {
+      for (const c of files) {
         if (c.origin.kind !== "file" || state.index[key(c.name, c.origin.kind)])
           continue;
         rows.push({
@@ -248,6 +253,43 @@ export const useChangesStore = defineStore("changes", {
     },
   },
   actions: {
+    /** The current text of a tracked file: a loaded constituent's, or an
+     *  imported test's. */
+    trackedText(row: { name: string; origin: OriginKind }): string {
+      if (isTestFile(row.name))
+        return (
+          useTestsStore().tests.find(
+            (t) => t.name === row.name && t.origin.kind === row.origin,
+          )?.text ?? ""
+        );
+      return useKBStore().find(row.name, row.origin)?.text ?? "";
+    },
+
+    /** Save `text` as a tracked file through the store that owns it -- the
+     *  KB for a constituent, the tests store for a test. */
+    async saveTracked(
+      row: { name: string; origin: OriginKind },
+      text: string,
+    ): Promise<void> {
+      if (!isTestFile(row.name)) {
+        await useKBStore().updateConstituentText(
+          row.name,
+          text,
+          originForKind(row.origin),
+        );
+        return;
+      }
+      const tests = useTestsStore();
+      const t = tests.tests.find(
+        (t) => t.name === row.name && t.origin.kind === row.origin,
+      );
+      if (!t) throw new Error(`${row.name} is not imported`);
+      await tests.saveCurrent(text, testDialect(row.name), {
+        name: t.name,
+        origin: { ...t.origin } as SavedTarget["origin"],
+      });
+    },
+
     persist(): void {
       localStorage.setItem(EDITS_KEY, JSON.stringify(this.index));
     },

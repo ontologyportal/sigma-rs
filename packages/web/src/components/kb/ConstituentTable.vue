@@ -106,6 +106,20 @@ const rows = computed<FileRow[]>(() => {
   return out;
 });
 
+/** Pinned sources list their files as of the accepted commit, so a file
+ *  added upstream since shows up only once that update is accepted. */
+const pinNote = computed(() =>
+  library.repos
+    .map((repo) => {
+      const origin = originForRepo(repo);
+      const pin = kb.pinnedRef(origin);
+      return pin
+        ? `${sourceLabel(origin)}: files as of the accepted commit ${pin.slice(0, 7)} (${kb.prefFor(origin)})`
+        : "";
+    })
+    .filter(Boolean),
+);
+
 const selected = ref(new Set<string>());
 const saving = ref(false);
 
@@ -167,6 +181,10 @@ async function save(adds: FileRow[], removes: FileRow[]) {
 </script>
 
 <template>
+  <div v-if="pinNote.length" class="hint pin-note">
+    {{ pinNote.join(" · ") }}. Files added upstream since appear once you accept
+    the update (Sources → Update now).
+  </div>
   <FileTable
     v-model:selected="selected"
     checked-is-loaded
@@ -179,3 +197,9 @@ async function save(adds: FileRow[], removes: FileRow[]) {
     @open="(row) => navigate('edit', { file: row.name })"
   />
 </template>
+
+<style scoped>
+.pin-note {
+  margin-top: 8px;
+}
+</style>

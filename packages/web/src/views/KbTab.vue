@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /** Knowledge base tab: the unified constituent table (with the standard-set
  *  presets and the Import dialog in its header) and the WordNet panel. */
-import { computed, onActivated, onMounted, ref } from "vue";
+import { computed, onActivated, onMounted, ref, watch } from "vue";
 import { Constituent } from "../models/Constituent";
 import { GitOrigin } from "../models/Origin";
 import { useKBStore } from "../stores/kb";
@@ -21,6 +21,11 @@ const library = useLibraryStore();
 
 onMounted(() => library.loadCatalogs());
 onActivated(() => library.loadCatalogs());
+// Accepting an update moves a pinned source's commit: list its files anew.
+watch(
+  () => library.repos.map((r) => library.catalogRef(r)).join("|"),
+  () => library.loadCatalogs(),
+);
 
 const tableLog = useStatus();
 

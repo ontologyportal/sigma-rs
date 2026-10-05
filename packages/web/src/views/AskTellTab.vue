@@ -3,23 +3,30 @@ import {
   computed,
   onActivated,
   onBeforeUnmount,
+  reactive,
   ref,
   shallowRef,
   watch,
 } from "vue";
-import { AskResult, formatTest } from "sigmakee/sdk";
+import { AskResult, formatTest, type ParsedTest } from "sigmakee/sdk";
 import { useTabQuery } from "../composables/useTabQuery";
 import { useStatus } from "../composables/useStatus";
 import { navigate } from "../router";
 import { call } from "../services/sigma";
 import { downloadText, errMsg } from "../utils/format";
 import { useProverStore } from "../stores/prover";
-import { useTestsStore, type TestEntry } from "../stores/tests";
+import {
+  gradeTest,
+  useTestsStore,
+  type TestEntry,
+  type TestOutcome,
+} from "../stores/tests";
 import type * as Monaco from "monaco-editor/esm/vs/editor/editor.api.js";
 import type { MonacoNs } from "../services/monaco";
 import BusyButton from "../components/BusyButton.vue";
 import { useElapsed } from "../composables/useElapsed";
 import Card from "../components/Card.vue";
+import Disclosure from "../components/Disclosure.vue";
 import DropMenu from "../components/DropMenu.vue";
 import MonacoEditor from "../components/MonacoEditor.vue";
 import ProofView from "../components/ProofView.vue";
@@ -82,6 +89,81 @@ let lastVampireTptp: string | null = null;
 const showDownloadTptp = ref(false);
 
 const result = shallowRef<AskResult | null>(null);
+/** The last result graded against the test's expected answer, if any. */
+const outcome = ref<TestOutcome | null>(null);
+
+// -- test details (the `.kif.tq` harness directives) ---------------------------
+
+type ExpectedAnswer = "yes" | "no" | "bindings" | "none";
+/** Edited beside the panes, filled from an opened test, and written back by
+ *  Save test. Lists are comma-separated in the form. */
+const meta = reactive({
+  note: "",
+  categories: "",
+  timeout: 0,
+  answer: "yes" as ExpectedAnswer,
+  bindings: "",
+  files: "",
+});
+const metaOpen = ref(false);
+const splitList = (s: string) =>
+  s
+    .split(/[,\n]/)
+    .map((x) => x.trim())
+    .filter(Boolean);
+
+function resetMeta() {
+  Object.assign(meta, {
+    note: "",
+    categories: "",
+    timeout: 0,
+    answer: "yes",
+    bindings: "",
+    files: "",
+  });
+}
+
+function metaFromTest(p: ParsedTest) {
+  meta.note = p.noteGiven ? p.note : "";
+  meta.categories = (p.categories ?? []).join(", ");
+  meta.timeout = p.timeGiven ? p.timeout : 0;
+  meta.answer = p.expectedAnswer?.length
+    ? "bindings"
+    : p.expectedProof === true
+      ? "yes"
+      : p.expectedProof === false
+        ? "no"
+        : "none";
+  meta.bindings = (p.expectedAnswer ?? []).join(" ");
+  meta.files = (p.extraFiles ?? []).join(", ");
+}
+
+/** The details apply while a test is being worked on -- one is open, or the
+ *  user expanded the section to write one -- never to ad-hoc queries. */
+const testActive = computed(
+  () => !tptpMode.value && (!!tests.openTest || metaOpen.value),
+);
+/** The expected proof outcome `meta` describes (bindings imply a proof). */
+const expectedProof = computed<boolean | null>(() =>
+  meta.answer === "none" ? null : meta.answer !== "no",
+);
+/** A test's own `(time N)` overrides the prover time limit, as when the
+ *  Inference Tests tab runs it. */
+const testTimeLimit = computed(() =>
+  testActive.value && meta.timeout > 0 ? Math.round(meta.timeout) : 0,
+);
+const metaSummary = computed(() => {
+  const parts: string[] = [];
+  if (meta.note) parts.push(meta.note);
+  const cats = splitList(meta.categories);
+  if (cats.length) parts.push(cats.join(", "));
+  if (meta.answer !== "none")
+    parts.push(
+      `expects ${meta.answer === "bindings" ? meta.bindings || "bindings" : meta.answer}`,
+    );
+  if (testTimeLimit.value) parts.push(`${testTimeLimit.value}s`);
+  return parts.length ? `Test details — ${parts.join(" · ")}` : "Test details";
+});
 const resultBackend = ref("");
 const error = ref("");
 
@@ -147,8 +229,15 @@ function onEditorReady(
   editor: Monaco.editor.IStandaloneCodeEditor,
   m: MonacoNs,
 ) {
-  editor.addCommand(m.KeyMod.CtrlCmd | m.KeyCode.Enter, () => {
-    if (!proving.value) prove();
+  // An action, not `addCommand`: Monaco registers commands for every editor
+  // on the page, so the shortcut would also prove from the Edit tab.
+  editor.addAction({
+    id: "sumo.prove",
+    label: "Prove",
+    keybindings: [m.KeyMod.CtrlCmd | m.KeyCode.Enter],
+    run: () => {
+      if (!proving.value) prove();
+    },
   });
   editorsReady += 1;
   if (editorsReady === 2) runScratchValidate();
@@ -169,15 +258,48 @@ onBeforeUnmount(() => clearTimeout(scratchTimer));
 
 // -- prove --------------------------------------------------------------------
 
+/** Validate both panes now (not after the edit debounce) and count their
+ *  error-level diagnostics; the markers are refreshed as a side effect. */
+async function paneErrors(): Promise<{ assertions: number; query: number }> {
+  const r = await call("validateScratch", {
+    assertions: assertions.value,
+    query: query.value,
+  });
+  assertionsEd.value?.setMarkers(r.assertions);
+  queryEd.value?.setMarkers(r.query);
+  const errors = (ds: { severity: string }[]) =>
+    ds.filter((d) => d.severity === "error").length;
+  return { assertions: errors(r.assertions), query: errors(r.query) };
+}
+
 async function prove() {
   const backend = prover.backendLabel;
   cfgNote.value = "";
   proving.value = true;
   lastVampireTptp = null;
   showDownloadTptp.value = false;
+  outcome.value = null;
   try {
+    if (!tptpMode.value) {
+      const n = await paneErrors();
+      if (n.assertions || n.query) {
+        const where = [
+          n.assertions && `${n.assertions} in the assertions`,
+          n.query && `${n.query} in the query`,
+        ]
+          .filter(Boolean)
+          .join(" and ");
+        result.value = null;
+        resultBackend.value = "";
+        error.value = `Not proved: fix the errors first (${where}; they're underlined).`;
+        return;
+      }
+    }
     await prover.loadDefaults();
-    const config = prover.config("ask");
+    const config = prover.config(
+      "ask",
+      testTimeLimit.value ? { timeLimitSecs: testTimeLimit.value } : {},
+    );
     runLimitSecs.value = config.timeLimitSecs ?? 0;
     let r: AskResult;
     let asserted = assertions.value.trim();
@@ -205,6 +327,8 @@ async function prove() {
     error.value = "";
     result.value = r;
     resultBackend.value = backend;
+    if (testActive.value && expectedProof.value !== null)
+      outcome.value = gradeTest({ expectedProof: expectedProof.value }, r);
   } catch (e) {
     result.value = null;
     resultBackend.value = "";
@@ -231,13 +355,29 @@ function openTest(t: TestEntry) {
     prover.proofLang = "kif";
     assertions.value = t.parsed.axiomKif || "";
     query.value = t.parsed.queryKif || "";
+    metaFromTest(t.parsed);
+    metaOpen.value = true;
   } else {
     prover.proofLang = "tptp";
     assertions.value = t.text;
     query.value = "";
+    resetMeta();
+    metaOpen.value = false;
   }
   tests.setOpen({ name: t.name, origin: t.origin });
 }
+
+// The open test went away (removed on the Inference Tests tab): its details
+// must not linger over the next ad-hoc query.
+watch(
+  () => tests.openTest,
+  (open) => {
+    if (open) return;
+    resetMeta();
+    metaOpen.value = false;
+    outcome.value = null;
+  },
+);
 
 onActivated(() => {
   const t = tests.openTest && tests.find(tests.openTest.name);
@@ -272,10 +412,15 @@ async function saveTest() {
       return;
     }
     text = formatTest({
-      timeout: prover.profiles.ask.timeLimitSecs,
+      note: meta.note.trim(),
+      categories: splitList(meta.categories),
+      timeout: meta.timeout > 0 ? Math.round(meta.timeout) : 0,
+      extraFiles: splitList(meta.files),
       assertions: assertions.value,
       query: q,
-      expectedProof: true,
+      expectedProof: expectedProof.value,
+      expectedAnswer:
+        meta.answer === "bindings" ? meta.bindings.split(/\s+/) : null,
     });
   }
   savingTest.value = true;
@@ -342,6 +487,73 @@ async function saveTest() {
           @ready="onEditorReady"
         />
       </div>
+      <Disclosure
+        :summary="metaSummary"
+        :open="metaOpen"
+        @toggle="metaOpen = $event"
+      >
+        <div class="meta-grid">
+          <div>
+            <label for="tqNote">note</label>
+            <input
+              id="tqNote"
+              v-model="meta.note"
+              type="text"
+              placeholder="e.g. Astronomy_4"
+            />
+          </div>
+          <div>
+            <label for="tqCategories">categories</label>
+            <input
+              id="tqCategories"
+              v-model="meta.categories"
+              type="text"
+              placeholder="comma-separated"
+            />
+          </div>
+          <div>
+            <label for="tqTime">time limit (s)</label>
+            <input
+              id="tqTime"
+              v-model.number="meta.timeout"
+              type="number"
+              min="0"
+              placeholder="prover setting"
+            />
+          </div>
+          <div>
+            <label for="tqAnswer">expected answer</label>
+            <div class="answer">
+              <select id="tqAnswer" v-model="meta.answer">
+                <option value="yes">yes (provable)</option>
+                <option value="no">no (not provable)</option>
+                <option value="bindings">bindings</option>
+                <option value="none">unspecified</option>
+              </select>
+              <input
+                v-if="meta.answer === 'bindings'"
+                v-model="meta.bindings"
+                type="text"
+                placeholder="e.g. Rex Fido"
+                aria-label="Expected bindings"
+              />
+            </div>
+          </div>
+          <div>
+            <label for="tqFiles">required files</label>
+            <input
+              id="tqFiles"
+              v-model="meta.files"
+              type="text"
+              placeholder="e.g. Astronomy.kif"
+            />
+          </div>
+        </div>
+        <div class="hint sub">
+          The <code>.kif.tq</code> directives Save test writes. A time limit
+          here overrides the prover setting when proving this test.
+        </div>
+      </Disclosure>
     </div>
     <div v-show="tptpMode" class="mt-sm">
       <label class="check"
@@ -372,7 +584,11 @@ async function saveTest() {
       >
         More ▾
       </button>
-      <ProverChips v-model:open="optionsOpen" profile="ask" />
+      <ProverChips
+        v-model:open="optionsOpen"
+        profile="ask"
+        :fixed="testTimeLimit ? [`${testTimeLimit}s from the test`] : []"
+      />
       <span v-if="cfgNote" class="hint">{{ cfgNote }}</span>
     </div>
     <DropMenu v-model="moreOpen" :anchor="moreBtn">
@@ -427,6 +643,14 @@ async function saveTest() {
         <span v-if="tookLabel" class="hint" title="Wall-clock time">{{
           tookLabel
         }}</span>
+        <span
+          v-if="outcome"
+          class="test-outcome"
+          :class="outcome.cls"
+          :title="`Graded against the expected answer (${meta.answer})`"
+          >expected {{ meta.answer === "no" ? "no" : "yes" }} ·
+          {{ outcome.label }}</span
+        >
       </div>
       <label class="check"
         ><input type="checkbox" v-model="prover.plainProof" /> Plain
@@ -451,6 +675,39 @@ async function saveTest() {
   border: 1px solid var(--line);
   border-radius: 7px;
   overflow: hidden;
+}
+.meta-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 10px 14px;
+  margin-top: 8px;
+}
+.meta-grid .answer {
+  display: flex;
+  gap: 6px;
+}
+.meta-grid select {
+  min-width: 0;
+}
+.sub {
+  font-size: 12px;
+  margin-top: 6px;
+}
+.test-outcome {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 9px;
+  border-radius: 20px;
+  background: color-mix(in srgb, var(--muted) 16%, transparent);
+  color: var(--muted);
+}
+.test-outcome.ok {
+  background: color-mix(in srgb, var(--ok) 18%, transparent);
+  color: var(--ok);
+}
+.test-outcome.bad {
+  background: color-mix(in srgb, var(--bad) 18%, transparent);
+  color: var(--bad);
 }
 .pane-editor-sm {
   height: 56px;

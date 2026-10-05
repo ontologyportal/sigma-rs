@@ -256,14 +256,6 @@ jobs:
       - name: External prover bridge regression tests
         run: node --test packages/web/src/worker/external-prover-bridge.test.mjs
 
-      # Boots every tab against the real upstream KB, so it is the slowest
-      # and the only one that needs the network.
-      - name: e2e -- smoke
-        run: npm run test:e2e -w @sigma/web
-
-      - name: e2e -- KB update preferences
-        run: npm run test:e2e:kb-updates -w @sigma/web
-
       # Local edits (sumo- and url-sourced) must survive a refresh and an
       # upstream change. Fully mocked -- no live GitHub calls.
       - name: e2e -- local edits survive upstream updates
@@ -271,6 +263,9 @@ jobs:
 
       - name: e2e -- version notes dialog
         run: npm run test:e2e:version -w @sigma/web
+      
+      - name: e2e -- backwards compatibility
+        run: npm run test:e2e:upgrade -w @sigma/web
 
       # Every suite screenshots each step, and names a failure's shot
       # *-FAIL.png -- worth keeping when a run goes red.

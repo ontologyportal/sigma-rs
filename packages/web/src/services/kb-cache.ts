@@ -153,6 +153,9 @@ export async function tryRestore(
     )
       return false;
     if (meta.fingerprint !== constituentsFingerprint()) return false;
+    // A file served from its saved copy last time must be fetched again,
+    // so its source gets another chance: take the normal boot path.
+    if (meta.stale && Object.keys(meta.stale).length) return false;
 
     onProgress("Restoring from cache...");
     const bytes = new Uint8Array(
@@ -167,8 +170,6 @@ export async function tryRestore(
     await useWordNetStore().install();
     onProgress("Loading WordNet lexicon...");
 
-    const stale: Record<string, string> =
-      meta.stale && typeof meta.stale === "object" ? meta.stale : {};
     const built: Constituent[] = [];
     for (const { name, origin: json } of kb.saved) {
       const origin = parseOrigin(json, name);
@@ -177,7 +178,7 @@ export async function tryRestore(
           ? await readOpfsText(dir, opfsSafeName(name))
           : await fromOrigin(name, origin);
       if (origin.kind === "sumo") cachedText.set(name, text);
-      built.push(new Constituent(name, origin, text, stale[name] ?? null));
+      built.push(new Constituent(name, origin, text));
     }
     kb.constituents = built;
     // The restored KB is already promoted -- this is the read-only structural

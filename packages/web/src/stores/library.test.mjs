@@ -66,16 +66,17 @@ class FakeDir {
   }
 }
 
-function fixture({ persisted = null } = {}) {
+function fixture({ persisted = null, pin = { value: undefined } } = {}) {
   setActivePinia(createPinia());
   const root = new FakeDir();
+  const trees = [];
   const stored = new Map();
   if (persisted) stored.set("library", JSON.stringify(persisted));
   const imports = {
     pinia: { defineStore },
     "../constants": {
       LIBRARY_KEY: "library",
-      SUMO: { owner: "o", repo: "r", branch: "b" },
+      SUMO: { owner: "o", repo: "r", branch: "b", ref: "HEAD" },
     },
     "../models/Origin": {
       GitOrigin: class {
@@ -85,9 +86,15 @@ function fixture({ persisted = null } = {}) {
         kind = "file";
       },
     },
-    "../api/github": {},
+    "../api/github": {
+      async fetchRepoTree(owner, repo, ref) {
+        trees.push(ref);
+        return [{ type: "blob", path: `at-${ref}.kif`, size: 1 }];
+      },
+    },
+    "./kb": { useKBStore: () => ({ pinnedRef: () => pin.value }) },
     "../services/sources": {},
-    "../utils/format": {},
+    "../utils/format": { errMsg: (e) => e.message },
     "./boot": { useBootStore: () => ({ opfsRoot: root }) },
     "./changes": { opfsSafeName: encodeURIComponent },
     "./tests": { isTestFile: (n) => /\.(tq|p|tptp)$/i.test(n) },
@@ -103,7 +110,7 @@ function fixture({ persisted = null } = {}) {
   });
   const store = exports.useLibraryStore();
   const library = () => root.dirs.get("library");
-  return { store, root, library, stored };
+  return { store, root, library, stored, trees };
 }
 
 // Store values live in the vm realm; copy into host arrays for deepEqual.
@@ -208,4 +215,20 @@ test("deleteEntry removes the library copy; readLocal then throws", async () => 
   assert.equal(f.store.entries.length, 0);
   await assert.rejects(f.store.readLocal("a.kif"), /not in the library/);
   await f.store.deleteEntry("a.kif", "file"); // already gone: not an error
+});
+
+test("catalogs list a pinned source at its accepted commit, and relist when it moves", async () => {
+  const pin = { value: undefined };
+  const f = fixture({ pin });
+  const repo = f.store.repos[0];
+  await f.store.loadCatalog(repo);
+  assert.deepEqual(host(f.trees), ["HEAD"]);
+  await f.store.loadCatalog(repo); // cached: same ref
+  assert.equal(f.trees.length, 1);
+  pin.value = "abc123";
+  await f.store.loadCatalog(repo);
+  assert.deepEqual(host(f.trees), ["HEAD", "abc123"]);
+  assert.equal(f.store.catalogs[f.store.repoId(repo)][0].path, "at-abc123.kif");
+  await f.store.loadCatalog(repo);
+  assert.equal(f.trees.length, 2);
 });

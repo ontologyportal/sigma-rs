@@ -40,8 +40,19 @@ pub fn is_tq_directive(name: &str) -> bool {
 #[derive(Debug, Clone)]
 pub struct TestCase {
     pub file_name: String,
+    /// `(note ...)`, else the file name.
     pub note: String,
+    /// `(time N)` in seconds, else the harness default.
     pub timeout: u32,
+    /// Whether the source carried a `(note ...)` directive (`note` is the file
+    /// name otherwise).
+    pub note_given: bool,
+    /// Whether the source carried a `(time N)` directive (`timeout` is the
+    /// harness default otherwise).
+    pub time_given: bool,
+    /// Every `(category ...)` value, in source order (a directive may name
+    /// several, and may repeat).
+    pub categories: Vec<String>,
     /// The conjecture, as `Annotated { role: Conjecture, … }` (its `name` is the
     /// query's KIF text, for citations).  `None` if the file has no `(query …)`.
     pub query: Option<AstNode>,
@@ -85,6 +96,9 @@ impl TestCase {
             file_name: file_name.into(),
             note: String::new(),
             timeout: 0,
+            note_given: false,
+            time_given: false,
+            categories: Vec::new(),
             query: Some(query),
             expected_proof: None,
             expected_answer: None,
@@ -144,6 +158,9 @@ impl TestCase {
             file_name: file_name.to_string(),
             note: file_name.to_string(),
             timeout: 30,
+            note_given: false,
+            time_given: false,
+            categories: Vec::new(),
             query: None,
             expected_answer: None,
             expected_proof: None,
@@ -219,18 +236,21 @@ impl TestCase {
         match m.key.as_str() {
             "note" => {
                 if let Some(first) = m.args.first() {
-                    self.note = match first {
-                        AstNode::Str { value, .. } => value.trim_matches('"').to_string(),
-                        AstNode::Symbol { name, .. } => name.clone(),
-                        other => other.to_string(),
-                    };
+                    self.note = directive_text(first);
+                    self.note_given = true;
                 }
             }
             "time" => {
-                if let Some(AstNode::Number { value, .. }) = m.args.first() {
-                    self.timeout = value.parse::<u32>().unwrap_or(30);
+                let secs = match m.args.first() {
+                    Some(AstNode::Number { value, .. }) => value.parse::<f64>().ok(),
+                    _ => None,
+                };
+                if let Some(secs) = secs.filter(|s| s.is_finite() && *s >= 0.0) {
+                    self.timeout = secs.round().min(f64::from(u32::MAX)) as u32;
+                    self.time_given = true;
                 }
             }
+            "category" => self.categories.extend(m.args.iter().map(directive_text)),
             "answer" if let Some(AstNode::Symbol { name, .. }) = m.args.first() => {
                 match name.to_lowercase().as_str() {
                     "yes" => self.expected_proof = Some(true),
@@ -248,12 +268,7 @@ impl TestCase {
                 }
             }
             "file" if let Some(el) = m.args.first() => {
-                let fname = match el {
-                    AstNode::Symbol { name, .. } => name.clone(),
-                    AstNode::Str { value, .. } => value.trim_matches('"').to_string(),
-                    other => other.to_string(),
-                };
-                self.extra_files.push(fname);
+                self.extra_files.push(directive_text(el));
             }
             // The TPTP `% Status : <word>` header pragma (see the tokenizer's
             // `record_status_pragma`) — first match wins, mirroring the
@@ -266,6 +281,16 @@ impl TestCase {
             }
             _ => {}
         }
+    }
+}
+
+/// A directive argument as plain text: a string without its quotes, a symbol
+/// by name, anything else as KIF.
+fn directive_text(node: &AstNode) -> String {
+    match node {
+        AstNode::Str { value, .. } => value.trim_matches('"').to_string(),
+        AstNode::Symbol { name, .. } => name.clone(),
+        other => other.to_string(),
     }
 }
 

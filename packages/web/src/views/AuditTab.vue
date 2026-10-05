@@ -93,6 +93,9 @@ const storageKey = computed(
       .join("|"),
 );
 function loadSweep() {
+  // The position belongs to one KB's sweep order; a KB with nothing saved
+  // starts its own sweep rather than inheriting another's.
+  Object.assign(sweep, { scope: "", seed: 0, step: 0, total: 0 });
   try {
     const saved = JSON.parse(localStorage.getItem(storageKey.value) || "null");
     if (saved && typeof saved === "object")
@@ -274,11 +277,10 @@ const busyLabel = computed(() => {
   return `Auditing… ${n} · ${elapsedLabel(run.totalSecs)}`;
 });
 
+/** The saved position has reached the end of its sweep. */
+const sweepDone = computed(() => sweep.total > 0 && sweep.step >= sweep.total);
 const canContinue = computed(
-  () =>
-    !focus.value &&
-    sweep.step > 0 &&
-    (!sweep.total || sweep.step < sweep.total),
+  () => !focus.value && sweep.step > 0 && !sweepDone.value,
 );
 const runLabel = computed(() => {
   if (focus.value) return "Audit sentence";
@@ -314,6 +316,7 @@ const planText = computed(() => {
 /** Clear the last run's results before a new one. */
 function clearResults() {
   backendLabel.value = prover.backendLabel;
+  collapsed.value = new Set();
   contradictions.value = [];
   batches.value = [];
   rawLines.value = [];
@@ -354,7 +357,8 @@ function crashMessage(e: unknown): string {
 }
 
 function start(fresh: boolean) {
-  if (fresh) randomSeed();
+  // A finished sweep has nothing left to resume: run a new one.
+  if (fresh || (!focus.value && sweepDone.value)) randomSeed();
   return focus.value ? runFocused(focus.value) : runSweep();
 }
 
@@ -758,6 +762,49 @@ function entryClass(b: LogEntry): string {
 
 const heading = (c: Contradiction, i: number) =>
   `Contradiction ${i + 1} · ${c.steps.length} step${c.steps.length === 1 ? "" : "s"}`;
+
+/** Contradictions whose proof is folded away (by `contradictionKey`). */
+const collapsed = ref(new Set<string>());
+const isCollapsed = (c: Contradiction) =>
+  collapsed.value.has(contradictionKey(c.steps));
+/** Fold or unfold one proof. Idempotent: setting the disclosure's `open`
+ *  programmatically (Collapse all) fires its toggle event too. */
+function setCollapsed(c: Contradiction, fold: boolean) {
+  const key = contradictionKey(c.steps);
+  if (collapsed.value.has(key) === fold) return;
+  const next = new Set(collapsed.value);
+  if (fold) next.add(key);
+  else next.delete(key);
+  collapsed.value = next;
+}
+const allCollapsed = computed(
+  () =>
+    contradictions.value.length > 0 &&
+    contradictions.value.every((c) => isCollapsed(c)),
+);
+function setAllCollapsed(fold: boolean) {
+  collapsed.value = fold
+    ? new Set(contradictions.value.map((c) => contradictionKey(c.steps)))
+    : new Set();
+}
+
+/** The step list's fold summary: the proof's size and what it cites. */
+function proofSummary(c: Contradiction): string {
+  const cited = citedSummary(c);
+  return `proof (${c.steps.length} step${c.steps.length === 1 ? "" : "s"})${cited ? ` · cites ${cited}` : ""}`;
+}
+
+/** The source axioms a contradiction cites, for its steps' summary. */
+function citedSummary(c: Contradiction): string {
+  const locs = [
+    ...new Set(
+      c.steps.filter((s) => s.file).map((s) => `${s.file}:${s.line ?? "?"}`),
+    ),
+  ];
+  if (!locs.length) return "";
+  const shown = locs.slice(0, 3).join(", ");
+  return locs.length > 3 ? `${shown} (+${locs.length - 3} more)` : shown;
+}
 </script>
 
 <template>
@@ -1122,6 +1169,14 @@ const heading = (c: Contradiction, i: number) =>
         <div class="result-hd">
           <span :class="`audit-status ${headlineClass}`">{{ headline }}</span>
           <span class="hint">{{ breakdown }}</span>
+          <button
+            v-if="contradictions.length > 1"
+            class="btn ghost small fold-all"
+            type="button"
+            @click="setAllCollapsed(!allCollapsed)"
+          >
+            {{ allCollapsed ? "Expand all" : "Collapse all" }}
+          </button>
         </div>
         <div class="hint meta">
           via {{ backendLabel }}
@@ -1167,6 +1222,9 @@ const heading = (c: Contradiction, i: number) =>
           :prose="c.prose"
           :prose-missing="c.prose_missing"
           :graphviz="c.graphviz"
+          :steps-summary="proofSummary(c)"
+          :steps-open="!isCollapsed(c)"
+          @steps-toggle="setCollapsed(c, !$event)"
         />
         <div class="contradiction-actions">
           <DiagnoseContradiction :steps="c.steps" />
@@ -1354,6 +1412,8 @@ button.small {
 }
 .contradiction-hd {
   font-weight: 600;
-  margin-bottom: 6px;
+}
+.fold-all {
+  margin-left: auto;
 }
 </style>

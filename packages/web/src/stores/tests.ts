@@ -24,6 +24,7 @@ import {
 import { call } from "../services/sigma";
 import { fromOrigin } from "../services/sources";
 import { errMsg } from "../utils/format";
+import { useChangesStore } from "./changes";
 import { useLibraryStore } from "./library";
 import { useProverStore } from "./prover";
 import { AskResult, ParsedTest } from "sigmakee/sdk";
@@ -81,7 +82,11 @@ function loadSavedTests(): SavedTest[] {
   }
 }
 
-function gradeTest(parsed: ParsedTest, result: AskResult): TestOutcome {
+/** Grade a prove result against a test's `(answer yes|no)` expectation. */
+export function gradeTest(
+  parsed: Pick<ParsedTest, "expectedProof">,
+  result: AskResult,
+): TestOutcome {
   const exp = parsed.expectedProof;
   const conclusiveNo = [
     "Disproved",
@@ -177,13 +182,14 @@ export const useTestsStore = defineStore("tests", {
 
     /** Save the Ask/Tell panes as a test: `text` is the `.kif.tq` the caller
      *  built (via `formatTest`) or the raw TPTP problem, per `dialect`.
-     *  Overwrites the currently open test in place when it is a local
-     *  library file of the same dialect (round-trips cleanly, same format);
-     *  otherwise -- nothing open, a different dialect, or a read-only origin
-     *  (`sumo`/`url`) that can't be written back -- prompts for a new file
-     *  name and saves as a new local test. `saved: false` means the user
-     *  cancelled the name prompt. `target` lets the raw editor save a file
-     *  independently of the test currently open in Ask/Tell. */
+     *  Overwrites the currently open test in place when it has the same
+     *  dialect: a local library file is rewritten, and one imported from a
+     *  repo or URL keeps a local edit in the edit store (as a KB constituent
+     *  does), which outranks its source on later loads. Otherwise -- nothing
+     *  open, or a different dialect -- prompts for a new file name and saves
+     *  as a new local test. `saved: false` means the user cancelled the name
+     *  prompt. `target` lets the raw editor save a file independently of the
+     *  test currently open in Ask/Tell. */
     async saveCurrent(
       text: string,
       dialect: TestDialect,
@@ -195,6 +201,31 @@ export const useTestsStore = defineStore("tests", {
       notices?: string[];
     }> {
       const open = target === undefined ? this.openTest : target;
+      const remote =
+        open &&
+        (open.origin.kind === "sumo" || open.origin.kind === "url") &&
+        testDialect(open.name) === dialect
+          ? this.tests.find(
+              (t) => t.name === open.name && t.origin.kind === open.origin.kind,
+            )
+          : undefined;
+      if (remote) {
+        const { test } = await call(testParseRpc(remote.name), {
+          name: remote.name,
+          text,
+        });
+        await useChangesStore().recordSave(
+          remote.name,
+          remote.origin.kind,
+          text,
+          remote.text,
+        );
+        remote.text = text;
+        remote.parsed = test;
+        remote.outcome = null;
+        this.setOpen({ name: remote.name, origin: remote.origin });
+        return { saved: true, name: remote.name, overwritten: true };
+      }
       const canOverwrite =
         !!open &&
         open.origin.kind === "file" &&
@@ -246,7 +277,7 @@ export const useTestsStore = defineStore("tests", {
       await prover.loadDefaults();
       const config = prover.config(
         "ask",
-        t.parsed.timeout ? { timeLimitSecs: t.parsed.timeout } : {},
+        t.parsed.timeGiven ? { timeLimitSecs: t.parsed.timeout } : {},
       );
       const { result } = await call("prove", {
         assertions: t.parsed.axiomKif,

@@ -2,7 +2,7 @@
 /** Inference Tests tab: the test-file table (imported `.kif.tq` / `.p` / `.tptp`
  *  tests and every one the library offers) with the Import dialog in its
  *  header. Tests run against the loaded KB instead of joining it. */
-import { computed, onActivated, onMounted, ref } from "vue";
+import { computed, onActivated, onMounted, ref, watch } from "vue";
 import { useLibraryStore } from "../stores/library";
 import { isTestFile, useTestsStore } from "../stores/tests";
 import { useStatus } from "../composables/useStatus";
@@ -16,6 +16,11 @@ const library = useLibraryStore();
 
 onMounted(() => library.loadCatalogs());
 onActivated(() => library.loadCatalogs());
+// Accepting an update moves a pinned source's commit: list its files anew.
+watch(
+  () => library.repos.map((r) => library.catalogRef(r)).join("|"),
+  () => library.loadCatalogs(),
+);
 
 const tableLog = useStatus();
 const importOpen = ref(false);

@@ -425,7 +425,11 @@ async function onSave() {
       if (saved) current.value = { name: saved.name, origin: saved.origin };
       loadedText = text.value;
       updateParams({ file: r.name! });
-      saveStatus.set(`Saved ${r.name}.`);
+      saveStatus.set(
+        saved && saved.origin.kind !== "file"
+          ? `Saved ${r.name} locally; the copy at its source is unchanged.`
+          : `Saved ${r.name}.`,
+      );
       scheduleValidate();
       return;
     }
