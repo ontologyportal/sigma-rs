@@ -165,19 +165,18 @@ export function fixture() {
   };
   return { files, replay };
 }
-const report = (r) =>
-  `# Report\n\n\`\`\`lisp\n(instance A B)\n\`\`\`\n\n\`\`\`sigma-audit-replay\n${JSON.stringify(r)}\n\`\`\`\n`;
+const report = (r) => JSON.stringify(r);
 
-test("reads versioned metadata and preserves exact replay settings", () => {
+test("reads the versioned JSON report and preserves exact replay settings", () => {
   const { replay } = fixture();
   assert.deepEqual(
     JSON.parse(JSON.stringify(parseAuditReplay(report(replay)))),
     replay,
   );
-  assert.throws(() => parseAuditReplay("# Legacy report"), /metadata/);
+  assert.throws(() => parseAuditReplay("# Legacy report"), /valid JSON/);
   assert.throws(
     () => parseAuditReplay(report(replay) + report(replay)),
-    /metadata/,
+    /valid JSON/,
   );
 });
 

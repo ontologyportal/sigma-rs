@@ -76,10 +76,8 @@ const emit = defineEmits<{
           reported contradiction steps.
         </p>
       </template>
-      <Disclosure summary="Read contradictions.md">
-        <pre class="report-text">{{
-          report.markdown.split("## Replay metadata")[0]
-        }}</pre>
+      <Disclosure summary="Read contradictions.json">
+        <pre class="report-text">{{ report.json }}</pre>
       </Disclosure>
     </template>
     <p v-if="message" role="status">{{ message }}</p>

@@ -70,7 +70,7 @@ function fixture({
       },
     ],
   };
-  const markdown = `# Contradictions\n\`\`\`sigma-audit-replay\n${JSON.stringify(replay)}\n\`\`\`\n`;
+  const json = JSON.stringify(replay, null, 2);
   const events = [];
   const constituents = [];
   let checks = 0;
@@ -126,8 +126,8 @@ function fixture({
     {
       fetch: async (url) => {
         events.push(url);
-        if (url.endsWith("latest-contradictions.md"))
-          return new Response(markdown);
+        if (url.endsWith("latest-contradictions.json"))
+          return new Response(json);
         if (url.endsWith("full-sumo.txt")) return new Response(manifest);
         return new Response(corrupt ? "local edits" : bytes, {
           status: failFetch ? 404 : 200,
@@ -142,7 +142,7 @@ test("viewing a report is read-only, including when stale", async () => {
   const f = fixture({ stale: true });
   const result = await f.service.latestAuditReport();
   assert.match(result.unavailable, /master has changed/);
-  assert.match(result.markdown, /Contradictions/);
+  assert.deepEqual(JSON.parse(result.json), f.replay);
   assert.ok(!f.events.includes("replace"));
 });
 

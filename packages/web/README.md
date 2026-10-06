@@ -136,12 +136,13 @@ longer reproduce a contradiction, and inconclusive checks (including timeouts).
 They do not certify that the entire KB is consistent. Rechecking a previously
 loaded, pinned report does not synchronize to a newer master commit.
 
-The SUMO workflow publishes the same `contradictions.md` as both an Actions
-artifact and `.github/latest-contradictions.md` on its `audit-state` branch.
-The public copy avoids requiring an Actions artifact download token. Its
-`sigma-audit-replay` block records the run/attempt, SUMO commit, ordered
-constituents and SHA-256 hashes, engine source fingerprint, settings, and
-findings. Reports from older workflows without this block cannot be replayed.
+The SUMO workflow publishes the same `contradictions.json` as both an Actions
+artifact and `.github/latest-contradictions.json` on its `audit-state` branch.
+The public copy avoids requiring an Actions artifact download token. The
+versioned JSON document records the run/attempt, SUMO commit, ordered
+constituents and SHA-256 hashes, engine source fingerprint, settings, and all
+distinct findings accumulated while those SUMO and engine inputs remain
+unchanged. Markdown reports from older workflows cannot be replayed.
 
 Replay checks live master before download, before replacing work, after
 loading, and after execution. Any master commit change invalidates the report,

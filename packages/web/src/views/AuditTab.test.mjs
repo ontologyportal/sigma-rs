@@ -144,7 +144,7 @@ function fixture({
       latestAuditReport: async () => ({
         replay,
         unavailable,
-        markdown: "# Report",
+        json: '{"version":1}',
       }),
       loadAuditReplay: async () => {
         calls.push("replace");
