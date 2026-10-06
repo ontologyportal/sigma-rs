@@ -1,5 +1,8 @@
 <script setup lang="ts">
+import { ref } from "vue";
 import { useTestsStore } from "../../stores/tests";
+import type { Origin } from "../../models/Origin";
+import { errMsg } from "../../utils/format";
 import BaseDialog from "../BaseDialog.vue";
 import { useKBStore } from "../../stores/kb";
 import type { Constituent } from "../../models/Constituent";
@@ -29,6 +32,17 @@ function pick(c: Pick<Constituent, "name" | "origin" | "text">) {
   emit("pick", c);
 }
 
+/** A library test not loaded yet is fetched first. */
+const loadError = ref("");
+async function pickTest(t: { name: string; origin: Origin }) {
+  loadError.value = "";
+  try {
+    pick(await tests.ensure(t.name, t.origin));
+  } catch (e) {
+    loadError.value = `${t.name}: ${errMsg(e)}`;
+  }
+}
+
 function create() {
   close();
   emit("create");
@@ -43,15 +57,26 @@ function create() {
     @update:model-value="emit('update:modelValue', $event)"
   >
     <ul class="results open-list">
-      <li v-if="!kb.constituents.length && !tests.tests.length" class="hint">
+      <li v-if="loadError" class="hint bad">{{ loadError }}</li>
+      <li
+        v-if="
+          !kb.constituents.length &&
+          !tests.tests.length &&
+          !tests.available.length
+        "
+        class="hint"
+      >
         no files loaded yet — create one below
       </li>
       <li v-for="c in kb.constituents" :key="c.origin.kind + ':' + c.name">
         <a class="open-file" @click="pick(c)">{{ c.name }}</a>
         <span class="hint origin">{{ c.origin.kind }}</span>
       </li>
-      <li v-for="t in tests.tests" :key="t.name">
-        <a class="open-file" @click="pick(t)">{{ t.name }}</a>
+      <li
+        v-for="t in [...tests.tests, ...tests.available]"
+        :key="t.origin.kind + ':' + t.name"
+      >
+        <a class="open-file" @click="pickTest(t)">{{ t.name }}</a>
         <span class="hint origin">Inference test</span>
       </li>
     </ul>

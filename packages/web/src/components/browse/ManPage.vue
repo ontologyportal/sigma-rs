@@ -27,7 +27,7 @@ const emit = defineEmits<{ back: []; "update:view": [view: View] }>();
 
 const shell = useShellStore();
 const wordnet = useWordNetStore();
-const isCompact = computed(() => shell.effectiveLayout == "comfortable");
+const isCompact = computed(() => shell.isCompact);
 
 const root = ref<HTMLElement | null>(null);
 useSymbolLinks(root);

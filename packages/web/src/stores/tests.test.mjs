@@ -15,12 +15,15 @@ const source = ts.transpileModule(
   },
 ).outputText;
 
-function fixture() {
+function fixture({ catalog = [], entries = [], edited = {} } = {}) {
   setActivePinia(createPinia());
+  const fetched = [];
+  const history = [];
   const files = new Map();
   const calls = [];
   const edits = [];
   const configs = [];
+  const profiles = [];
   let chosen = "copy.kif.tq";
   class LocalOrigin {
     kind = "file";
@@ -30,6 +33,9 @@ function fixture() {
     "../constants": { TQ_SETTING: "tests" },
     "../models/Origin": {
       LocalOrigin,
+      RemoteOrigin: class {
+        kind = "url";
+      },
       originId: (o) => o.kind,
       serializeOrigin: (o) => ({ ...o }),
       parseOrigin: (o) => o,
@@ -45,26 +51,43 @@ function fixture() {
         return { test: { queryKif: text } };
       },
     },
-    "../services/sources": {},
-    "../utils/format": {},
+    "../services/sources": {
+      fromOrigin: async (name) => {
+        fetched.push(name);
+        return name === "bad.p" ? "malformed" : `text of ${name}`;
+      },
+    },
+    "../utils/format": { errMsg: (e) => e.message },
     "./prover": {
       useProverStore: () => ({
         async loadDefaults() {},
-        config: (_name, overrides) => {
+        config: (name, overrides) => {
+          profiles.push(name);
           configs.push(overrides);
           return { ...overrides };
         },
       }),
     },
+    "./runHistory": {
+      countForms: (text) => (text.match(/^\(/gm) || []).length,
+      useTestHistoryStore: () => ({ record: (run) => history.push(run) }),
+    },
     "./changes": {
       useChangesStore: () => ({
+        index: edited,
         async recordSave(name, kind, text, pristine) {
           edits.push([name, kind, text, pristine]);
         },
       }),
     },
     "./library": {
+      originForRepo: () => ({ kind: "sumo", nameFor: (p) => p }),
       useLibraryStore: () => ({
+        entries,
+        repos: [{}],
+        catalogs: { repo: catalog },
+        repoId: () => "repo",
+        async loadCatalogs() {},
         async writeLocal(name, text) {
           files.set(name, text);
         },
@@ -82,10 +105,13 @@ function fixture() {
   const store = exports.useTestsStore();
   return {
     store,
+    fetched,
+    history,
     files,
     calls,
     edits,
     configs,
+    profiles,
     local: new LocalOrigin(),
     choose: (s) => {
       chosen = s;
@@ -196,4 +222,106 @@ test("a test overrides the time limit only when it has a (time) directive", asyn
     {},
     { timeLimitSecs: 12 },
   ]);
+  assert.deepEqual([...f.profiles], ["test", "test"]);
+});
+
+test("runAll flags the store as running only while it runs", async () => {
+  const f = fixture();
+  await f.store.add("a.kif.tq", "q", f.local);
+  const seen = [];
+  await f.store.runAll(() => seen.push(f.store.running));
+  assert.deepEqual(seen, [true]);
+  assert.equal(f.store.running, false);
+});
+
+test("the library is listed at load, but no repo test is fetched", async () => {
+  const f = fixture({
+    catalog: [
+      { path: "a.kif.tq", size: 1 },
+      { path: "b.p", size: 1 },
+      { path: "Merge.kif", size: 1 },
+    ],
+  });
+  await f.store.load();
+  assert.equal(f.store.loaded, true);
+  assert.equal(f.store.tests.length, 0);
+  assert.deepEqual(
+    [...f.store.available.map((t) => t.name)],
+    ["a.kif.tq", "b.p"],
+  );
+  assert.equal(f.fetched.length, 0);
+});
+
+test("load fetches local test files and tests with a tracked edit", async () => {
+  const f = fixture({
+    catalog: [
+      { path: "edited.kif.tq", size: 1 },
+      { path: "plain.kif.tq", size: 1 },
+    ],
+    entries: [{ kind: "file", name: "mine.kif.tq", size: 1 }],
+    edited: { x: { name: "edited.kif.tq", origin: "sumo" } },
+  });
+  let settled = false;
+  const waiting = f.store.whenLoaded().then(() => {
+    settled = true;
+  });
+  await f.store.load();
+  await waiting;
+  assert.equal(settled, true);
+  assert.deepEqual([...f.fetched].sort(), ["edited.kif.tq", "mine.kif.tq"]);
+});
+
+test("ensure fetches a test once; a broken one is recorded, not refetched", async () => {
+  const f = fixture({
+    catalog: [
+      { path: "good.kif.tq", size: 1 },
+      { path: "bad.p", size: 1 },
+    ],
+  });
+  const t = await f.store.ensure("good.kif.tq");
+  assert.equal(t.text, "text of good.kif.tq");
+  await f.store.ensure("good.kif.tq");
+  await assert.rejects(f.store.ensure("bad.p"), /Invalid test/);
+  await assert.rejects(f.store.ensure("bad.p"), /Invalid test/);
+  assert.deepEqual([...f.fetched], ["good.kif.tq", "bad.p"]);
+  assert.equal(f.store.failed.length, 1);
+  await assert.rejects(f.store.ensure("missing.kif.tq"), /No test named/);
+});
+
+test("runAll loads the tests it is given, and counts a broken one as run", async () => {
+  const f = fixture({
+    catalog: [
+      { path: "good.kif.tq", size: 1 },
+      { path: "bad.p", size: 1 },
+    ],
+  });
+  const refs = f.store.available.map((t) => ({
+    name: t.name,
+    origin: t.origin,
+  }));
+  const r = await f.store.runAll(undefined, refs);
+  assert.equal(r.ran, 2);
+  assert.ok(f.store.find("good.kif.tq").outcome); // proved, then graded
+  assert.equal(f.store.failed[0].name, "bad.p");
+});
+
+test("every test a bulk run touches lands in the history, broken ones too", async () => {
+  const f = fixture({
+    catalog: [
+      { path: "good.kif.tq", size: 1 },
+      { path: "bad.p", size: 1 },
+    ],
+  });
+  const refs = f.store.available.map((t) => ({
+    name: t.name,
+    origin: t.origin,
+  }));
+  await f.store.runAll(undefined, refs);
+  assert.deepEqual(
+    f.history.map((r) => [r.title, r.status]),
+    [
+      ["good.kif.tq", "Proved"],
+      ["bad.p", "Error"],
+    ],
+  );
 });

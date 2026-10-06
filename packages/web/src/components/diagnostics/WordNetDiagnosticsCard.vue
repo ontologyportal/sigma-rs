@@ -19,9 +19,7 @@ defineProps<{
 const fmt = (n: number) => n.toLocaleString();
 
 const shell = useShellStore();
-const colDirection = computed(() =>
-  shell.effectiveLayout == "comfortable" ? "column" : "row",
-);
+const colDirection = computed(() => (shell.isCompact ? "column" : "row"));
 
 /** A capped report's own "N more" tail -- true whenever the total exceeds
  *  what the worker sent back (see `wordnetDiagnostics`'s `limit`). */

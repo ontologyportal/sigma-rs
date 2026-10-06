@@ -162,7 +162,7 @@ export const handlers = {
   loadWordNet(files: WordNetFiles): { synsets: number } {
     return { synsets: active().loadWordNet(files) };
   },
-  // Drop the currently installed WordNet lexicon, if any -- the KB tab's
+  // Drop the currently installed WordNet lexicon, if any -- the Knowledge base tab's WordNet view's
   // disable toggle. A no-op if none was loaded.
   clearWordNet(): { ok: true } {
     active().clearWordNet();

@@ -1,20 +1,12 @@
 <script setup lang="ts">
-import {
-  computed,
-  onActivated,
-  onBeforeUnmount,
-  reactive,
-  ref,
-  shallowRef,
-  watch,
-} from "vue";
-import { AskResult, formatTest, type ParsedTest } from "sigmakee/sdk";
+import { computed, onActivated, ref, shallowRef, watch } from "vue";
+import { AskResult, formatTest } from "sigmakee/sdk";
 import { useTabQuery } from "../composables/useTabQuery";
 import { useStatus } from "../composables/useStatus";
 import { navigate } from "../router";
 import { call } from "../services/sigma";
 import { downloadText, errMsg } from "../utils/format";
-import { useProverStore } from "../stores/prover";
+import { profileDefaults, useProverStore } from "../stores/prover";
 import {
   gradeTest,
   useTestsStore,
@@ -22,16 +14,33 @@ import {
   type TestOutcome,
 } from "../stores/tests";
 import type * as Monaco from "monaco-editor/esm/vs/editor/editor.api.js";
+import { useScratchValidation } from "../composables/useScratchValidation";
+import {
+  emptyTestMeta,
+  expectedProof,
+  metaFromTest,
+  testDirectives,
+} from "../utils/testMeta";
+import TestDetails from "../components/asktell/TestDetails.vue";
 import type { MonacoNs } from "../services/monaco";
 import BusyButton from "../components/BusyButton.vue";
 import { useElapsed } from "../composables/useElapsed";
 import Card from "../components/Card.vue";
-import Disclosure from "../components/Disclosure.vue";
-import DropMenu from "../components/DropMenu.vue";
 import MonacoEditor from "../components/MonacoEditor.vue";
 import ProofView from "../components/ProofView.vue";
 import ProverChips from "../components/ProverChips.vue";
 import ProverOptions from "../components/ProverOptions.vue";
+import ProverSideStack from "../components/ProverSideStack.vue";
+import ProofHistory from "../components/ProofHistory.vue";
+import HistoryToggle from "../components/HistoryToggle.vue";
+import {
+  countForms,
+  useAskHistoryStore,
+  type ProofRun,
+} from "../stores/runHistory";
+import Row from "../components/Row.vue";
+import Col from "../components/Col.vue";
+import { useShellStore } from "../stores/shell";
 import Segmented from "../components/Segmented.vue";
 import StatusLine from "../components/StatusLine.vue";
 
@@ -62,8 +71,13 @@ const testLog = useStatus();
 /** Transient note beside the actions ("Enter a query first."). */
 const cfgNote = ref("");
 const optionsOpen = ref(false);
-const moreOpen = ref(false);
-const moreBtn = ref<HTMLElement | null>(null);
+const history = useAskHistoryStore();
+/** Comfortable layout: the run history toggles open under the form. */
+const historyOpen = ref(false);
+const shell = useShellStore();
+/** Comfortable layout: options toggle open under the form; classic: they sit
+ *  in a column on the right. */
+const isCompact = computed(() => shell.isCompact);
 
 const langOptions = [
   {
@@ -94,76 +108,16 @@ const outcome = ref<TestOutcome | null>(null);
 
 // -- test details (the `.kif.tq` harness directives) ---------------------------
 
-type ExpectedAnswer = "yes" | "no" | "bindings" | "none";
 /** Edited beside the panes, filled from an opened test, and written back by
- *  Save test. Lists are comma-separated in the form. */
-const meta = reactive({
-  note: "",
-  categories: "",
-  timeout: 0,
-  answer: "yes" as ExpectedAnswer,
-  bindings: "",
-  files: "",
-});
+ *  Save test (see utils/testMeta). */
+const meta = ref(emptyTestMeta());
 const metaOpen = ref(false);
-const splitList = (s: string) =>
-  s
-    .split(/[,\n]/)
-    .map((x) => x.trim())
-    .filter(Boolean);
-
-function resetMeta() {
-  Object.assign(meta, {
-    note: "",
-    categories: "",
-    timeout: 0,
-    answer: "yes",
-    bindings: "",
-    files: "",
-  });
-}
-
-function metaFromTest(p: ParsedTest) {
-  meta.note = p.noteGiven ? p.note : "";
-  meta.categories = (p.categories ?? []).join(", ");
-  meta.timeout = p.timeGiven ? p.timeout : 0;
-  meta.answer = p.expectedAnswer?.length
-    ? "bindings"
-    : p.expectedProof === true
-      ? "yes"
-      : p.expectedProof === false
-        ? "no"
-        : "none";
-  meta.bindings = (p.expectedAnswer ?? []).join(" ");
-  meta.files = (p.extraFiles ?? []).join(", ");
-}
 
 /** The details apply while a test is being worked on -- one is open, or the
  *  user expanded the section to write one -- never to ad-hoc queries. */
 const testActive = computed(
   () => !tptpMode.value && (!!tests.openTest || metaOpen.value),
 );
-/** The expected proof outcome `meta` describes (bindings imply a proof). */
-const expectedProof = computed<boolean | null>(() =>
-  meta.answer === "none" ? null : meta.answer !== "no",
-);
-/** A test's own `(time N)` overrides the prover time limit, as when the
- *  Inference Tests tab runs it. */
-const testTimeLimit = computed(() =>
-  testActive.value && meta.timeout > 0 ? Math.round(meta.timeout) : 0,
-);
-const metaSummary = computed(() => {
-  const parts: string[] = [];
-  if (meta.note) parts.push(meta.note);
-  const cats = splitList(meta.categories);
-  if (cats.length) parts.push(cats.join(", "));
-  if (meta.answer !== "none")
-    parts.push(
-      `expects ${meta.answer === "bindings" ? meta.bindings || "bindings" : meta.answer}`,
-    );
-  if (testTimeLimit.value) parts.push(`${testTimeLimit.value}s`);
-  return parts.length ? `Test details — ${parts.join(" · ")}` : "Test details";
-});
 const resultBackend = ref("");
 const error = ref("");
 
@@ -180,50 +134,13 @@ const stepsText = computed(() => {
 
 // -- scratch validation -------------------------------------------------------
 
-let scratchTimer = 0;
-let scratchBusy = false;
-let scratchQueued = false;
-let editorsReady = 0;
-
-function scheduleScratchValidate() {
-  clearTimeout(scratchTimer);
-  scratchTimer = window.setTimeout(runScratchValidate, 400);
-}
-
-async function runScratchValidate() {
-  const a = assertionsEd.value;
-  const q = queryEd.value;
-  if (!a || !q) return;
-  // `validateScratch` only understands SUO-KIF -- in TPTP mode it would
-  // paint the editors with spurious "parse error" squiggles under
-  // perfectly valid TPTP text, so just clear any stale markers instead.
-  if (tptpMode.value) {
-    a.setMarkers([]);
-    q.setMarkers([]);
-    return;
-  }
-  if (scratchBusy) {
-    scratchQueued = true;
-    return;
-  }
-  scratchBusy = true;
-  try {
-    const r = await call("validateScratch", {
-      assertions: assertions.value,
-      query: query.value,
-    });
-    assertionsEd.value?.setMarkers(r.assertions);
-    queryEd.value?.setMarkers(r.query);
-  } catch (e) {
-    console.warn("validateScratch:", errMsg(e));
-  } finally {
-    scratchBusy = false;
-    if (scratchQueued) {
-      scratchQueued = false;
-      runScratchValidate();
-    }
-  }
-}
+const { editorReady, paneErrors } = useScratchValidation({
+  assertions,
+  query,
+  assertionsEd,
+  queryEd,
+  enabled: computed(() => !tptpMode.value),
+});
 
 function onEditorReady(
   editor: Monaco.editor.IStandaloneCodeEditor,
@@ -239,38 +156,17 @@ function onEditorReady(
       if (!proving.value) prove();
     },
   });
-  editorsReady += 1;
-  if (editorsReady === 2) runScratchValidate();
+  editorReady();
 }
 
-watch([assertions, query], scheduleScratchValidate);
-watch(
-  () => prover.proofLang,
-  () => runScratchValidate(),
-);
 watch(
   () => prover.backend,
   () => {
     showDownloadTptp.value = false;
   },
 );
-onBeforeUnmount(() => clearTimeout(scratchTimer));
 
 // -- prove --------------------------------------------------------------------
-
-/** Validate both panes now (not after the edit debounce) and count their
- *  error-level diagnostics; the markers are refreshed as a side effect. */
-async function paneErrors(): Promise<{ assertions: number; query: number }> {
-  const r = await call("validateScratch", {
-    assertions: assertions.value,
-    query: query.value,
-  });
-  assertionsEd.value?.setMarkers(r.assertions);
-  queryEd.value?.setMarkers(r.query);
-  const errors = (ds: { severity: string }[]) =>
-    ds.filter((d) => d.severity === "error").length;
-  return { assertions: errors(r.assertions), query: errors(r.query) };
-}
 
 async function prove() {
   const backend = prover.backendLabel;
@@ -296,10 +192,7 @@ async function prove() {
       }
     }
     await prover.loadDefaults();
-    const config = prover.config(
-      "ask",
-      testTimeLimit.value ? { timeLimitSecs: testTimeLimit.value } : {},
-    );
+    const config = prover.config("ask");
     runLimitSecs.value = config.timeLimitSecs ?? 0;
     let r: AskResult;
     let asserted = assertions.value.trim();
@@ -327,15 +220,47 @@ async function prove() {
     error.value = "";
     result.value = r;
     resultBackend.value = backend;
-    if (testActive.value && expectedProof.value !== null)
-      outcome.value = gradeTest({ expectedProof: expectedProof.value }, r);
+    recordRun(asked, asserted, r.status, backend);
+    const expected = expectedProof(meta.value);
+    if (testActive.value && expected !== null)
+      outcome.value = gradeTest({ expectedProof: expected }, r);
   } catch (e) {
     result.value = null;
     resultBackend.value = "";
     error.value = errMsg(e);
+    recordRun("", "", "Error", backend);
   } finally {
     proving.value = false;
   }
+}
+
+/** Add this run to the history: the panes as they are, plus the goal and
+ *  the told formulas in KIF (`goal`/`told` empty when the run failed before
+ *  a TPTP problem was translated). */
+function recordRun(
+  goal: string,
+  told: string,
+  status: string,
+  backend: string,
+) {
+  history.record({
+    lang: tptpMode.value ? "tptp" : "kif",
+    assertions: assertions.value,
+    query: tptpMode.value ? "" : query.value,
+    goal: goal.trim() || (tptpMode.value ? "" : query.value.trim()),
+    told: countForms(told || (tptpMode.value ? "" : assertions.value)),
+    status,
+    backend,
+  });
+}
+
+/** Put an earlier run back in the panes (no longer editing a test). */
+function restoreRun(run: ProofRun) {
+  tests.setOpen(null);
+  prover.proofLang = run.lang;
+  assertions.value = run.assertions;
+  query.value = run.query;
+  historyOpen.value = false;
 }
 
 function downloadVampireTptp() {
@@ -355,13 +280,15 @@ function openTest(t: TestEntry) {
     prover.proofLang = "kif";
     assertions.value = t.parsed.axiomKif || "";
     query.value = t.parsed.queryKif || "";
-    metaFromTest(t.parsed);
+    meta.value = metaFromTest(t.parsed);
+    if (t.parsed.timeGiven)
+      prover.profiles.ask.timeLimitSecs = t.parsed.timeout;
     metaOpen.value = true;
   } else {
     prover.proofLang = "tptp";
     assertions.value = t.text;
     query.value = "";
-    resetMeta();
+    meta.value = emptyTestMeta();
     metaOpen.value = false;
   }
   tests.setOpen({ name: t.name, origin: t.origin });
@@ -373,7 +300,7 @@ watch(
   () => tests.openTest,
   (open) => {
     if (open) return;
-    resetMeta();
+    meta.value = emptyTestMeta();
     metaOpen.value = false;
     outcome.value = null;
   },
@@ -384,18 +311,38 @@ onActivated(() => {
   if (t && t.text !== loadedTestText) openTest(t);
 });
 
-const { onQuery, str } = useTabQuery(["prover"]);
+const { onQuery, query: urlQuery, str } = useTabQuery(["prover"]);
 
-// `?test=<name>` opens an imported test (the Inference Tests tab's name link).
-onQuery((q) => {
+// `?test=<name>` opens a test (the Inference Tests tab's name link), fetching
+// it from the library if it hasn't been loaded. On a fresh page load the
+// library is still being listed: wait for that before deciding the test
+// doesn't exist.
+onQuery(async (q) => {
   const name = str(q.test);
   if (!name) return;
-  const t = tests.find(name);
-  if (t && (name !== tests.openTest?.name || t.text !== loadedTestText))
-    openTest(t);
-  else if (t) return;
-  else cfgNote.value = `${name} is not imported (see the Inference Tests tab)`;
+  let t = tests.find(name);
+  if (!t) {
+    testLog.set(`Loading test ${name}…`);
+    try {
+      await tests.whenLoaded();
+      t = await tests.ensure(name);
+    } catch (e) {
+      if (str(urlQuery.value.test) === name)
+        testLog.set(`Could not open ${name}: ${errMsg(e)}`, true);
+      return;
+    }
+    if (str(urlQuery.value.test) !== name) return; // the URL moved on meanwhile
+    testLog.clear();
+  }
+  if (name !== tests.openTest?.name || t.text !== loadedTestText) openTest(t);
 });
+
+/** The `(time N)` a saved test carries: the time limit, when it isn't the
+ *  default (a test without one runs at the Inference Tests default). */
+function testTime(): number {
+  const secs = Math.round(prover.profiles.ask.timeLimitSecs);
+  return secs > 0 && secs !== profileDefaults("ask").timeLimitSecs ? secs : 0;
+}
 
 async function saveTest() {
   let text: string;
@@ -412,15 +359,10 @@ async function saveTest() {
       return;
     }
     text = formatTest({
-      note: meta.note.trim(),
-      categories: splitList(meta.categories),
-      timeout: meta.timeout > 0 ? Math.round(meta.timeout) : 0,
-      extraFiles: splitList(meta.files),
+      ...testDirectives(meta.value),
+      timeout: testTime(),
       assertions: assertions.value,
       query: q,
-      expectedProof: expectedProof.value,
-      expectedAnswer:
-        meta.answer === "bindings" ? meta.bindings.split(/\s+/) : null,
     });
   }
   savingTest.value = true;
@@ -444,229 +386,182 @@ async function saveTest() {
 </script>
 
 <template>
-  <Card>
-    <div class="top">
-      <Segmented
-        v-model="prover.proofLang"
-        :options="langOptions"
-        label="Input language"
-      />
-      <span v-if="tests.openTest" class="hint editing">
-        Editing test: {{ tests.openTest.name }}
-        <button
-          class="btn ghost small"
-          type="button"
-          @click="navigate('edit', { file: tests.openTest.name })"
-        >
-          Edit raw test
-        </button>
-      </span>
-    </div>
-    <label v-if="tptpMode" class="mt"
-      >TPTP problem — axioms + an embedded <code>conjecture</code></label
-    >
-    <label v-else class="mt"
-      >Assertions — <code>tell</code> (added to the KB for this query)</label
-    >
-    <div class="pane-editor" :class="{ 'pane-editor-tall': tptpMode }">
-      <MonacoEditor
-        ref="assertionsEd"
-        v-model="assertions"
-        compact
-        :language="tptpMode ? 'tptp' : 'kif'"
-        @ready="onEditorReady"
-      />
-    </div>
-    <div v-show="!tptpMode">
-      <label class="mt">Query — <code>ask</code></label>
-      <div class="pane-editor pane-editor-sm">
-        <MonacoEditor
-          ref="queryEd"
-          v-model="query"
-          compact
-          @ready="onEditorReady"
-        />
-      </div>
-      <Disclosure
-        :summary="metaSummary"
-        :open="metaOpen"
-        @toggle="metaOpen = $event"
-      >
-        <div class="meta-grid">
-          <div>
-            <label for="tqNote">note</label>
-            <input
-              id="tqNote"
-              v-model="meta.note"
-              type="text"
-              placeholder="e.g. Astronomy_4"
-            />
-          </div>
-          <div>
-            <label for="tqCategories">categories</label>
-            <input
-              id="tqCategories"
-              v-model="meta.categories"
-              type="text"
-              placeholder="comma-separated"
-            />
-          </div>
-          <div>
-            <label for="tqTime">time limit (s)</label>
-            <input
-              id="tqTime"
-              v-model.number="meta.timeout"
-              type="number"
-              min="0"
-              placeholder="prover setting"
-            />
-          </div>
-          <div>
-            <label for="tqAnswer">expected answer</label>
-            <div class="answer">
-              <select id="tqAnswer" v-model="meta.answer">
-                <option value="yes">yes (provable)</option>
-                <option value="no">no (not provable)</option>
-                <option value="bindings">bindings</option>
-                <option value="none">unspecified</option>
-              </select>
-              <input
-                v-if="meta.answer === 'bindings'"
-                v-model="meta.bindings"
-                type="text"
-                placeholder="e.g. Rex Fido"
-                aria-label="Expected bindings"
-              />
-            </div>
-          </div>
-          <div>
-            <label for="tqFiles">required files</label>
-            <input
-              id="tqFiles"
-              v-model="meta.files"
-              type="text"
-              placeholder="e.g. Astronomy.kif"
-            />
+  <Row>
+    <Col :span="isCompact ? 12 : 8">
+      <Card>
+        <div class="top">
+          <Segmented
+            v-model="prover.proofLang"
+            :options="langOptions"
+            label="Input language"
+          />
+          <div class="test-actions">
+            <button
+              class="btn ghost small"
+              type="button"
+              title="Pick a test on the Inference Tests tab"
+              @click="navigate('problems')"
+            >
+              Browse tests
+            </button>
+            <button
+              class="btn ghost small"
+              type="button"
+              :disabled="savingTest"
+              :title="
+                tests.openTest
+                  ? `Save changes to ${tests.openTest.name}`
+                  : 'Save the panes as a new inference test'
+              "
+              @click="saveTest"
+            >
+              {{ tests.openTest ? "Save test" : "Save as test" }}
+            </button>
           </div>
         </div>
-        <div class="hint sub">
-          The <code>.kif.tq</code> directives Save test writes. A time limit
-          here overrides the prover setting when proving this test.
+        <div v-if="tests.openTest" class="open-test">
+          <span class="hint">Editing</span>
+          <code>{{ tests.openTest.name }}</code>
+          <a
+            href="#"
+            @click.prevent="navigate('edit', { file: tests.openTest.name })"
+            >Edit raw</a
+          >
         </div>
-      </Disclosure>
-    </div>
-    <div v-show="tptpMode" class="mt-sm">
-      <label class="check"
-        ><input type="checkbox" v-model="prover.useSumo" /> Use SUMO
-        <span class="hint"
-          >— prove against all of SUMO as background axioms and decode
-          SUMO-mangled symbol names; off proves the file standalone,
-          unmangled</span
-        ></label
-      >
-    </div>
-    <div class="actions mt">
-      <BusyButton
-        :busy="proving"
-        label="Prove"
-        :title="`Prove (${proveKey})`"
-        :busy-label="`Proving… ${elapsedLabel(runLimitSecs)}`"
-        :progress="elapsedFraction(runLimitSecs)"
-        @click="prove"
-      />
-      <button
-        ref="moreBtn"
-        class="btn ghost"
-        type="button"
-        aria-haspopup="menu"
-        :aria-expanded="moreOpen"
-        @click="moreOpen = !moreOpen"
-      >
-        More ▾
-      </button>
-      <ProverChips
-        v-model:open="optionsOpen"
-        profile="ask"
-        :fixed="testTimeLimit ? [`${testTimeLimit}s from the test`] : []"
-      />
-      <span v-if="cfgNote" class="hint">{{ cfgNote }}</span>
-    </div>
-    <DropMenu v-model="moreOpen" :anchor="moreBtn">
-      <template #default="{ close }">
-        <button
-          type="button"
-          role="menuitem"
-          :disabled="savingTest"
-          @click="
-            close();
-            saveTest();
-          "
-        >
-          Save as test
-        </button>
-        <button
-          type="button"
-          role="menuitem"
-          @click="
-            close();
-            navigate('problems');
-          "
-        >
-          Inference tests…
-        </button>
-        <button
-          v-if="showDownloadTptp"
-          type="button"
-          role="menuitem"
-          title="The exact TPTP input for the last external prover run"
-          @click="
-            close();
-            downloadVampireTptp();
-          "
-        >
-          Download the prover's TPTP input
-        </button>
-      </template>
-    </DropMenu>
-    <ProverOptions v-if="optionsOpen" profile="ask" :disabled="proving" />
-    <StatusLine :text="testLog.text" :error="testLog.error" />
-  </Card>
 
-  <Card v-if="error || result">
-    <div class="inline between">
-      <div class="inline tight center">
-        <span class="status" :class="error ? 'InputError' : result?.status">{{
-          error ? "Error" : result?.status
-        }}</span>
-        <span class="hint">{{ backendBadge }}</span>
-        <span class="hint">{{ stepsText }}</span>
-        <span v-if="tookLabel" class="hint" title="Wall-clock time">{{
-          tookLabel
-        }}</span>
-        <span
-          v-if="outcome"
-          class="test-outcome"
-          :class="outcome.cls"
-          :title="`Graded against the expected answer (${meta.answer})`"
-          >expected {{ meta.answer === "no" ? "no" : "yes" }} ·
-          {{ outcome.label }}</span
+        <div class="pane-label">
+          <template v-if="tptpMode">
+            <span>TPTP problem</span>
+            <span class="hint"
+              >axioms + an embedded <code>conjecture</code></span
+            >
+          </template>
+          <template v-else>
+            <span>Assertions</span>
+            <span class="hint"
+              ><code>tell</code> — added to the KB for this query</span
+            >
+          </template>
+        </div>
+        <div class="pane-editor" :class="{ 'pane-editor-tall': tptpMode }">
+          <MonacoEditor
+            ref="assertionsEd"
+            v-model="assertions"
+            compact
+            :language="tptpMode ? 'tptp' : 'kif'"
+            @ready="onEditorReady"
+          />
+        </div>
+        <div v-show="!tptpMode">
+          <div class="pane-label">
+            <span>Query</span>
+            <span class="hint"><code>ask</code></span>
+          </div>
+          <div class="pane-editor pane-editor-sm">
+            <MonacoEditor
+              ref="queryEd"
+              v-model="query"
+              compact
+              @ready="onEditorReady"
+            />
+          </div>
+          <TestDetails v-model="meta" v-model:open="metaOpen" class="details" />
+        </div>
+        <label v-show="tptpMode" class="check mt-sm"
+          ><input type="checkbox" v-model="prover.useSumo" /> Use SUMO
+          <span class="hint"
+            >— prove against all of SUMO as background axioms and decode
+            SUMO-mangled symbol names; off proves the file standalone,
+            unmangled</span
+          ></label
         >
-      </div>
-      <label class="check"
-        ><input type="checkbox" v-model="prover.plainProof" /> Plain
-        Proof</label
-      >
-    </div>
-    <ProofView
-      v-if="result"
-      :steps="result.proof || []"
-      :prologue="result.proof_tptp_prologue"
-      :prose="result.prose"
-      :prose-missing="result.prose_missing"
-      :graphviz="result.graphviz"
-      :raw-output="result.raw_output"
-    />
-  </Card>
+
+        <div class="actions">
+          <BusyButton
+            :busy="proving"
+            label="Prove"
+            :title="`Prove (${proveKey})`"
+            :busy-label="`Proving… ${elapsedLabel(runLimitSecs)}`"
+            :progress="elapsedFraction(runLimitSecs)"
+            @click="prove"
+          />
+          <ProverChips
+            v-model:open="optionsOpen"
+            profile="ask"
+            :toggle="isCompact"
+          />
+          <HistoryToggle v-if="isCompact" v-model:open="historyOpen" />
+          <span v-if="cfgNote" class="hint">{{ cfgNote }}</span>
+          <a
+            v-if="showDownloadTptp"
+            class="download"
+            href="#"
+            title="The exact TPTP input for the last external prover run"
+            @click.prevent="downloadVampireTptp"
+            >Download TPTP input</a
+          >
+        </div>
+        <ProverOptions
+          v-if="isCompact && optionsOpen"
+          profile="ask"
+          :disabled="proving"
+        />
+        <ProofHistory
+          v-if="isCompact && historyOpen"
+          class="history-panel"
+          feed="ask"
+          @pick="restoreRun"
+        />
+        <StatusLine :text="testLog.text" :error="testLog.error" />
+      </Card>
+
+      <Card v-if="error || result">
+        <div class="inline between">
+          <div class="inline tight center">
+            <span
+              class="status"
+              :class="error ? 'InputError' : result?.status"
+              >{{ error ? "Error" : result?.status }}</span
+            >
+            <span class="hint">{{ backendBadge }}</span>
+            <span class="hint">{{ stepsText }}</span>
+            <span v-if="tookLabel" class="hint" title="Wall-clock time">{{
+              tookLabel
+            }}</span>
+            <span
+              v-if="outcome"
+              class="test-outcome"
+              :class="outcome.cls"
+              :title="`Graded against the expected answer (${meta.answer})`"
+              >expected {{ meta.answer === "no" ? "no" : "yes" }} ·
+              {{ outcome.label }}</span
+            >
+          </div>
+          <label class="check"
+            ><input type="checkbox" v-model="prover.plainProof" /> Plain
+            Proof</label
+          >
+        </div>
+        <ProofView
+          v-if="result"
+          :steps="result.proof || []"
+          :prologue="result.proof_tptp_prologue"
+          :prose="result.prose"
+          :prose-missing="result.prose_missing"
+          :graphviz="result.graphviz"
+          :raw-output="result.raw_output"
+        />
+      </Card>
+    </Col>
+    <Col v-if="!isCompact" :span="4" style="margin-left: 15px">
+      <ProverSideStack
+        profile="ask"
+        feed="ask"
+        :disabled="proving"
+        @pick="restoreRun"
+      />
+    </Col>
+  </Row>
 </template>
 
 <style scoped>
@@ -675,23 +570,6 @@ async function saveTest() {
   border: 1px solid var(--line);
   border-radius: 7px;
   overflow: hidden;
-}
-.meta-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-  gap: 10px 14px;
-  margin-top: 8px;
-}
-.meta-grid .answer {
-  display: flex;
-  gap: 6px;
-}
-.meta-grid select {
-  min-width: 0;
-}
-.sub {
-  font-size: 12px;
-  margin-top: 6px;
 }
 .test-outcome {
   font-size: 12px;
@@ -722,20 +600,56 @@ async function saveTest() {
   justify-content: space-between;
   gap: 10px;
 }
-.editing {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
+.test-actions {
+  display: flex;
+  gap: 6px;
 }
-button.small {
-  height: auto;
-  padding: 4px 10px;
+/* The open test's name, as a slim bar under the header. */
+.open-test {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 6px 10px;
+  border-radius: 7px;
+  font-size: 13px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.open-test code {
+  word-break: break-all;
+}
+/* An editor's label: its name, then a muted gloss. */
+.pane-label {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 14px 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.pane-label .hint {
+  font-weight: normal;
+}
+.details {
+  margin-top: 12px;
+}
+.download {
+  margin-left: auto;
   font-size: 13px;
 }
+.history-panel {
+  margin-top: 12px;
+}
+/* Prove and what it will run with, set off from the inputs above. */
 .actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 10px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
 }
 </style>

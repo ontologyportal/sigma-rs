@@ -24,6 +24,11 @@ const {
   buildContradictionIssue,
   formLineSpan,
   axiomDiagnostics,
+  batchBreakdown,
+  checkLabel,
+  checkTone,
+  citedSources,
+  proofSummary,
 } = exports;
 
 const axiom = (index, kif, file, line) => ({
@@ -290,5 +295,48 @@ test("summarizeBatches counts subproblem outcomes", () => {
       crashed: 1,
       other: 1,
     },
+  );
+});
+
+test("batchBreakdown lists only the outcomes that occurred", () => {
+  const none = {
+    total: 1,
+    clean: 1,
+    contradictory: 0,
+    timeLimit: 0,
+    stepLimit: 0,
+    crashed: 0,
+    other: 0,
+  };
+  assert.equal(batchBreakdown(none), "1 check · 1 clean");
+  assert.equal(
+    batchBreakdown({ ...none, total: 3, timeLimit: 1, crashed: 1 }),
+    "3 checks · 1 clean · 1 timed out · 1 crashed",
+  );
+});
+
+test("checkLabel and checkTone word and colour each way a check ends", () => {
+  const check = (status, stop_reason = null) => ({ status, stop_reason });
+  assert.equal(checkLabel(check("Consistent")), "clean");
+  assert.equal(checkLabel(check("Inconsistent")), "contradiction");
+  assert.equal(checkLabel(check("Crashed")), "crashed");
+  assert.equal(checkLabel(check("Timeout", "TimeLimit")), "timed out");
+  assert.equal(checkLabel(check("Unknown", "StepLimit")), "step cap");
+  assert.equal(checkLabel(check("Unknown")), "gave up");
+  assert.equal(checkTone(check("Consistent")), "ok");
+  assert.equal(checkTone(check("Crashed")), "bad");
+  assert.equal(checkTone(check("Timeout")), "warn");
+});
+
+test("proofSummary counts steps and cites at most three sources", () => {
+  const steps = [1, 2, 3, 4].map((n) => axiom(n, `(p${n})`, "Merge.kif", n));
+  assert.equal(citedSources([]), "");
+  assert.equal(
+    proofSummary(steps.slice(0, 1)),
+    "proof (1 step) · cites Merge.kif:1",
+  );
+  assert.equal(
+    citedSources(steps),
+    "Merge.kif:1, Merge.kif:2, Merge.kif:3 (+1 more)",
   );
 });

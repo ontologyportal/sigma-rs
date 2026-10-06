@@ -1,12 +1,15 @@
 <script setup lang="ts">
-/** Knowledge base tab: the unified constituent table (with the standard-set
- *  presets and the Import dialog in its header) and the WordNet panel. */
+/** Knowledge base tab, in three sub-tabs (`?view=`): the unified constituent
+ *  table (with the standard-set presets and the Import dialog in its
+ *  header), the Sources card, and the WordNet panel. */
 import { computed, onActivated, onMounted, ref, watch } from "vue";
 import { Constituent } from "../models/Constituent";
 import { GitOrigin } from "../models/Origin";
 import { useKBStore } from "../stores/kb";
 import { useLibraryStore } from "../stores/library";
 import { useStatus } from "../composables/useStatus";
+import { useTabQuery } from "../composables/useTabQuery";
+import { updateParams } from "../router";
 import { formatSize } from "../utils/format";
 import Card from "../components/Card.vue";
 import DropMenu from "../components/DropMenu.vue";
@@ -15,6 +18,7 @@ import ConstituentTable from "../components/kb/ConstituentTable.vue";
 import ImportDialog from "../components/kb/ImportDialog.vue";
 import SourcesCard from "../components/kb/SourcesCard.vue";
 import WordNetPanel from "../components/kb/WordNetPanel.vue";
+import SubTabs from "../components/SubTabs.vue";
 
 const kb = useKBStore();
 const library = useLibraryStore();
@@ -26,6 +30,21 @@ watch(
   () => library.repos.map((r) => library.catalogRef(r)).join("|"),
   () => library.loadCatalogs(),
 );
+
+type View = "constituents" | "sources" | "wordnet";
+const VIEWS: { value: View; label: string }[] = [
+  { value: "constituents", label: "Constituents" },
+  { value: "sources", label: "Sources" },
+  { value: "wordnet", label: "WordNet" },
+];
+const { query, str } = useTabQuery(["kb"]);
+const view = computed<View>(() => {
+  const v = str(query.value.view);
+  return VIEWS.some((o) => o.value === v) ? (v as View) : "constituents";
+});
+function setView(v: View) {
+  updateParams(v === "constituents" ? {} : { view: v });
+}
 
 const tableLog = useStatus();
 
@@ -93,7 +112,13 @@ async function loadPreset(key: string) {
 </script>
 
 <template>
-  <Card title="Constituents" :description="summary">
+  <SubTabs :model-value="view" :options="VIEWS" @update:model-value="setView" />
+
+  <Card
+    v-show="view === 'constituents'"
+    title="Constituents"
+    :description="summary"
+  >
     <template #header>
       <span class="inline tight">
         <button
@@ -129,12 +154,12 @@ async function loadPreset(key: string) {
 
   <ImportDialog v-model="importOpen" @imported="(msg) => tableLog.set(msg)" />
 
-  <SourcesCard />
+  <SourcesCard v-show="view === 'sources'" />
 
-  <Card title="WordNet lexicon">
+  <Card v-show="view === 'wordnet'" title="WordNet lexicon">
     <template #description>
       Powers synonym-aware search (results tagged "wn") — fetched from the same
-      <code>ontologyportal/sumo</code> repo as the KIF constituents above.
+      <code>ontologyportal/sumo</code> repo as the KIF constituents.
     </template>
     <WordNetPanel />
   </Card>

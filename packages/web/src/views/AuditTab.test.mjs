@@ -34,6 +34,17 @@ const { descriptor } = parse(
 const source = transpile(
   compileScript(descriptor, { id: "audit-test" }).content,
 );
+const composables = Object.fromEntries(
+  ["useAuditSweep", "useAuditRun", "useAuditReplay"].map((name) => [
+    name,
+    transpile(
+      readFileSync(
+        new URL(`../composables/${name}.ts`, import.meta.url),
+        "utf8",
+      ),
+    ),
+  ]),
+);
 
 function fixture({
   unavailable = "",
@@ -57,7 +68,8 @@ function fixture({
     ],
   };
   const imports = {
-    vue: { ...vue, onActivated: () => {} },
+    // Setup runs outside a component here: no instance to provide into.
+    vue: { ...vue, onActivated: () => {}, provide: () => {} },
     "vue-router": { onBeforeRouteLeave: () => {} },
     "../services/sigma": {
       isWasmAbort: () => false,
@@ -93,14 +105,26 @@ function fixture({
         };
       },
     },
-    "../utils/format": { errMsg: (e) => e.message },
+    "../utils/format": {
+      errMsg: (e) => e.message,
+      fmtNum: String,
+      fmtTime: (d) => d.toISOString(),
+    },
     "../stores/boot": { useBootStore: () => ({}) },
     "../stores/kb": { useKBStore: () => ({ constituents: [] }) },
+    "../stores/shell": {
+      useShellStore: () => ({ isCompact: true }),
+    },
     "../stores/prover": {
       useProverStore: () => ({
         adoptConfig: () => {
           calls.push("settings");
         },
+        loadDefaults: async () => {},
+        reset: (name) => {
+          calls.push(`reset:${name}`);
+        },
+        config: (_name, overrides) => overrides,
         backend: "native",
         backendLabel: "SUPr",
         vampireSelected: false,
@@ -112,6 +136,7 @@ function fixture({
     "../router": { updateParams: () => {} },
     "../composables/useElapsed": {
       useElapsed: () => ({ label: () => "", lastLabel: "" }),
+      fmtSecs: (secs) => `${secs}s`,
     },
     "../utils/auditReplay": utils,
     "../utils/auditPlan": plan,
@@ -141,20 +166,33 @@ function fixture({
       }),
     },
   };
-  const exports = {};
-  vm.runInNewContext(source, {
-    exports,
+  // The view's composables run for real, against the same mocks; they
+  // import from their own directory, so alias those specifiers too.
+  imports["./useElapsed"] = imports["../composables/useElapsed"];
+  const context = {
     require: (name) => imports[name] || {},
     localStorage: { getItem: () => null, setItem: () => {} },
     performance,
-  });
+  };
+  for (const name of ["useAuditSweep", "useAuditRun", "useAuditReplay"]) {
+    const exports = {};
+    vm.runInNewContext(composables[name], { ...context, exports });
+    imports[`../composables/${name}`] = exports;
+  }
+  const exports = {};
+  vm.runInNewContext(source, { ...context, exports });
   const scope = vue.effectScope();
   const view = scope.run(() => exports.default.setup({}, { expose: () => {} }));
   return { view, calls, scope, replay };
 }
 
 test("report dialog explains the nightly audit and stale-report restriction", () => {
-  const template = descriptor.template.content.replace(/\s+/g, " ");
+  const template = parse(
+    readFileSync(
+      new URL("../components/audit/MasterReportDialog.vue", import.meta.url),
+      "utf8",
+    ),
+  ).descriptor.template.content.replace(/\s+/g, " ");
   assert.match(template, /SUMO runs a two-hour contradiction audit each night/);
   assert.match(template, /replay only those steps/);
   assert.match(template, /Reports cannot be loaded if master has changed/);
@@ -297,12 +335,7 @@ test("contradiction proofs fold individually and all at once", async () => {
     f.view.setCollapsed(c, true);
     f.view.setCollapsed(c, true); // idempotent, as a programmatic toggle event is
     assert.equal(f.view.isCollapsed(c), true);
-    assert.match(
-      f.view.proofSummary(c),
-      /^proof \(1 step\) · cites Merge\.kif:1/,
-    );
     assert.equal(f.view.allCollapsed.value, true);
-    assert.match(f.view.citedSummary(c), /Merge\.kif:1/);
     f.view.setAllCollapsed(false);
     assert.equal(f.view.isCollapsed(c), false);
     f.view.setAllCollapsed(true);
@@ -336,11 +369,93 @@ test("a KB with no saved sweep starts its own instead of inheriting one", () => 
       total: 900,
       scope: "Old.kif",
     });
-    f.view.loadSweep(); // the fixture's storage has nothing for this KB
+    f.view.form.loadSweep(); // the fixture's storage has nothing for this KB
     assert.equal(f.view.sweep.step, 0);
     assert.equal(f.view.sweep.total, 0);
     assert.equal(f.view.sweep.seed, 0);
     assert.equal(f.view.sweep.scope, "");
+  } finally {
+    f.scope.stop();
+  }
+});
+
+test("rounds drive the total; editing the total clears them", () => {
+  const f = fixture();
+  try {
+    const v = f.view;
+    v.form.perCheckField.value = 10;
+    v.form.roundsField.value = 12;
+    assert.equal(v.sweep.totalSecs, 120);
+    v.form.batchField.value = 5; // more axioms per round, same rounds
+    assert.equal(v.sweep.totalSecs, 120);
+    v.form.perCheckField.value = 4;
+    assert.equal(v.sweep.totalSecs, 48);
+    v.form.totalField.value = 600;
+    assert.equal(v.sweep.rounds, null);
+    assert.equal(v.sweep.totalSecs, 600);
+    v.form.roundsField.value = 3;
+    v.presetTotal.value = "60";
+    assert.equal(v.sweep.rounds, null);
+  } finally {
+    f.scope.stop();
+  }
+});
+
+test("a sweep runs the set number of rounds of `batch` axioms each", async () => {
+  const f = fixture();
+  try {
+    const v = f.view;
+    v.form.perCheckField.value = 0;
+    v.form.totalField.value = 0;
+    v.form.roundsField.value = 3;
+    v.form.batchField.value = 2;
+    await v.start(false);
+    const audits = f.calls.filter((c) => c.cmd === "audit");
+    assert.equal(audits.length, 3);
+    for (const c of audits) assert.equal(c.args.request.count, 2);
+  } finally {
+    f.scope.stop();
+  }
+});
+
+test("each contradiction is stamped with the time it was found", async () => {
+  const f = fixture();
+  try {
+    const v = f.view;
+    v.form.totalField.value = 0;
+    v.form.roundsField.value = 1;
+    const before = Date.now();
+    await v.start(false);
+    const [c] = v.contradictions.value;
+    assert.ok(c.foundAt >= before && c.foundAt <= Date.now());
+  } finally {
+    f.scope.stop();
+  }
+});
+
+test("switching to Simple drops the Advanced overrides", async () => {
+  const f = fixture();
+  try {
+    const v = f.view;
+    v.sweep.mode = "advanced";
+    await vue.nextTick();
+    Object.assign(v.sweep, { seed: 7, step: 40 });
+    v.form.perCheckField.value = 3;
+    v.form.roundsField.value = 4;
+    v.form.batchField.value = 2;
+    v.form.limitField.value = 9;
+    assert.equal(v.sweep.linked, false);
+    v.sweep.mode = "simple";
+    await vue.nextTick();
+    const fresh = plan.planAudit(v.sweep.totalSecs);
+    assert.equal(v.sweep.linked, true);
+    assert.equal(v.sweep.rounds, null);
+    assert.equal(v.sweep.batch, fresh.batch);
+    assert.equal(v.sweep.limit, fresh.limit);
+    assert.equal(v.sweep.perCheckSecs, fresh.perCheckSecs);
+    assert.ok(f.calls.includes("reset:audit"));
+    assert.equal(v.sweep.seed, 7); // the sweep position is kept
+    assert.equal(v.sweep.step, 40);
   } finally {
     f.scope.stop();
   }

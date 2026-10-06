@@ -376,7 +376,14 @@ onQuery(async (q) => {
   if (file && file !== (current.value && fileParam(current.value))) {
     // Engine name first (what citations link with), then the bare name, which
     // is all a link from before uploads were namespaced carries.
-    const c = tests.find(file) ?? kb.byFile(file) ?? kb.find(file);
+    let c: OpenedFile | undefined =
+      tests.find(file) ?? kb.byFile(file) ?? kb.find(file);
+    // A library test is fetched on first use.
+    if (!c && isTestFile(file))
+      c = await tests
+        .whenLoaded()
+        .then(() => tests.ensure(file))
+        .catch(() => undefined);
     if (c) openFile(c);
     else log.set(`${file} is not among the loaded files.`, true);
   }

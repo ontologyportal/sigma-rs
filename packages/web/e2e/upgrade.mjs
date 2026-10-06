@@ -174,33 +174,71 @@ async function gotoApp(page, url) {
 }
 
 async function boot(page, base, query = "") {
-  await gotoApp(page, base + query);
-  await page.waitForSelector("nav.tabs", { timeout: BOOT_TIMEOUT });
-  await page
-    .locator("nav.tabs button", { hasText: "Knowledge base" })
-    .first()
-    .click();
-  await page.waitForSelector(".src-report", { timeout: 60_000 });
+  try {
+    await gotoApp(page, base + query);
+  } catch (e) {
+    throw new Error("failed to open application");
+  }
+  try {
+    // Open the knowledge base tab
+    await page.waitForSelector("nav.tabs", { timeout: BOOT_TIMEOUT });
+    await page
+      .locator("nav.tabs button", { hasText: "Knowledge base" })
+      .first()
+      .click();
+  } catch (e) {
+    throw new Error("failed to open Knowledge base tab");
+  }
+  try {
+    // Wait until the tab is open
+    await page.waitForSelector("div.subtabs", { timeout: 10_000 });
+    // Click the sub page for the sources
+    await page
+      .locator("div.subtabs button", { hasText: "Sources" })
+      .first()
+      .click();
+    await page.waitForSelector(".src-report", { timeout: 1_000 });
+  } catch (e) {
+    // TODO: IMPORTANT: remove this block (leave only the throw) on next commit, left in for backweard compatibility
+    // Wait for the tab to change
+    try {
+      await page.waitForSelector(".src-report", { timeout: 1_000 });
+    } catch (e) {
+      throw new Error("failed to open source subtab");
+    }
+  }
 }
 
 /** Open `name` in the Edit tab and return the editor's visible text. */
 async function editorText(page, name) {
-  await page.locator("nav.tabs button", { hasText: "Edit" }).first().click();
-  await page
-    .getByRole("button", {
-      name: "Open a file, or create a new one",
-      exact: true,
-    })
-    .click();
-  await page
-    .locator(".open-list .open-file", { hasText: name })
-    .first()
-    .click();
-  await page.waitForSelector(".edit-tab .view-lines", { timeout: 30_000 });
-  await page.waitForTimeout(500);
-  return (await page.locator(".edit-tab .view-lines").allInnerTexts()).join(
-    "\n",
-  );
+  try {
+    await page.locator("nav.tabs button", { hasText: "Edit" }).first().click();
+    await page
+      .getByRole("button", {
+        name: "Open a file, or create a new one",
+        exact: true,
+      })
+      .click();
+  } catch (e) {
+    throw new Error("failed to open the editor and create a new file");
+  }
+  try {
+    await page
+      .locator(".open-list .open-file", { hasText: name })
+      .first()
+      .click();
+  } catch (e) {
+    throw new Error("failed to open the first file in the list");
+  }
+  try {
+    await page.waitForSelector(".edit-tab .view-lines", { timeout: 30_000 });
+    await page.waitForTimeout(500);
+    return (await page.locator(".edit-tab .view-lines").allInnerTexts()).join(
+      "\n",
+    );
+  } catch (e) {
+    throw new Error("failed to modify file");
+  }
 }
 
 /** Append a KIF comment to `name` through the UI and save it -- the real write
@@ -229,7 +267,7 @@ async function citations(page, base, term) {
   await gotoApp(page, `${base}?sym=${encodeURIComponent(term)}&view=formulas`);
   await page.waitForSelector("nav.tabs", { timeout: BOOT_TIMEOUT });
   const refs = page.locator(".ref-loc");
-  await refs.first().waitFor({ timeout: 60_000 });
+  await refs.first().waitFor({ timeout: 30_000 });
   // Man-page sections render incrementally; let them settle.
   await page.waitForTimeout(500);
   return refs.evaluateAll((els) =>
@@ -380,8 +418,17 @@ await runCase("edited-upload-with-snapshot", {
     ]);
   },
   before: async (page) => {
-    await editAndSave(page, "Merge.kif", `${LOCAL_MARKER}Merge`);
-    await editAndSave(page, MINE, `${LOCAL_MARKER}Mine`);
+    try {
+      await editAndSave(page, "Merge.kif", `${LOCAL_MARKER}Merge`);
+    } catch (e) {
+      throw new Error(`failed to open and edit Merge.kif: ${e}`);
+    }
+    try {
+      await editAndSave(page, MINE, `${LOCAL_MARKER}Mine`);
+    } catch {
+      throw new Error(`failed to open and edit ${MINE}: ${e}`);
+    }
+
     const meta = await readOpfs(page, "sumo-cache", "meta.json");
     if (!meta)
       throw new Error(

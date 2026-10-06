@@ -24,6 +24,14 @@ export const fmtDate = (d: Date): string =>
     day: "numeric",
   });
 
+/** `d` as a locale time of day with seconds ("3:04:05 PM"). */
+export const fmtTime = (d: Date): string =>
+  d.toLocaleTimeString(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+
 /** `bytes` as a human-readable size -- KB for anything under 1 MB (matching
  *  the loaded-constituent list's units), MB above that: the mapping files
  *  run into the tens of megabytes, where an all-KB number is unreadable. */

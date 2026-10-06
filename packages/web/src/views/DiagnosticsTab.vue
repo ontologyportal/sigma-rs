@@ -14,6 +14,7 @@ import { useShellStore } from "../stores/shell.ts";
 import type { WordNetDiagnostics } from "sigmakee/sdk";
 import Row from "../components/Row.vue";
 import Col from "../components/Col.vue";
+import SubTabs from "../components/SubTabs.vue";
 
 const DIAG_SEV_ORDER = ["error", "warning", "info", "hint"];
 
@@ -35,7 +36,7 @@ type Facets = {
 };
 
 const shell = useShellStore();
-const isCompact = computed(() => shell.effectiveLayout == "comfortable");
+const isCompact = computed(() => shell.isCompact);
 
 const DIM_LABEL: Record<Dim, string> = {
   file: "File",
@@ -447,25 +448,15 @@ onQuery((q) => {
 </script>
 
 <template>
-  <div class="diag-subtabs" role="tablist" v-if="hasWordNet">
-    <button
-      type="button"
-      role="tab"
-      :aria-selected="subtab === 'diagnostics'"
-      @click="setView('diagnostics')"
-    >
-      Findings
-      <span v-if="total" class="hint">({{ total }})</span>
-    </button>
-    <button
-      type="button"
-      role="tab"
-      :aria-selected="subtab === 'wordnet'"
-      @click="setView('wordnet')"
-    >
-      WordNet
-    </button>
-  </div>
+  <SubTabs
+    v-if="hasWordNet"
+    :model-value="subtab"
+    :options="[
+      { value: 'diagnostics', label: 'Findings', count: total },
+      { value: 'wordnet', label: 'WordNet' },
+    ]"
+    @update:model-value="setView"
+  />
   <Row v-show="subtab === 'diagnostics'">
     <Col v-if="!isCompact" :span="4" style="margin-right: 15px">
       <Card style="position: sticky; top: 10px">
@@ -665,40 +656,6 @@ onQuery((q) => {
 </template>
 
 <style scoped>
-/* Findings/WordNet mode switch -- a compact segmented pill, not another
-   underlined tab strip (nav.tabs already fills that role one level up;
-   stacking a second one, even relabeled, reads as nested navigation).
-   Shown only when a WordNet report loaded. */
-.diag-subtabs {
-  display: inline-flex;
-  gap: 2px;
-  margin-bottom: 14px;
-  padding: 3px;
-  border-radius: 999px;
-  background: var(--card);
-  border: 1px solid var(--line);
-}
-.diag-subtabs button {
-  font: inherit;
-  font-size: 12px;
-  font-weight: 600;
-  background: none;
-  border: none;
-  border-radius: 999px;
-  color: var(--muted);
-  cursor: pointer;
-  padding: 5px 14px;
-}
-.diag-subtabs button[aria-selected="true"] {
-  color: var(--bg);
-  background: var(--accent);
-}
-/* The count span (.hint) would otherwise stay --muted even inside the
-   solid-accent selected pill, which reads too low-contrast there. */
-.diag-subtabs button[aria-selected="true"] .hint {
-  color: inherit;
-  opacity: 0.85;
-}
 .diag {
   border-bottom: 1px solid var(--line);
   border-left: 3px solid transparent;

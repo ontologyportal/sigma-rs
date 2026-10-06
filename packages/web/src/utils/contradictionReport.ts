@@ -343,3 +343,62 @@ export function summarizeBatches(
   }
   return s;
 }
+
+/** The result line for a set of checks: "N checks · M clean · ...". */
+export function batchBreakdown(s: BatchSummary): string {
+  const parts = [`${s.total} check${s.total === 1 ? "" : "s"}`];
+  if (s.clean) parts.push(`${s.clean} clean`);
+  if (s.contradictory) parts.push(`${s.contradictory} contradictory`);
+  if (s.timeLimit) parts.push(`${s.timeLimit} timed out`);
+  if (s.stepLimit) parts.push(`${s.stepLimit} hit the step cap`);
+  if (s.crashed) parts.push(`${s.crashed} crashed`);
+  if (s.other) parts.push(`${s.other} gave up`);
+  return parts.join(" · ");
+}
+
+/** How one check ended (`Crashed`: it never returned), as the check log
+ *  words it. */
+export function checkLabel(b: {
+  status: string;
+  stop_reason: string | null;
+}): string {
+  if (b.status === "Consistent") return "clean";
+  if (b.status === "Inconsistent") return "contradiction";
+  if (b.status === "Crashed") return "crashed";
+  switch (b.stop_reason) {
+    case "TimeLimit":
+      return "timed out";
+    case "StepLimit":
+      return "step cap";
+    case "IncompleteLoad":
+      return "incomplete load";
+    default:
+      return "gave up";
+  }
+}
+
+/** The check log's dot colour for one check. */
+export function checkTone(b: { status: string }): "ok" | "warn" | "bad" {
+  if (b.status === "Consistent") return "ok";
+  if (b.status === "Inconsistent" || b.status === "Crashed") return "bad";
+  return "warn";
+}
+
+/** The source axioms a proof cites, as `file:line`s (the first three, then
+ *  a count of the rest); empty when it cites none. */
+export function citedSources(steps: AuditStep[]): string {
+  const locs = [
+    ...new Set(
+      steps.filter((s) => s.file).map((s) => `${s.file}:${s.line ?? "?"}`),
+    ),
+  ];
+  if (!locs.length) return "";
+  const shown = locs.slice(0, 3).join(", ");
+  return locs.length > 3 ? `${shown} (+${locs.length - 3} more)` : shown;
+}
+
+/** A proof's fold summary: its size and what it cites. */
+export function proofSummary(steps: AuditStep[]): string {
+  const cited = citedSources(steps);
+  return `proof (${steps.length} step${steps.length === 1 ? "" : "s"})${cited ? ` · cites ${cited}` : ""}`;
+}

@@ -24,6 +24,9 @@ const auth = useAuthStore();
 const route = useRoute();
 
 const currentTab = computed(() => (route.name as TabName) ?? "browse");
+const onSources = computed(
+  () => currentTab.value === "kb" && route.query.view === "sources",
+);
 
 /** Load-time notice for constituents whose source couldn't be fetched. */
 const sourceNoticeDismissed = ref(false);
@@ -227,8 +230,11 @@ onBeforeUnmount(() => {
       >
         <span>
           {{ sourceNotice }}
-          <a v-if="currentTab !== 'kb'" href="#" @click.prevent="navigate('kb')"
-            >Review in Knowledge base</a
+          <a
+            v-if="!onSources"
+            href="#"
+            @click.prevent="navigate('kb', { view: 'sources' })"
+            >Review in Sources</a
           >
         </span>
         <button

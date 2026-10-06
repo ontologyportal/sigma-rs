@@ -1,21 +1,14 @@
 <script setup lang="ts">
-/** The Inference Tests tab's file table: imported tests (with their last result)
- *  and every test file the library offers but has not imported. "Save
- *  changes" imports the ticked available rows and removes the ticked
- *  imported ones; "Run selected" proves the ticked imported tests in order.
+/** The Inference Tests tab's file table: every test in the library (with its
+ *  last result once run; a test's text is fetched when it is first run or
+ *  opened), and the ones that could not be loaded (with why). Ticked rows
+ *  are a selection for "Run selected", which proves them in order.
  *  Emits `log` for the messages the parent shows in its status line. */
 import { computed, ref } from "vue";
-import {
-  LocalOrigin,
-  RemoteOrigin,
-  originId,
-  sourceLabel,
-  type Origin,
-} from "../../models/Origin";
+import { originId, sourceLabel, type Origin } from "../../models/Origin";
 import { navigate } from "../../router";
-import { fetchAllTexts } from "../../services/sources";
-import { useLibraryStore, originForRepo } from "../../stores/library";
-import { isTestFile, useTestsStore } from "../../stores/tests";
+import { useLibraryStore } from "../../stores/library";
+import { useTestsStore } from "../../stores/tests";
 import { errMsg } from "../../utils/format";
 import BusyButton from "../BusyButton.vue";
 import FileTable, { type FileRow } from "../FileTable.vue";
@@ -25,133 +18,74 @@ const emit = defineEmits<{ log: [text: string, error?: boolean] }>();
 const tests = useTestsStore();
 const library = useLibraryStore();
 
-const rowKey = (origin: Origin, name: string) => `${origin.kind}:${name}`;
+const rowKey = (origin: Origin, name: string) => `${originId(origin)}:${name}`;
 const badge = (name: string) =>
   tests.dialect(name) === "kif" ? "KIF" : "TPTP";
 
-const rows = computed<FileRow[]>(() => {
-  const out: FileRow[] = tests.tests.map((t) => ({
+const failedError = computed(
+  () => new Map(tests.failed.map((f) => [rowKey(f.origin, f.name), f.error])),
+);
+
+const rows = computed<FileRow[]>(() => [
+  ...tests.tests.map((t): FileRow => ({
     key: rowKey(t.origin, t.name),
     name: t.name,
     origin: t.origin,
     source: sourceLabel(t.origin),
     size: t.text.length,
     loaded: true,
+    deletable: t.origin.kind !== "sumo",
     badge: badge(t.name),
-    status: "imported",
+    status: "",
     statusKind: "in",
     extra: t.outcome?.label ?? "",
     extraKind: t.outcome?.cls ?? "",
-  }));
-  const imported = new Set(out.map((r) => r.key));
-  for (const e of library.entries) {
-    if (!isTestFile(e.name)) continue;
-    const origin =
-      e.kind === "url" ? new RemoteOrigin(e.url) : new LocalOrigin();
-    if (imported.has(rowKey(origin, e.name))) continue;
-    out.push({
-      key: rowKey(origin, e.name),
-      name: e.name,
-      origin,
-      source: sourceLabel(origin),
-      size: e.size,
-      loaded: false,
-      deletable: true,
-      badge: badge(e.name),
-      status: "available",
-      statusKind: "out",
-    });
-  }
-  for (const repo of library.repos) {
-    const origin = originForRepo(repo);
-    const source = sourceLabel(origin);
-    for (const e of library.catalogs[library.repoId(repo)] ?? []) {
-      if (!isTestFile(e.path)) continue;
-      const name = origin.nameFor(e.path);
-      if (imported.has(rowKey(origin, name))) continue;
-      out.push({
-        key: rowKey(origin, name),
-        name,
-        origin,
-        source,
-        size: e.size,
-        loaded: false,
-        badge: badge(name),
-        status: "available",
-        statusKind: "out",
-      });
-    }
-  }
-  return out;
-});
+  })),
+  // Not fetched yet: runnable all the same (running loads it), unless an
+  // earlier attempt found it can't be loaded.
+  ...tests.available.map((t): FileRow => {
+    const key = rowKey(t.origin, t.name);
+    const error = failedError.value.get(key);
+    return {
+      key,
+      name: t.name,
+      origin: t.origin,
+      source: sourceLabel(t.origin),
+      size: t.size,
+      loaded: !error,
+      locked: !!error,
+      deletable: t.origin.kind !== "sumo",
+      badge: badge(t.name),
+      status: "",
+      statusKind: error ? "out" : "in",
+      extra: error ? "can't load" : "",
+      extraKind: error ? "bad" : "",
+      extraTip: error,
+    };
+  }),
+]);
 
 const selected = ref(new Set<string>());
-const saving = ref(false);
-const running = ref(false);
 
 async function deleteRow(row: FileRow) {
   if (!window.confirm(`Delete ${row.name} from the library?`)) return;
   try {
     await library.deleteEntry(row.name, row.origin.kind);
+    await tests.remove(row.name, originId(row.origin));
     emit("log", `Deleted ${row.name} from the library.`);
   } catch (e) {
     emit("log", errMsg(e), true);
   }
 }
 
-async function save(adds: FileRow[], removes: FileRow[]) {
-  saving.value = true;
-  try {
-    let added = 0;
-    const failed: string[] = [];
-    const texts = adds.length
-      ? await fetchAllTexts(adds, 6, (n) => {
-          emit("log", `Fetching ${n}/${adds.length}…`);
-        })
-      : [];
-    for (let i = 0; i < adds.length; i++) {
-      const row = adds[i];
-      const text = texts[i];
-      if (text instanceof Error) {
-        failed.push(`${row.name}: ${text.message}`);
-        continue;
-      }
-      try {
-        const r = await tests.add(row.name, text, row.origin);
-        if (r.added) added += 1;
-        else failed.push(...r.notices);
-      } catch (e) {
-        failed.push(`${row.name}: ${errMsg(e)}`);
-      }
-    }
-    for (const row of removes)
-      await tests.remove(row.name, originId(row.origin));
-    selected.value = new Set();
-    emit(
-      "log",
-      `Imported ${added}, removed ${removes.length}` +
-        (failed.length ? ` (${failed.length} failed — ${failed[0]})` : "."),
-      failed.length > 0,
-    );
-  } catch (e) {
-    emit("log", errMsg(e), true);
-  } finally {
-    saving.value = false;
-  }
+/** The runnable tests among `rows`, in table order. */
+function testsOf(rows: FileRow[]) {
+  return rows.filter((r) => !r.locked);
 }
 
-/** The imported tests among `rows`, in table order. */
-function importedTests(rows: FileRow[]) {
-  return rows.flatMap((r) => {
-    const t = tests.find(r.name);
-    return t && originId(t.origin) === originId(r.origin) ? [t] : [];
-  });
-}
-
-async function runSelected(removes: FileRow[]) {
-  const list = importedTests(removes);
+async function runSelected(picked: FileRow[]) {
+  const list = testsOf(picked);
   if (!list.length) return;
-  running.value = true;
   try {
     const { pass, ran } = await tests.runAll((t) => {
       emit("log", `Running ${t.name}…`);
@@ -160,8 +94,6 @@ async function runSelected(removes: FileRow[]) {
     emit("log", `${pass}/${ran} passed.`, pass < ran);
   } catch (e) {
     emit("log", errMsg(e), true);
-  } finally {
-    running.value = false;
   }
 }
 </script>
@@ -170,25 +102,23 @@ async function runSelected(removes: FileRow[]) {
   <FileTable
     v-model:selected="selected"
     :rows="rows"
-    :saving="saving || running"
-    loaded-word="import"
-    unloaded-word="remove"
+    :saving="tests.running"
+    select-only
     extra-header="Result"
     :catalog-note="library.catalogNote.text"
     :catalog-error="library.catalogNote.error"
-    @save="save"
     @delete="deleteRow"
     @open="(row) => navigate('prover', { test: row.name })"
   >
-    <template #actions="{ removes }">
+    <template #actions="{ rows: picked }">
       <BusyButton
         ghost
-        :busy="running"
-        :disabled="saving || !importedTests(removes).length"
+        :busy="tests.running"
+        :disabled="!testsOf(picked).length"
         label="Run selected"
         busy-label="Running…"
-        title="Prove the ticked imported tests against the loaded KB"
-        @click="runSelected(removes)"
+        title="Prove the ticked tests against the loaded KB"
+        @click="runSelected(picked)"
       />
     </template>
   </FileTable>

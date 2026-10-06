@@ -1,4 +1,4 @@
-// Browser-driven check of the KB tab's per-source update preferences
+// Browser-driven check of the Knowledge base tab's Sources view: per-source update preferences
 // (src/stores/kb.ts, src/components/kb/SourcesCard.vue,
 // src/components/kb/UpdatePreviewDialog.vue): cycling the auto-update /
 // auto-check / no-check button, a manual "Update now" finding and reviewing
@@ -108,7 +108,7 @@ async function runCase(name, setup, check) {
     await setup(page);
     // Loaded straight onto the tab: the load-time "sources changed" dialog
     // is modal, and can open before a tab click would land.
-    await page.goto(new URL("kb", base).href, {
+    await page.goto(new URL("kb?view=sources", base).href, {
       waitUntil: "domcontentloaded",
     });
     await page.waitForSelector("nav.tabs", { timeout: BOOT_TIMEOUT });
@@ -199,7 +199,7 @@ await runCase(
     await pref.click(); // -> auto-check
     // Loaded straight onto the tab: the load-time "sources changed" dialog
     // is modal, and can open before a tab click would land.
-    await page.goto(new URL("kb", base).href, {
+    await page.goto(new URL("kb?view=sources", base).href, {
       waitUntil: "domcontentloaded",
     });
     await page.waitForSelector("nav.tabs", { timeout: BOOT_TIMEOUT });

@@ -220,7 +220,7 @@ async function expectUrlReviewAcknowledged(page, text, label) {
     );
   // Loaded straight onto the tab: the load-time "sources changed" dialog
   // is modal, and can open before a tab click would land.
-  await page.goto(new URL("kb", base).href, {
+  await page.goto(new URL("kb?view=sources", base).href, {
     waitUntil: "domcontentloaded",
   });
   await page.waitForSelector("nav.tabs", { timeout: BOOT_TIMEOUT });
@@ -325,7 +325,7 @@ async function runCase(name, { routes, seed, check }) {
 
     // Loaded straight onto the tab: the load-time "sources changed" dialog
     // is modal, and can open before a tab click would land.
-    await page.goto(new URL("kb", base).href, {
+    await page.goto(new URL("kb?view=sources", base).href, {
       waitUntil: "domcontentloaded",
     });
     await page.waitForSelector("nav.tabs", { timeout: BOOT_TIMEOUT });
@@ -678,7 +678,7 @@ await runCase("sumo-edit-survives-url-update", {
     urlUpdateVersion.v = 2; // the url source moves out from under the edit
     // Loaded straight onto the tab: the load-time "sources changed" dialog
     // is modal, and can open before a tab click would land.
-    await page.goto(new URL("kb", base).href, {
+    await page.goto(new URL("kb?view=sources", base).href, {
       waitUntil: "domcontentloaded",
     });
     await page.waitForSelector("nav.tabs", { timeout: BOOT_TIMEOUT });
@@ -719,7 +719,7 @@ await runCase("url-edit-survives-url-update", {
     urlVsUrlVersion.v = 2; // upstream moves while the edit is unpushed
     // Loaded straight onto the tab: the load-time "sources changed" dialog
     // is modal, and can open before a tab click would land.
-    await page.goto(new URL("kb", base).href, {
+    await page.goto(new URL("kb?view=sources", base).href, {
       waitUntil: "domcontentloaded",
     });
     await page.waitForSelector("nav.tabs", { timeout: BOOT_TIMEOUT });
@@ -786,7 +786,7 @@ await runCase("url-accepting-upstream-sticks", {
     urlAcceptVersion.v = 2;
     // Loaded straight onto the tab: the load-time "sources changed" dialog
     // is modal, and can open before a tab click would land.
-    await page.goto(new URL("kb", base).href, {
+    await page.goto(new URL("kb?view=sources", base).href, {
       waitUntil: "domcontentloaded",
     });
     await page.waitForSelector("nav.tabs", { timeout: BOOT_TIMEOUT });

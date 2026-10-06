@@ -409,7 +409,7 @@ function resetStrategy() {
         <div v-if="!presetStrategy" class="hint mt">Loading strategy…</div>
         <template v-else>
           <div v-for="g in STRATEGY_KNOBS" :key="g.title" class="knob-group">
-            <div class="group-title">{{ g.title }}</div>
+            <div class="section-label group-title">{{ g.title }}</div>
             <div class="grid">
               <div
                 v-for="k in g.knobs"
@@ -463,7 +463,9 @@ function resetStrategy() {
             </div>
           </div>
 
-          <div class="group-title">All strategy settings (JSON overrides)</div>
+          <div class="section-label group-title">
+            All strategy settings (JSON overrides)
+          </div>
           <textarea
             v-model="jsonText"
             rows="5"
@@ -615,12 +617,7 @@ fieldset {
   margin-top: 14px;
 }
 .group-title {
-  font-size: 12px;
-  font-weight: 600;
   margin-top: 14px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--muted);
 }
 .overridden label,
 .overridden .bool-knob {

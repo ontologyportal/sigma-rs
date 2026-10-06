@@ -28,7 +28,7 @@ const props = defineProps<{
 }>();
 
 const shell = useShellStore();
-const isCompact = computed(() => shell.effectiveLayout == "comfortable");
+const isCompact = computed(() => shell.isCompact);
 
 const kb = useKBStore();
 const root = ref<HTMLElement | null>(null);

@@ -37,7 +37,7 @@ function onReviewDone() {
 
 function openSources() {
   open.value = false;
-  navigate("kb");
+  navigate("kb", { view: "sources" });
 }
 </script>
 

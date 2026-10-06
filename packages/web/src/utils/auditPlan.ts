@@ -28,9 +28,9 @@ export interface AuditPlan {
   totalSecs: number;
   /** Time limit per check. */
   perCheckSecs: number;
-  /** Axioms to check; null = as many as the deadline allows. */
-  count: number | null;
-  /** Axioms per check. */
+  /** Rounds (checks) to run; null = as many as the deadline allows. */
+  rounds: number | null;
+  /** Axioms added per round. */
   batch: number;
   /** Stop after this many distinct contradictions. */
   limit: number;
@@ -44,15 +44,15 @@ export function planAudit(totalSecs: number): AuditPlan {
   const perCheckSecs = total
     ? Math.min(MAX_CHECK_SECS, Math.max(MIN_CHECK_SECS, Math.round(total / 3)))
     : MAX_CHECK_SECS;
-  return { totalSecs: total, perCheckSecs, count: null, batch: 1, limit: 5 };
+  return { totalSecs: total, perCheckSecs, rounds: null, batch: 1, limit: 5 };
 }
 
-/** Axioms a plan is guaranteed to reach even if every check runs to its
- *  limit (null without a deadline). Checks usually end sooner. */
-export function minChecks(plan: AuditPlan): number | null {
-  if (!plan.totalSecs || !plan.perCheckSecs) return plan.count;
+/** Rounds a plan is guaranteed to reach even if every round runs to its
+ *  limit (null without a deadline or round count). Rounds usually end sooner. */
+export function minRounds(plan: AuditPlan): number | null {
+  if (!plan.totalSecs || !plan.perCheckSecs) return plan.rounds;
   const n = Math.max(1, Math.floor(plan.totalSecs / plan.perCheckSecs));
-  return plan.count == null ? n : Math.min(n, plan.count);
+  return plan.rounds == null ? n : Math.min(n, plan.rounds);
 }
 
 /** Time limit for the next sweep check: `perCheckSecs` (0 = none) cut down to

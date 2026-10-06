@@ -118,6 +118,11 @@ export const useShellStore = defineStore("shell", {
      *  reads this, never `layout` directly. */
     effectiveLayout: (state): Layout =>
       state.layoutNarrow ? "comfortable" : state.layout,
+    /** The comfortable layout is in effect: views stack their side panels
+     *  into toggles instead of columns. */
+    isCompact(): boolean {
+      return this.effectiveLayout === "comfortable";
+    },
   },
   actions: {
     /** Read the persisted theme, apply it, and follow the OS preference. */

@@ -5,13 +5,18 @@ import { useProverStore, type ProfileName } from "../stores/prover";
 /** The prover options toggle plus one chip per non-default setting of
  *  `profile`, each removable -- so what a run will use is visible without
  *  opening the panel. `fixed` chips (e.g. an audit's derived per-check
- *  limit) are shown first and can't be removed here. */
-const props = defineProps<{
-  profile: ProfileName;
-  open: boolean;
-  fixed?: string[];
-  disabled?: boolean;
-}>();
+ *  limit) are shown first and can't be removed here. `toggle: false` drops
+ *  the toggle when the options are always shown elsewhere. */
+const props = withDefaults(
+  defineProps<{
+    profile: ProfileName;
+    open: boolean;
+    fixed?: string[];
+    disabled?: boolean;
+    toggle?: boolean;
+  }>(),
+  { fixed: () => [], disabled: false, toggle: true },
+);
 
 const emit = defineEmits<{ "update:open": [open: boolean] }>();
 
@@ -22,6 +27,7 @@ const changes = computed(() => prover.changes(props.profile));
 <template>
   <div class="chips">
     <button
+      v-if="toggle"
       class="btn ghost opts-btn"
       type="button"
       :aria-expanded="open"

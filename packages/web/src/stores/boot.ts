@@ -139,7 +139,7 @@ export const useBootStore = defineStore("boot", {
         // the KB is fully axiomatized or the tests are back.
         if (!restored) kb.reprocess();
         else kb.refreshLangSelect();
-        tests.restore();
+        void tests.load();
         this.syncChanges();
         // Not awaited, same reasoning as syncChanges: a per-source network
         // check (git commit / URL hash) that must never hold up a page

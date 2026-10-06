@@ -1,5 +1,5 @@
 /**
- * Prover settings shared by Ask/Tell and Audit. Each tab owns a profile
+ * Prover settings shared by Ask/Tell, Audit and Inference Tests. Each tab owns a profile
  * (its own time limit, selection and strategy -- an audit check wants a much
  * shorter limit than a single query); the backend, Vampire args and the
  * proof display options are shared. Values are read fresh on each run and
@@ -30,12 +30,16 @@ import {
   type WireConfig,
 } from "../utils/proverOptions";
 
-export type ProfileName = "ask" | "audit";
+export type ProfileName = "ask" | "audit" | "test";
 
 /** The plain config object sent to the worker (see worker/handlers.ts). */
 export type ProverConfig = WireConfig;
 
-const PROFILE_TIME: Record<ProfileName, number> = { ask: 30, audit: 10 };
+const PROFILE_TIME: Record<ProfileName, number> = {
+  ask: 30,
+  audit: 10,
+  test: 30,
+};
 
 /** A fresh default profile for `name`. */
 export const profileDefaults = (name: ProfileName): ProverProfile =>
@@ -61,8 +65,9 @@ export const useProverStore = defineStore("prover", () => {
   const profiles = reactive<Record<ProfileName, ProverProfile>>({
     ask: normalizeProfile(saved.profiles?.ask, profileDefaults("ask")),
     audit: normalizeProfile(saved.profiles?.audit, profileDefaults("audit")),
+    test: normalizeProfile(saved.profiles?.test, profileDefaults("test")),
   });
-  /** Which backend Ask/Tell and Audit prove against. */
+  /** Which backend Ask/Tell, Audit and Inference Tests prove against. */
   const backend = ref<Backend>(
     saved.backend === "vampire" || saved.backend === "e"
       ? saved.backend

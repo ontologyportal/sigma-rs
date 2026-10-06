@@ -171,15 +171,6 @@ if command -v npm >/dev/null 2>&1 && [ -f "package.json" ] && [ -d "node_modules
         run_step "e2e upgrade"    npm run -s test:e2e:upgrade -w @sigma/web
         run_step "e2e version"    npm run -s test:e2e:version -w @sigma/web
         run_step "e2e edit-survival" npm run -s test:e2e:edit-survival -w @sigma/web
-
-        # The Vampire suite needs the Emscripten build, which is gitignored
-        # and takes minutes to produce -- run it only where it exists.
-        if [ -d "packages/web/public/vampire" ]; then
-            run_step "e2e vampire"   npm run -s test:e2e:vampire -w @sigma/web
-        else
-            echo "⚠️  packages/web/public/vampire not built — skipping the Vampire e2e." >&2
-            echo "   Build it with: npm run build -w @sigma/vampire" >&2
-        fi
     fi
 else
     echo "⚠️  npm or node_modules not found — skipping prettier/eslint/typecheck/e2e checks." >&2

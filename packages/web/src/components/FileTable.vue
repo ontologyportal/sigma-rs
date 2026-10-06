@@ -4,8 +4,10 @@
  *  `selected`, the row keys) whose ticked rows are pending changes -- an
  *  unloaded row "will {load}", a loaded one "will {unload}" -- and an action
  *  bar that emits `save` with both lists. Loading/importing/removing is the
- *  parent's job; this component only presents and selects. */
-import { computed, ref, watch } from "vue";
+ *  parent's job; this component only presents and selects. With
+ *  `selectOnly` there is no load state: no Status column, filter or Save,
+ *  and the ticked rows are a plain selection for the `actions` slot. */
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import type { GitOrigin, Origin } from "../models/Origin";
 import { formatSize } from "../utils/format";
 import BusyButton from "./BusyButton.vue";
@@ -33,6 +35,8 @@ export interface FileRow {
   statusKind: "in" | "out" | "locked";
   /** Optional trailing column text (Inference Tests: the last result). */
   extra?: string;
+  /** Hover text for `extra`. */
+  extraTip?: string;
   extraKind?: "ok" | "bad" | "mut" | "";
 }
 
@@ -52,6 +56,8 @@ const props = withDefaults(
     /** Checkboxes show the state a save would leave (loaded rows ticked;
      *  untick to take one out) instead of marking the rows to change. */
     checkedIsLoaded?: boolean;
+    /** Selection only: hide the load state and the Save action. */
+    selectOnly?: boolean;
   }>(),
   {
     loadedWord: "load",
@@ -61,6 +67,7 @@ const props = withDefaults(
     catalogNote: "",
     catalogError: false,
     checkedIsLoaded: false,
+    selectOnly: false,
   },
 );
 
@@ -83,7 +90,7 @@ type SortKey = "name" | "size" | "source" | "status";
 const search = ref("");
 const statusFilter = ref<StatusFilter>("all");
 const sourceFilter = ref<SourceFilter>("all");
-const sortKey = ref<SortKey>("status");
+const sortKey = ref<SortKey>(props.selectOnly ? "name" : "status");
 
 const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 const inLabel = computed(() => capitalize(`${props.loadedWord}ed`));
@@ -126,6 +133,21 @@ const visible = computed<FileRow[]>(() => {
       return list.sort(byName);
   }
 });
+
+// The table grows with the page; the toolbar sticks to the top of the
+// window and the column headers stick just below it.
+const bar = ref<HTMLElement | null>(null);
+const barHeight = ref(0);
+const headTop = computed(() => `${barHeight.value}px`);
+let barObserver: ResizeObserver | null = null;
+onMounted(() => {
+  if (!bar.value) return;
+  barObserver = new ResizeObserver(([entry]) => {
+    barHeight.value = entry.target.getBoundingClientRect().height;
+  });
+  barObserver.observe(bar.value);
+});
+onBeforeUnmount(() => barObserver?.disconnect());
 
 // -- Selection ----------------------------------------------------------------
 
@@ -198,6 +220,11 @@ function clearSelection() {
   lastToggled.value = null;
 }
 
+/** Table width in columns, for the empty-state row. */
+const columns = computed(
+  () => 4 + (props.selectOnly ? 0 : 1) + (props.extraHeader ? 1 : 0),
+);
+
 function save() {
   if (!pendingAdds.value.length && !pendingRemoves.value.length) return;
   emit("save", pendingAdds.value, pendingRemoves.value);
@@ -205,51 +232,58 @@ function save() {
 </script>
 
 <template>
-  <div class="inline toolbar mt">
-    <input
-      v-model="search"
-      type="search"
-      class="search"
-      placeholder="filter by name…"
-      autocomplete="off"
-      aria-label="Filter files by name"
-    />
-    <select v-model="statusFilter" aria-label="Status filter">
-      <option value="all">All</option>
-      <option value="in">{{ inLabel }}</option>
-      <option value="out">Available</option>
-    </select>
-    <select v-model="sourceFilter" aria-label="Source filter">
-      <option value="all">All sources</option>
-      <option value="github">GitHub</option>
-      <option value="repos">Other repos</option>
-      <option value="file">Local</option>
-      <option value="url">URL</option>
-    </select>
-    <select v-model="sortKey" aria-label="Sort by">
-      <option value="name">Name</option>
-      <option value="size">Size</option>
-      <option value="source">Source</option>
-      <option value="status">Status</option>
-    </select>
+  <div ref="bar" class="table-bar">
+    <div class="inline toolbar">
+      <input
+        v-model="search"
+        type="search"
+        class="search"
+        placeholder="filter by name…"
+        autocomplete="off"
+        aria-label="Filter files by name"
+      />
+      <select
+        v-if="!selectOnly"
+        v-model="statusFilter"
+        aria-label="Status filter"
+      >
+        <option value="all">All</option>
+        <option value="in">{{ inLabel }}</option>
+        <option value="out">Available</option>
+      </select>
+      <select v-model="sourceFilter" aria-label="Source filter">
+        <option value="all">All sources</option>
+        <option value="github">GitHub</option>
+        <option value="repos">Other repos</option>
+        <option value="file">Local</option>
+        <option value="url">URL</option>
+      </select>
+      <select v-model="sortKey" aria-label="Sort by">
+        <option value="name">Name</option>
+        <option value="size">Size</option>
+        <option value="source">Source</option>
+        <option v-if="!selectOnly" value="status">Status</option>
+      </select>
+    </div>
+
+    <div class="hint mt-sm">
+      <template v-if="selectOnly">Tick rows to select them.</template>
+      <template v-else-if="checkedIsLoaded"
+        >Tick files to {{ loadedWord }} them and untick {{ loadedWord }}ed ones
+        to {{ unloadedWord }} them, then save.</template
+      >
+      <template v-else
+        >Tick files to {{ loadedWord }} or {{ unloadedWord }} them, then
+        save.</template
+      >
+      Shift-click sets a range.
+      <span v-if="catalogNote" :class="{ bad: catalogError }">
+        {{ catalogNote }}
+      </span>
+    </div>
   </div>
 
-  <div class="hint mt-sm">
-    <template v-if="checkedIsLoaded"
-      >Tick files to {{ loadedWord }} them and untick {{ loadedWord }}ed ones to
-      {{ unloadedWord }} them, then save.</template
-    >
-    <template v-else
-      >Tick files to {{ loadedWord }} or {{ unloadedWord }} them, then
-      save.</template
-    >
-    Shift-click sets a range.
-    <span v-if="catalogNote" :class="{ bad: catalogError }">
-      {{ catalogNote }}
-    </span>
-  </div>
-
-  <div class="table-wrap mt-sm" @keydown.esc="clearSelection">
+  <div class="table-wrap" @keydown.esc="clearSelection">
     <table>
       <thead>
         <tr>
@@ -257,7 +291,7 @@ function save() {
           <th>Name</th>
           <th class="col-source">Source</th>
           <th class="num">Size</th>
-          <th>Status</th>
+          <th v-if="!selectOnly">Status</th>
           <th v-if="extraHeader" class="col-extra">{{ extraHeader }}</th>
         </tr>
       </thead>
@@ -279,13 +313,15 @@ function save() {
                   : `Select ${row.name}`
               "
               :title="
-                checkedIsLoaded
-                  ? row.loaded
-                    ? `Untick to ${unloadedWord} on save`
-                    : `Tick to ${loadedWord} on save`
-                  : row.loaded
-                    ? `Tick to ${unloadedWord} on save`
-                    : `Tick to ${loadedWord} on save`
+                selectOnly
+                  ? undefined
+                  : checkedIsLoaded
+                    ? row.loaded
+                      ? `Untick to ${unloadedWord} on save`
+                      : `Tick to ${loadedWord} on save`
+                    : row.loaded
+                      ? `Tick to ${unloadedWord} on save`
+                      : `Tick to ${loadedWord} on save`
               "
               @click.stop="toggle(row, $event)"
             />
@@ -300,10 +336,17 @@ function save() {
               >{{ row.name }}</a
             >
             <span v-else class="mono name">{{ row.name }}</span>
+            <a
+              v-if="selectOnly && row.deletable"
+              class="hint delete"
+              title="Delete from the library"
+              @click="emit('delete', row)"
+              >delete</a
+            >
           </td>
           <td class="hint col-source">{{ row.source }}</td>
           <td class="hint num">{{ formatSize(row.size) }}</td>
-          <td class="status-cell">
+          <td v-if="!selectOnly" class="status-cell">
             <span
               v-if="selected.has(row.key)"
               class="pill pending"
@@ -336,14 +379,13 @@ function save() {
               v-if="row.extra"
               class="result"
               :class="row.extraKind || ''"
+              :title="row.extraTip"
               >{{ row.extra }}</span
             >
           </td>
         </tr>
         <tr v-if="!visible.length">
-          <td :colspan="extraHeader ? 6 : 5" class="hint empty">
-            No matching files.
-          </td>
+          <td :colspan="columns" class="hint empty">No matching files.</td>
         </tr>
       </tbody>
     </table>
@@ -351,8 +393,13 @@ function save() {
 
   <div v-if="selectedRows.length" class="action-bar inline between center">
     <span class="inline tight center">
-      <span class="pill pending" :title="pendingTip">Unsaved changes</span>
-      <span class="hint">
+      <span v-if="!selectOnly" class="pill pending" :title="pendingTip"
+        >Unsaved changes</span
+      >
+      <span v-if="selectOnly" class="hint"
+        >{{ selectedRows.length }} selected</span
+      >
+      <span v-else class="hint">
         {{ selectedRows.length }}
         {{
           checkedIsLoaded
@@ -366,7 +413,12 @@ function save() {
       </span>
     </span>
     <span class="inline tight">
-      <slot name="actions" :adds="pendingAdds" :removes="pendingRemoves" />
+      <slot
+        name="actions"
+        :adds="pendingAdds"
+        :removes="pendingRemoves"
+        :rows="selectedRows"
+      />
       <button
         class="btn ghost"
         type="button"
@@ -376,6 +428,7 @@ function save() {
         Clear
       </button>
       <BusyButton
+        v-if="!selectOnly"
         :busy="saving"
         label="Save changes"
         busy-label="Saving…"
@@ -394,9 +447,15 @@ function save() {
   width: auto;
   min-width: 0;
 }
+.table-bar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  margin-top: 12px;
+  padding: 8px 0;
+  background: var(--card);
+}
 .table-wrap {
-  max-height: 480px;
-  overflow-y: auto;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--bg);
@@ -408,10 +467,11 @@ table {
 }
 thead th {
   position: sticky;
-  top: 0;
+  top: v-bind(headTop);
   z-index: 1;
   background: var(--card);
-  border-bottom: 1px solid var(--line);
+  /* A collapsed border does not travel with a sticky cell; the shadow does. */
+  box-shadow: inset 0 -1px 0 var(--line);
   text-align: left;
   font-weight: 600;
   font-size: 12px;

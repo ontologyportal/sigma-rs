@@ -45,7 +45,7 @@ export const useWordNetStore = defineStore("wordnet", {
      *  the literal string 'false' turns it off. */
     enabled: localStorage.getItem(WORDNET_ENABLED_KEY) !== "false",
     /** [{ name, size }] the mapping files last fetched this session, for the
-     *  KB tab's WordNet panel. Empty before the first fetch resolves. */
+     *  Knowledge base tab's WordNet view. Empty before the first fetch resolves. */
     files: [] as WordNetFile[],
     /** The fetched-and-parsed payload, cached for the life of the page so a
      *  later reinstall (session rebuild, re-enabling) never re-fetches the

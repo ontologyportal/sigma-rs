@@ -34,6 +34,7 @@ import { GitOrigin, originId, parseOrigin } from "../models/Origin";
 import { useBootStore } from "../stores/boot";
 import { useKBStore } from "../stores/kb";
 import { useChangesStore, opfsSafeName } from "../stores/changes";
+import { useWordNetStore } from "../stores/wordnet";
 
 const SUMO_CACHE_DIR = "sumo-cache";
 const SUMO_CACHE_META = "meta.json";

@@ -32,7 +32,6 @@ declare const __AUDIT_ENGINE__: { commit: string; fingerprint: string } | null;
 export const AUDIT_ENGINE = __AUDIT_ENGINE__;
 
 export const SUMO_FILE_SETTING = "sumoFiles";
-export const TQ_SETTING = "sumoTests";
 /** The constituent library: registered repos + local/URL entries. */
 export const LIBRARY_KEY = "sumoLibrary";
 export const EDITS_KEY = "sumoBrowserEdits";
@@ -41,6 +40,10 @@ export const LAYOUT_KEY = "sumoBrowserLayout";
 export const SEEN_VERSION_KEY = "sumoBrowserSeenVersion";
 /** Prover profiles (Ask/Tell + Audit), backend and Vampire args. */
 export const PROVER_SETTINGS_KEY = "sumoProverSettings";
+/** Ask/Tell's run history (see `useAskHistoryStore`). */
+export const ASK_HISTORY_KEY = "sumoAskHistory";
+/** The Inference Tests tab's run history. */
+export const TEST_HISTORY_KEY = "sumoTestHistory";
 /** Persisted on/off for the WordNet synonym-search lexicon -- absent or
  *  anything but the literal string `'false'` means enabled (see state.ts). */
 export const WORDNET_ENABLED_KEY = "sumoBrowserWordNetEnabled";

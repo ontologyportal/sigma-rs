@@ -102,7 +102,7 @@ function boldifyDoc(text: unknown): string {
 </script>
 
 <template>
-  <Card v-if="shell.effectiveLayout == 'comfortable'">
+  <Card v-if="shell.isCompact">
     <div class="hint count">
       {{ hits.length }} result{{ hits.length === 1 ? "" : "s" }} for
       <code>{{ query }}</code
@@ -131,7 +131,7 @@ function boldifyDoc(text: unknown): string {
     </ul>
   </Card>
 
-  <Row v-else-if="shell.effectiveLayout == 'classic'">
+  <Row v-else>
     <Col :span="6">
       <Card style="margin-right: 5px">
         <div class="hint count">

@@ -17,7 +17,7 @@ vm.runInNewContext(
   ).outputText,
   { exports },
 );
-const { planAudit, minChecks, nextCheckSecs, focusRoundSecs } = exports;
+const { planAudit, minRounds, nextCheckSecs, focusRoundSecs } = exports;
 
 test("planAudit gives a third of the total per check, 2 to 10 s", () => {
   assert.equal(planAudit(60).perCheckSecs, 10);
@@ -29,7 +29,7 @@ test("planAudit gives a third of the total per check, 2 to 10 s", () => {
 test("planAudit runs to the deadline, one axiom per check", () => {
   const p = planAudit(300);
   assert.equal(p.totalSecs, 300);
-  assert.equal(p.count, null);
+  assert.equal(p.rounds, null);
   assert.equal(p.batch, 1);
   assert.equal(p.limit, 5);
 });
@@ -41,11 +41,11 @@ test("planAudit treats junk and zero as no deadline", () => {
   assert.equal(planAudit(0).perCheckSecs, 10);
 });
 
-test("minChecks is the worst-case check count", () => {
-  assert.equal(minChecks(planAudit(60)), 6);
-  assert.equal(minChecks(planAudit(5)), 2);
-  assert.equal(minChecks({ ...planAudit(600), count: 3 }), 3);
-  assert.equal(minChecks(planAudit(0)), null);
+test("minRounds is the worst-case round count", () => {
+  assert.equal(minRounds(planAudit(60)), 6);
+  assert.equal(minRounds(planAudit(5)), 2);
+  assert.equal(minRounds({ ...planAudit(600), rounds: 3 }), 3);
+  assert.equal(minRounds(planAudit(0)), null);
 });
 
 test("nextCheckSecs trims the last check to the deadline", () => {

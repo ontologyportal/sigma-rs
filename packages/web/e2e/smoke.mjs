@@ -301,16 +301,15 @@ await step("15-problems", async () => {
   const search = page.locator('input[type="search"]').last();
   await search.fill(".kif.tq");
   await page.waitForTimeout(300);
-  const row = page.locator("table tbody tr", { hasText: ".kif.tq" }).first();
-  await row.waitFor({ timeout: 5000 });
+  // Library tests are imported automatically: wait for a runnable one.
+  const row = page
+    .locator("table tbody tr", { hasText: ".kif.tq" })
+    .filter({ has: page.locator('input[type="checkbox"]:not([disabled])') })
+    .first();
+  await row.waitFor({ timeout: 60_000 });
   const name = (await row.locator(".name").innerText()).trim();
   if (!name.endsWith(".kif.tq"))
     throw new Error("first matching row is not a .kif.tq test: " + name);
-  await row.locator('input[type="checkbox"]').check();
-  await row.locator("text=will import").waitFor({ timeout: 3000 });
-  await page.locator("button.btn", { hasText: "Save changes" }).click();
-  await page.waitForSelector("text=/Imported 1/", { timeout: 60_000 });
-  // Now imported: tick it again and run it.
   await row.locator('input[type="checkbox"]').check();
   await page.locator("button.btn", { hasText: "Run selected" }).click();
   await row.locator("td.col-extra .result").waitFor({ timeout: 180_000 });
@@ -324,9 +323,7 @@ await step("15-problems", async () => {
     null,
     { timeout: 30_000 },
   );
-  await page
-    .getByRole("button", { name: "Edit raw test", exact: true })
-    .click();
+  await page.getByRole("link", { name: "Edit raw", exact: true }).click();
   await page.waitForURL(/\/edit\?file=/, { timeout: 10_000 });
   await page
     .getByRole("button", { name: "Save inference test", exact: true })
@@ -347,13 +344,9 @@ await step("15-problems", async () => {
     .click();
   await page.locator(".open-list .open-file", { hasText: name }).waitFor();
   await page.getByRole("button", { name: "Cancel", exact: true }).click();
-  // Back to Inference Tests (the tab returns to its last query) and remove it.
+  // Back to Inference Tests (the tab returns to its last query).
   await tab("Inference Tests").click();
   await row.waitFor({ timeout: 5000 });
-  await row.locator('input[type="checkbox"]').check();
-  await row.locator("text=will remove").waitFor({ timeout: 3000 });
-  await page.locator("button.btn", { hasText: "Save changes" }).click();
-  await page.waitForSelector("text=/removed 1/", { timeout: 60_000 });
   await search.fill("");
 });
 
