@@ -173,16 +173,16 @@ const integer = (value: unknown, min = 0): value is number =>
 const record = (v: unknown): v is Record<string, unknown> =>
   v !== null && typeof v === "object" && !Array.isArray(v);
 
-/** Read the versioned replay block; prose and source-axiom code fences are not executable. */
-export function parseAuditReplay(markdown: string): AuditReplay {
-  const blocks = [
-    ...markdown.matchAll(/^```sigma-audit-replay\r?\n([\s\S]*?)^```\s*$/gm),
-  ];
-  if (blocks.length !== 1)
+/** Parse the versioned JSON replay report. */
+export function parseAuditReplay(json: string): AuditReplay {
+  let r: unknown;
+  try {
+    r = JSON.parse(json);
+  } catch {
     throw new Error(
-      "This report has no supported replay metadata. A new master audit is required.",
+      "This report is not valid JSON. A new master audit is required.",
     );
-  const r: unknown = JSON.parse(blocks[0][1]);
+  }
   if (
     !record(r) ||
     r.version !== 1 ||

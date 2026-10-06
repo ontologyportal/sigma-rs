@@ -21,19 +21,19 @@ async function currentContext() {
   return { master, run };
 }
 
-/** Read the exact Markdown published with the workflow artifact. */
+/** Read the exact JSON report published with the workflow artifact. */
 export async function latestAuditReport() {
   const context = await currentContext();
   const response = await fetch(
-    raw("audit-state", ".github/latest-contradictions.md"),
+    raw("audit-state", ".github/latest-contradictions.json"),
     { cache: "no-store" },
   );
   if (!response.ok)
     throw new Error(
       "No replay report has been published yet. Run the updated master audit first.",
     );
-  const markdown = await response.text();
-  const replay = parseAuditReplay(markdown);
+  const json = await response.text();
+  const replay = parseAuditReplay(json);
   let unavailable = "";
   try {
     assertReplayCompatible(replay, context.master, AUDIT_ENGINE, context.run);
@@ -41,7 +41,7 @@ export async function latestAuditReport() {
     unavailable = e instanceof Error ? e.message : String(e);
   }
   return {
-    markdown,
+    json,
     replay,
     runUrl: `https://github.com/${SUMO.owner}/${SUMO.repo}/actions/runs/${replay.run_id}/attempts/${replay.run_attempt}`,
     unavailable,
