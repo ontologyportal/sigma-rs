@@ -11,6 +11,7 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use crate::semantics::taxonomy::TaxRelation;
 use crate::semantics::types::{RelationDomain, RelationRange, Scope};
 use crate::semantics::SemanticLayer;
 use crate::syntactic::sentence::Sentence;
@@ -85,6 +86,14 @@ impl<'a> Cx<'a> {
     pub(crate) fn has_ancestor_by_name(&self, sym: SymbolId, ancestor: &str) -> bool {
         self.layer
             .has_ancestor_by_name_scoped(sym, ancestor, self.scope)
+    }
+
+    pub(crate) fn parents_of(&self, sym: SymbolId) -> Vec<(SymbolId, TaxRelation)> {
+        self.layer.parents_of_scoped(sym, self.scope)
+    }
+
+    pub(crate) fn subject_sids(&self, head: SymbolId, subject: SymbolId) -> Vec<SentenceId> {
+        self.layer.subject_sids_scoped(head, subject, self.scope)
     }
 
     pub(crate) fn domain(&self, rel: SymbolId) -> Arc<Vec<RelationDomain>> {

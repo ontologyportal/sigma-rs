@@ -123,6 +123,7 @@ pub use crate::kb::semantics::{
 pub use crate::semantics::caches::range::DoubleRange;
 pub use crate::semantics::validate::validators::arity::ArityMismatch;
 pub use crate::semantics::validate::validators::camel_case::TermCamelCase;
+pub use crate::semantics::validate::validators::disjoint_parents::DisjointSubclass;
 pub use crate::semantics::validate::validators::domain::DomainMismatch;
 pub use crate::semantics::validate::validators::entity_ancestor::NoEntityAncestor;
 pub use crate::semantics::validate::validators::free_var_in_consequent::FreeVarInConsequent;
@@ -208,25 +209,6 @@ semantic_error!(
     DisjointInstance,
     "E014",
     "disjoint-instance",
-    Error,
-    fn anchors(&self) -> (Vec<SentenceId>, i32) {
-        (self.sid.clone(), -1)
-    },
-);
-
-/// A symbol is a subclass of two disjoint classes.
-#[derive(Debug, Clone, Error)]
-#[error("'{sym}' is a subclass of disjoint classes ({class1} and {class2})")]
-pub struct DisjointSubclass {
-    pub sid: Vec<SentenceId>,
-    pub sym: String,
-    pub class1: String,
-    pub class2: String,
-}
-semantic_error!(
-    DisjointSubclass,
-    "E015",
-    "disjoint-subclass",
     Error,
     fn anchors(&self) -> (Vec<SentenceId>, i32) {
         (self.sid.clone(), -1)

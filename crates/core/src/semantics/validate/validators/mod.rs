@@ -14,6 +14,7 @@ use super::traits::{
 pub(crate) mod arity;
 pub(crate) mod camel_case;
 pub(crate) mod common;
+pub(crate) mod disjoint_parents;
 pub(crate) mod domain;
 pub(crate) mod entity_ancestor;
 pub(crate) mod free_var_in_consequent;
@@ -54,6 +55,7 @@ pub(super) const OPERATOR: &[&dyn OperatorValidatorDyn] = &[
 /// Run on every symbol in head or argument position.
 pub(super) const SYMBOL: &[&dyn SymbolValidatorDyn] = &[
     &entity_ancestor::EntityAncestor,
+    &disjoint_parents::DisjointParents,
     &relation_metadata::RelationMetadata,
     &symbol_case::SymbolCase,
     &only_rel::OnlyRel,
