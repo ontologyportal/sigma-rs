@@ -20,6 +20,7 @@
     "lint:fix": "eslint . --fix",
     "lint": "eslint .",
     "test:e2e": "node e2e/smoke.mjs",
+    "test:e2e:proof-graph": "node e2e/proof-graph.mjs",
     "test:asset-cache": "node --test scripts/asset-cache.test.mjs",
     "test:e2e:asset-cache": "node e2e/asset-cache.mjs",
     "test:e2e:vampire": "node e2e/vampire.mjs",
