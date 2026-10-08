@@ -1,6 +1,6 @@
 use log;
 use sigmakee_rs_sdk::manager::KBManager;
-use sigmakee_rs_sdk::{Diagnostic, SdkError, Session};
+use sigmakee_rs_sdk::{Diagnostic, Session};
 use sigmakee_rs_sdk::{KnowledgeBase, ProvingLayer};
 
 use crate::cli::util::read_stdin;
@@ -95,10 +95,11 @@ pub fn apply_severity_overrides(diags: &mut [Diagnostic], suppress: &[String]) {
 
 /// Validate one inline KIF formula against the KB.
 ///
-/// Asserts `text` into a session, runs semantic validation (unless
-/// `parse_only`), and prints the findings.  Returns `true` if any hard error
-/// was found. `wordnet`: also render the WordNet<->KB diagnostics report
-/// after the SUMO diagnostics above.
+/// Stages `text` in a scratch session, runs semantic validation over just
+/// those sentences (or, with `parse_only`, reports only parse failures), and
+/// prints the findings; the KB is left untouched.  Returns `true` if any hard
+/// error was found, a parse failure included. `wordnet`: also render the
+/// WordNet<->KB diagnostics report after the SUMO diagnostics above.
 pub fn validate_single_formula<L>(
     mut session: Session<L>,
     text: &str,
@@ -116,34 +117,16 @@ where
         wordnet,
     );
 
-    let mut open_session = match session.tell(text) {
-        Err(errs) => {
-            for e in errs {
-                match e {
-                    SdkError::Kb(e) => session.kb().pretty_print_error(&e, log::Level::Error),
-                    _ => log::error!("{}", e),
-                }
-            }
-            if wordnet {
-                print_wordnet_diagnostics(&session);
-            }
-            return false;
+    let mut diags = match session.validate_formula(text) {
+        Ok(diags) => diags,
+        Err(e) => {
+            log::error!("{}", e);
+            return true;
         }
-        Ok(s) => s,
     };
-
     if parse_only {
-        return true;
+        diags.retain(|d| d.kind == "parse");
     }
-
-    let mut diags: Vec<Diagnostic> = open_session
-        .validate()
-        .into_iter()
-        .filter_map(|e| match e {
-            SdkError::Kb(e) => Some(*e),
-            _ => None,
-        })
-        .collect();
     apply_severity_overrides(&mut diags, suppress);
 
     let (errs, warns) = split_severity(diags);
@@ -199,7 +182,7 @@ where
     let mut n_err = 0;
     for d in errors {
         if seen.insert(kb.render_diagnostic(d)) {
-            kb.pretty_print_error(d, log::Level::Error);
+            kb.pretty_print_error(d);
             eprintln!();
             n_err += 1;
         }
@@ -208,7 +191,7 @@ where
     for d in warnings {
         if seen.insert(kb.render_diagnostic(d)) {
             n_warn += 1;
-            kb.pretty_print_error(d, log::Level::Warn);
+            kb.pretty_print_error(d);
             eprintln!();
         }
     }

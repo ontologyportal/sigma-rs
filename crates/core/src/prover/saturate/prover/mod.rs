@@ -273,6 +273,9 @@ impl CommonProverOpts for NativeOpts {
     fn set_session(&mut self, session: Option<String>) {
         self.session = session;
     }
+    fn session(&self) -> Option<&str> {
+        self.session.as_deref()
+    }
     /// Standalone TPTP problem: swap in the complete-calculus,
     /// full-saturation strategy ([`Strategy::tptp`]) — set-of-support
     /// tiering can't prove axiom-case-split Theorems, and an incomplete

@@ -31,8 +31,8 @@ use ropey::Rope;
 use serde::de::DeserializeOwned;
 
 use sigmakee_rs_sdk::{
-    parse_document, tokenize_kif, FileOrigin, HasTranslation, KnowledgeBase, LocalProvenance,
-    ParsedDocument, Parser, SourceFile, TellResult, TestCase, TopLayer,
+    parse_document, tokenize_kif, FileOrigin, HasTranslation, IngestResult, KnowledgeBase,
+    LocalProvenance, ParsedDocument, Parser, SourceFile, TestCase, TopLayer,
 };
 
 use crate::conv::uri_to_tag;
@@ -76,7 +76,7 @@ fn load_buffer<L: TopLayer>(
     tag: &str,
     text: &str,
     parsed: &ParsedDocument,
-) -> Option<TellResult> {
+) -> Option<IngestResult> {
     // A syntactically broken buffer never touches the KB. The source
     // cache treats broken buffers as "the file now holds only these"
     // and retracts everything else the file contributed. The problem is
@@ -104,15 +104,10 @@ fn load_buffer<L: TopLayer>(
             tag,
         )
     } else {
-        let report = kb.load(
+        kb.load_and_promote(
             SourceFile::kif(std::path::PathBuf::from(tag), text.to_string()),
             tag,
-        );
-        // Promote so man-page introspection (Base scope) sees the file.
-        if report.ok {
-            let _ = kb.make_session_axiomatic(tag);
-        }
-        report
+        )
     })
 }
 

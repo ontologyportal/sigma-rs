@@ -14,7 +14,7 @@ use sigmakee_rs_sdk::{HasTranslation, TopLayer};
 ///
 /// This variant is for layers which perform TPTP translation. It will
 /// warm the translation cache and persist that
-pub fn run_load_warm<L>(mut session: Session<L>, manager: KBManager) -> bool
+pub fn run_load_warm<L>(session: Session<L>, manager: KBManager) -> bool
 where
     L: HasTranslation,
 {
@@ -51,16 +51,16 @@ where
     }
 }
 
-/// `--flush` path: drop the DB directory entirely, then rebuild from
-/// the supplied files.  With no files, the result is an empty
-/// initialised database at `kb_args.db`.
-pub fn run_flush(manager: &KBManager) -> bool {
+/// `--flush` path: drop the DB directory `db` entirely, then rebuild from
+/// the supplied files.  With no files, the result is an empty initialised
+/// database there.
+pub fn run_flush(db: Option<&std::path::Path>) -> bool {
     // Wipe the DB directory if it exists.  `remove_dir_all` is
     // atomic per-inode on all supported filesystems; if the path
     // doesn't exist we just fall through to the create path.
-    if let Some(kb_path) = manager.db_path() {
+    if let Some(kb_path) = db {
         if kb_path.exists() {
-            if let Err(e) = fs::remove_dir_all(&kb_path) {
+            if let Err(e) = fs::remove_dir_all(kb_path) {
                 log::error!(
                     "load --flush: failed to wipe '{}': {}",
                     kb_path.display(),

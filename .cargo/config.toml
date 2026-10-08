@@ -70,6 +70,14 @@ SUMO_DOC_RELATION      = "documentation"
 SUMO_TERM_RELATION     = "termFormat"
 SUMO_FORMAT_RELATION   = "format"
 
+# ----------------------------------------------------------------------------
+# SUMO propositional attitudes: the class whose instances are belief-context
+# relations (`believes`, `knows`, ...), and the attitude assumed when a caller
+# names none.
+# ----------------------------------------------------------------------------
+SUMO_PROPOSITIONAL_ATTITUDE_CLASS = "PropositionalAttitude"
+SUMO_BELIEF_RELATION              = "believes"
+
 SUMO_SUBCLASS_RELATION    = "subclass"
 SUMO_SUBRELATION_RELATION = "subrelation"
 SUMO_SUBATTRIBUTE_RELATION = "subAttribute"

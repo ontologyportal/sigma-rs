@@ -411,46 +411,6 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
     }
 }
 
-impl KnowledgeBase {
-    /// Run the deferred normalization + rewrite pass so that the
-    /// introspection data the man page reads — `normal_implications`,
-    /// the antecedent/consequent branch index, `suppressed`, and the
-    /// per-sentence formula caches — is populated.  Idempotent and cheap
-    /// when already clean.  Call once (mutably) before the immutable
-    /// `manpage` / `sentence_tptp` reads.
-    pub fn ensure_introspection(&mut self) {
-        self.layer.ensure_rewrite_pass();
-        let _ = self.layer.semantic.syntactic.normal_implications();
-    }
-
-    /// Return the cached TPTP rendering of sentence `sid` in `mode`, or
-    /// `None` when the sentence is suppressed (replaced by synthetic
-    /// equivalents) or cannot be converted.  Callers that get `None`
-    /// for a suppressed sentence should fall back to
-    /// [`Self::synthetic_replacements_of`].
-    pub fn sentence_tptp(&self, sid: SentenceId, mode: crate::TptpLang) -> Option<String> {
-        let cf = if mode.is_typed() {
-            self.layer.formula_tff(sid)?
-        } else {
-            self.layer.formula_fof(sid)?
-        };
-        Some(cf.formula.to_tptp())
-    }
-
-    /// `true` if `sid` was suppressed by the rewrite pass (its synthetic
-    /// replacement, not the original, is what the prover sees).
-    pub fn is_suppressed(&self, sid: SentenceId) -> bool {
-        self.layer.suppressed.read().unwrap().contains(&sid)
-    }
-
-    /// The synthetic sentences that replaced `sid` (transitively), if it
-    /// was normalized / guard-augmented by the rewrite pass.  Empty for
-    /// sentences that pass through unchanged.
-    pub fn synthetic_replacements_of(&self, sid: SentenceId) -> Vec<SentenceId> {
-        self.layer.synthetic_replacements(&[sid])
-    }
-}
-
 fn build_manpage<L: TopLayer + Layer>(
     kb: &KnowledgeBase<L>,
     sym_id: SymbolId,
@@ -895,6 +855,28 @@ mod tests {
     }
 
     #[test]
+    fn rewrite_readers_warm_up_without_an_explicit_call() {
+        use std::sync::atomic::Ordering;
+        for read in [
+            |kb: &KnowledgeBase, sid| {
+                kb.is_suppressed(sid);
+            },
+            |kb: &KnowledgeBase, sid| {
+                kb.synthetic_replacements_of(sid);
+            },
+            |kb: &KnowledgeBase, sid| {
+                kb.sentence_tptp(sid, &crate::TptpOptions::default());
+            },
+        ] {
+            let kb = kb_promoted_from("(subclass Dog Animal)");
+            let sid = kb.syntactic().root_sids()[0];
+            kb.layer.rewrite_dirty.store(true, Ordering::Relaxed);
+            read(&kb, sid);
+            assert!(!kb.layer.rewrite_dirty.load(Ordering::Relaxed));
+        }
+    }
+
+    #[test]
     fn refs_split_root_level_and_nested_occurrences() {
         // Non-taxonomy relations (taxonomy heads are now filtered out of
         // REFERENCES — see EXCLUDED_REF_HEADS).  Three sentences mention
@@ -1000,15 +982,13 @@ mod tests {
     #[test]
     #[ignore = "TODO(migration): antecedent/consequent branch index (impl_sym_index) retired pending Phase-4 rewrite"]
     fn manpage_antecedent_consequent_count_and_filtered_refs() {
-        let mut kb = kb_promoted_from(
+        let kb = kb_promoted_from(
             r#"
             (=> (instance ?X Human) (attribute ?X Rational))
             (subclass Human Animal)
             (documentation Human EnglishLanguage "A &%Human.")
         "#,
         );
-        kb.ensure_introspection();
-
         let human = kb.manpage("Human").expect("Human resolves");
         // Raw occurrence count: implication + subclass + documentation = 3.
         assert_eq!(
@@ -1201,7 +1181,7 @@ mod tests {
             "b.kif",
         );
         assert!(!r_b.ok, "expected parse error");
-        assert!(r_b.has_errors());
+        assert!(!r_b.ok);
         let _ = kb.make_session_axiomatic("b.kif");
 
         // Both files' manpages resolve.

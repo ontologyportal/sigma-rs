@@ -17,7 +17,6 @@ use super::ProvingLayer;
 
 use super::result::ProverResult;
 use crate::cache::events::Event;
-use crate::kb::session_tags::SESSION_QUERY;
 use crate::prover::CommonProverOpts;
 use crate::trans::HasTranslation;
 use crate::types::{FileOrigin, SentenceId, SourceFile};
@@ -64,11 +63,14 @@ impl CommonProverOpts for ExternalOpts {
     fn set_session(&mut self, session: Option<String>) {
         self.session = session;
     }
+    fn session(&self) -> Option<&str> {
+        self.session.as_deref()
+    }
 }
 
 // The conjecture is the shared [`crate::prover::Conjecture`].  External interns
-// it into the shared store (under the query tag) in `intern_conjecture`, resolves
-// the roots into `Conjecture.sents`, and truncates the tag in `cleanup`.
+// it into the shared store (under a per-ask query tag) in `intern_conjecture`,
+// resolves the roots into `Conjecture.sents`, and truncates the tag in `cleanup`.
 pub(crate) use super::Conjecture;
 
 /// The external-prover top layer: `backend` drives a TPTP prover over problems
@@ -86,6 +88,12 @@ pub struct ExternalProverLayer<T: HasTranslation + 'static = TranslationLayer> {
     inner: T,
     /// The cache config object
     config: crate::cache::CacheConfig,
+    /// Query tags staged by `intern_conjecture` and not yet cleaned up, keyed
+    /// by the conjecture's root sids.  Each ask stages under its own tag so
+    /// concurrent asks never truncate each other's conjecture; two live asks
+    /// of the same conjecture may release either tag, since each holds its
+    /// own reference to the shared sentences.
+    query_tags: dashmap::DashMap<Vec<SentenceId>, Vec<String>>,
 }
 
 impl<T: HasTranslation + 'static> ExternalProverLayer<T> {
@@ -95,6 +103,7 @@ impl<T: HasTranslation + 'static> ExternalProverLayer<T> {
             backend,
             inner,
             config: CacheConfig::default(),
+            query_tags: Default::default(),
         }
     }
 
@@ -112,6 +121,15 @@ impl<T: HasTranslation + 'static> ExternalProverLayer<T> {
     /// The translation layer somewhere beneath this one.
     fn translation(&self) -> &TranslationLayer {
         self.inner.translation()
+    }
+
+    /// Re-ingest a query tag staged by `intern_conjecture` empty.
+    fn truncate_query_tag(&self, tag: String) {
+        let _ = self.cascade(vec![Event::SourceAdded {
+            file: SourceFile::truncate(std::path::PathBuf::from(&tag)),
+            session: Arc::new(tag),
+            staged: false,
+        }]);
     }
 }
 
@@ -161,43 +179,61 @@ impl<T: HasTranslation + 'static> ProvingLayer for ExternalProverLayer<T> {
         self.translation().ensure_rewrite_pass();
     }
 
-    /// Intern the conjecture into the **shared store** under the query tag (the
-    /// `&self` cascade) so the TPTP builder can resolve + mark it, and resolve
-    /// its roots into `Conjecture.sents`.  The shared `prepare` default wraps
-    /// this and errors on an empty result; `cleanup` truncates the tag.
+    /// Intern the conjecture into the **shared store** under a fresh query tag
+    /// (the `&self` cascade) so the TPTP builder can resolve + mark it, and
+    /// resolve its roots into `Conjecture.sents`.  The shared `prepare`
+    /// default wraps this and errors on an empty result; `cleanup` truncates
+    /// the tag.
     fn intern_conjecture(
         &self,
         asts: &[crate::AstNode],
     ) -> Vec<(std::sync::Arc<crate::types::Sentence>, SentenceId)> {
-        let tag = SESSION_QUERY;
+        let syn = &self.translation().semantic.syntactic;
+        let tag = syn.unique_source_key("query");
+        let mut asts = asts.to_vec();
+        for ast in &mut asts {
+            ast.attribute_to(&tag);
+        }
         let _ = self.cascade(vec![Event::SourceAdded {
-            session: Arc::new(tag.to_owned()),
+            session: Arc::new(tag.clone()),
             file: SourceFile {
                 parser: Parser::Kif { options: None },
-                name: tag.to_string(),
+                name: tag.clone(),
                 path: std::path::PathBuf::new(),
                 origin: FileOrigin::Inline,
                 contents: String::new(),
-                prebuilt: Some(asts.to_vec()),
+                prebuilt: Some(asts),
             },
             staged: false,
         }]);
         // Full tag membership (new + content-addressed dups alike), resolved.
-        let syn = &self.translation().semantic.syntactic;
-        syn.file_root_sids(tag)
+        let sents: Vec<_> = syn
+            .file_root_sids(&tag)
             .into_iter()
             .filter_map(|sid| syn.sentence(sid).map(|arc| (arc, sid)))
-            .collect()
+            .collect();
+        if sents.is_empty() {
+            self.truncate_query_tag(tag);
+        } else {
+            self.query_tags
+                .entry(sents.iter().map(|(_, sid)| *sid).collect())
+                .or_default()
+                .push(tag);
+        }
+        sents
     }
 
-    /// Roll the conjecture parse back — re-ingest the query tag empty.
-    fn cleanup(&self, _conj: Conjecture) {
-        let tag = SESSION_QUERY;
-        let _ = self.cascade(vec![Event::SourceAdded {
-            session: Arc::new(tag.to_owned()),
-            file: SourceFile::truncate(std::path::PathBuf::from(tag)),
-            staged: false,
-        }]);
+    /// Roll the conjecture parse back -- re-ingest its query tag empty.
+    fn cleanup(&self, conj: Conjecture) {
+        let key: Vec<SentenceId> = conj.sents.iter().map(|(_, sid)| *sid).collect();
+        let tag = self
+            .query_tags
+            .get_mut(&key)
+            .and_then(|mut tags| tags.pop());
+        self.query_tags.remove_if(&key, |_, tags| tags.is_empty());
+        if let Some(tag) = tag {
+            self.truncate_query_tag(tag);
+        }
     }
 
     fn prove_once(
@@ -239,6 +275,7 @@ impl<T: HasTranslation + 'static> TopLayer for ExternalProverLayer<T> {
             inner: T::from_semantic(semantic),
             backend: Prover::default(),
             config: crate::cache::CacheConfig::default(),
+            query_tags: Default::default(),
         }
     }
 
@@ -251,6 +288,7 @@ impl<T: HasTranslation + 'static> TopLayer for ExternalProverLayer<T> {
             inner: self.inner.fresh_config_clone(semantic),
             backend: self.backend.clone(),
             config: self.config.clone(),
+            query_tags: Default::default(),
         }
     }
 

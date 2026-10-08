@@ -20,7 +20,7 @@ use sigmakee_rs_core::{
 
 #[cfg(any(feature = "external-prover", feature = "native-prover"))]
 use sigmakee_rs_core::{
-    AstKif as _, AxiomSourceIndex, ConvertedStmt, EmitResult, Emitter, KifProofStep, ProverStatus,
+    AstKif as _, ConvertedStmt, EmitResult, Emitter, KifProofStep, ProverStatus, SentenceId, Span,
     TptpLang,
 };
 
@@ -652,41 +652,42 @@ impl ManPageDetail {
         } else {
             None
         };
-        let reference =
-            |sid: sigmakee_rs_core::SentenceId, position: Option<usize>| -> ManPageRefView {
-                let span = match &spans {
-                    Some(index) => index.get(&sid).cloned(),
-                    None => sigmakee_rs_core::DiagnosticSource::sentence_location(kb, sid),
-                };
-                let head = head_of(sid);
-                let (kind, arg_pos) = match target {
-                    Some(t) => classify_reference(kb, sid, t),
-                    None => ("other".to_string(), None),
-                };
-                // Documentation / format / taxonomy sentences are facts too,
-                // but readers want them grouped by role rather than shape.
-                let kind = match head.as_deref() {
-                    Some("documentation" | "termFormat" | "format") => "doc".to_string(),
-                    Some("subclass" | "instance" | "subrelation" | "subAttribute") => {
-                        "taxonomy".to_string()
-                    }
-                    _ => kind,
-                };
-                let roles = match (kind.as_str(), target) {
-                    ("=>" | "<=>", Some(t)) => rule_roles(kb, sid, t),
-                    _ => Vec::new(),
-                };
-                ManPageRefView {
-                    position,
-                    kif: kb.pretty_print_sentence_plain(sid, 0),
-                    file: span.as_ref().map(|s| s.file.clone()),
-                    line: span.as_ref().map(|s| s.line),
-                    kind,
-                    arg_pos,
-                    head,
-                    roles,
-                }
+        let reference = |sid: sigmakee_rs_core::SentenceId,
+                         position: Option<usize>|
+         -> ManPageRefView {
+            let span = match &spans {
+                Some(index) => index.get(&sid).cloned(),
+                None => sigmakee_rs_core::DiagnosticSource::sentence_location(kb, sid),
             };
+            let head = head_of(sid);
+            let (kind, arg_pos) = match target {
+                Some(t) => classify_reference(kb, sid, t),
+                None => ("other".to_string(), None),
+            };
+            // Documentation / format / taxonomy sentences are facts too,
+            // but readers want them grouped by role rather than shape.
+            let kind = match head.as_deref() {
+                Some("documentation" | "termFormat" | "format") => "doc".to_string(),
+                Some("subclass" | "instance" | "subrelation" | "subAttribute") => {
+                    "taxonomy".to_string()
+                }
+                _ => kind,
+            };
+            let roles = match (kind.as_str(), target) {
+                ("=>" | "<=>", Some(t)) => rule_roles(kb, sid, t),
+                _ => Vec::new(),
+            };
+            ManPageRefView {
+                position,
+                kif: kb.render_sentence(sid, sigmakee_rs_core::SentenceForm::Normalized, false, 0),
+                file: span.as_ref().map(|s| s.file.clone()),
+                line: span.as_ref().map(|s| s.line),
+                kind,
+                arg_pos,
+                head,
+                roles,
+            }
+        };
         let mut references: Vec<ManPageRefView> = p
             .ref_args
             .iter()
@@ -945,17 +946,18 @@ pub struct ProofStepView {
 #[cfg(any(feature = "external-prover", feature = "native-prover"))]
 impl ProofStepView {
     /// Project a proof/contradiction transcript, citing each step's source
-    /// axiom (via `src_idx`) where it has one.
+    /// axiom where it has one. `locations` is the KB's sentence location map
+    /// ([`sigmakee_rs_core::DiagnosticSource::sentence_locations`]).
     pub fn project(
         steps: &[KifProofStep],
-        src_idx: &AxiomSourceIndex,
+        locations: &std::collections::HashMap<SentenceId, Span>,
         tptp: EmitResult,
     ) -> Vec<Self> {
         steps
             .iter()
             .enumerate()
             .map(|(i, s)| {
-                let loc = s.source_sid.and_then(|sid| src_idx.lookup_by_sid(sid));
+                let loc = s.source_sid.and_then(|sid| locations.get(&sid));
                 let kif = s.formula.format_plain(0);
                 Self {
                     index: s.index,
@@ -1045,8 +1047,8 @@ impl AskResultView {
         let (proof, prose, prose_missing) = if proof_kif.is_empty() {
             (Vec::new(), String::new(), Vec::new())
         } else {
-            let src_idx = kb.build_axiom_source_index();
-            let proof = ProofStepView::project(proof_kif, &src_idx, tptp);
+            let locations = sigmakee_rs_core::DiagnosticSource::sentence_locations(kb);
+            let proof = ProofStepView::project(proof_kif, &locations, tptp);
             let goal_doc = sigmakee_rs_core::parse_document(
                 "__prose_goal__",
                 query_kif.to_string(),
@@ -1054,7 +1056,7 @@ impl AskResultView {
             );
             let goal_ast = goal_doc.ast.iter().find_map(|d| d.as_stmt());
             let report =
-                kb.render_proof_prose_with(goal_ast, proof_kif, DEFAULT_LANGUAGE, &src_idx);
+                kb.render_proof_prose_with(goal_ast, proof_kif, DEFAULT_LANGUAGE, &locations);
             (proof, report.rendered, report.missing)
         };
         Self {
@@ -1149,7 +1151,7 @@ impl AuditFocusView {
     pub fn of<L: TopLayer>(kb: &KnowledgeBase<L>, sid: sigmakee_rs_core::SentenceId) -> Self {
         let span = sigmakee_rs_core::DiagnosticSource::sentence_location(kb, sid);
         Self {
-            kif: kb.pretty_print_sentence_plain(sid, 0),
+            kif: kb.render_sentence(sid, sigmakee_rs_core::SentenceForm::Normalized, false, 0),
             file: span.as_ref().map(|s| s.file.clone()),
             line: span.as_ref().map(|s| s.line),
         }
@@ -1228,21 +1230,20 @@ impl AuditResultView {
     ) -> Self {
         let result = audit.result;
         let contradiction_proofs = &result.contradiction_proofs;
-        let src_idx = if contradiction_proofs.is_empty() {
-            None
+        let locations = if contradiction_proofs.is_empty() {
+            Default::default()
         } else {
-            Some(kb.build_axiom_source_index())
+            sigmakee_rs_core::DiagnosticSource::sentence_locations(kb)
         };
         let contradictions: Vec<ContradictionView> = contradiction_proofs
             .iter()
             .enumerate()
             .map(|(i, steps)| {
-                let src_idx = src_idx.as_ref().expect("index built when proofs exist");
                 // A contradiction has no conjecture to restate -- it refutes
                 // the KB itself -- so the prose opens straight into the
                 // derivation.
                 let prose_report =
-                    kb.render_proof_prose_with(None, steps, DEFAULT_LANGUAGE, src_idx);
+                    kb.render_proof_prose_with(None, steps, DEFAULT_LANGUAGE, &locations);
                 let tptp = Emitter::Tptp(TptpLang::Auto)
                     .emit(&steps.iter().map(|s| s.formula.clone()).collect::<Vec<_>>());
                 let proof_tptp_prologue = tptp.preamble.join("\n");
@@ -1255,7 +1256,7 @@ impl AuditResultView {
                     ),
                     prose: prose_report.rendered,
                     prose_missing: prose_report.missing,
-                    steps: ProofStepView::project(steps, src_idx, tptp),
+                    steps: ProofStepView::project(steps, &locations, tptp),
                     proof_tptp_prologue,
                 }
             })
@@ -1623,11 +1624,12 @@ impl<L: TopLayer> Session<L> {
         );
         match doc.ast.iter().find_map(|d| d.as_stmt()) {
             Some(ast) => {
-                if generic_vars {
-                    self.kb.render_formula_paraphrase(ast, language).rendered
+                let style = if generic_vars {
+                    sigmakee_rs_core::RenderStyle::Paraphrase
                 } else {
-                    self.kb.render_formula(ast, language).rendered
-                }
+                    sigmakee_rs_core::RenderStyle::Plain
+                };
+                self.kb.render_formula(ast, language, style).rendered
             }
             None => String::new(),
         }
@@ -1667,10 +1669,11 @@ impl<S: TopLayer + 'static> Session<sigmakee_rs_core::ProverLayer<S>> {
         opts: sigmakee_rs_core::NativeOpts,
         dialect: sigmakee_rs_core::Parser,
     ) -> AskResultView {
-        let sine = opts.selection;
-        let result = self
-            .kb
-            .ask_query_dialect(query, session, sine, opts, dialect);
+        let opts = sigmakee_rs_core::NativeOpts {
+            session: session.map(str::to_string),
+            ..opts
+        };
+        let result = self.kb.ask_query_dialect(query, &opts, dialect);
         AskResultView::project(
             &self.kb,
             result.status,
@@ -1726,7 +1729,11 @@ impl<T: sigmakee_rs_core::HasTranslation + 'static>
         opts: &sigmakee_rs_core::ExternalOpts,
         dialect: sigmakee_rs_core::Parser,
     ) -> AskResultView {
-        let result = self.kb.ask_query_dialect(query, session, opts, dialect);
+        let opts = sigmakee_rs_core::ExternalOpts {
+            session: session.map(str::to_string),
+            ..opts.clone()
+        };
+        let result = self.kb.ask_query_dialect(query, &opts, dialect);
         AskResultView::project(
             &self.kb,
             result.status,
@@ -1764,10 +1771,11 @@ impl<S: sigmakee_rs_core::HasTranslation + 'static>
         opts: sigmakee_rs_core::NativeOpts,
         dialect: sigmakee_rs_core::Parser,
     ) -> AskResultView {
-        let sine = opts.selection;
-        let result = self
-            .kb
-            .ask_query_dialect_native(query, session, sine, opts, dialect);
+        let opts = sigmakee_rs_core::NativeOpts {
+            session: session.map(str::to_string),
+            ..opts
+        };
+        let result = self.kb.ask_query_dialect_native(query, &opts, dialect);
         AskResultView::project(
             &self.kb,
             result.status,
@@ -1786,7 +1794,9 @@ impl<S: sigmakee_rs_core::HasTranslation + 'static>
         target: AuditTarget<'_>,
     ) -> AuditResultView {
         let order = target.order(|scope| self.kb.audit_sweep_order(scope, sample.seed));
-        let audit = self.kb.audit_sampled_native(&order, sample, &opts);
+        let audit = self
+            .kb
+            .audit_sampled_with(self.kb.native(), &order, sample, &opts);
         AuditResultView::project(&self.kb, sample, audit, AuditStopReason::from_native)
     }
 }
@@ -1799,13 +1809,10 @@ mod tests {
 
     fn session_with(kif: &str) -> Session<TranslationLayer> {
         let mut s = Session::<TranslationLayer>::new("views-test".into());
-        s.ingest(
-            Source::Reader {
-                name: "t.kif".into(),
-                reader: Box::new(std::io::Cursor::new(Vec::from(kif))),
-            },
-            true,
-        );
+        s.ingest(Source::Reader {
+            name: "t.kif".into(),
+            reader: Box::new(std::io::Cursor::new(Vec::from(kif))),
+        });
         s
     }
 
@@ -1975,26 +1982,20 @@ mod tests {
     #[test]
     fn file_stats_view_buckets_kinds_terms_and_dependencies() {
         let mut s = Session::<TranslationLayer>::new("views-test".into());
-        s.ingest(
-            Source::Reader {
-                name: "types.kif".into(),
-                reader: Box::new(std::io::Cursor::new(Vec::from(
-                    "(subclass Dog Mammal)\n\
+        s.ingest(Source::Reader {
+            name: "types.kif".into(),
+            reader: Box::new(std::io::Cursor::new(Vec::from(
+                "(subclass Dog Mammal)\n\
                      (documentation Dog EnglishLanguage \"A dog.\")\n",
-                ))),
-            },
-            true,
-        );
-        s.ingest(
-            Source::Reader {
-                name: "rules.kif".into(),
-                reader: Box::new(std::io::Cursor::new(Vec::from(
-                    "(=> (instance ?X Dog) (instance ?X Mammal))\n\
+            ))),
+        });
+        s.ingest(Source::Reader {
+            name: "rules.kif".into(),
+            reader: Box::new(std::io::Cursor::new(Vec::from(
+                "(=> (instance ?X Dog) (instance ?X Mammal))\n\
                      (partOf Rex Rex)\n",
-                ))),
-            },
-            true,
-        );
+            ))),
+        });
 
         let types = s.file_stats_view("types.kif").expect("types.kif loaded");
         assert_eq!(types.axioms, 2);

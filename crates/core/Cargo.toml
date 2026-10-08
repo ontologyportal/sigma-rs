@@ -118,10 +118,10 @@ winnow = "0.7"
 # migration. Cargo fetches vampire-sys/vampire-lib (a nested submodule inside
 # this repo) automatically. Bump `rev` deliberately when you want to pick up
 # upstream changes (e.g. moving to `tff-support`).
-vampire-prover = { git = "https://github.com/theo-kim/vampire-rs", rev = "f25670d5ddec82594aa9019029e7ea8961acc8c8", default-features = false }
+vampire-prover = { git = "https://github.com/theo-kim/vampire-rs", rev = "513435d3088cf740b326a97e91f69b18e3e0728c", default-features = false }
 
 # Direct vampire-sys access for the clausify path (integrated-prover only).
-vampire-sys = { git = "https://github.com/theo-kim/vampire-rs", rev = "f25670d5ddec82594aa9019029e7ea8961acc8c8", optional = true }
+vampire-sys = { git = "https://github.com/theo-kim/vampire-rs", rev = "513435d3088cf740b326a97e91f69b18e3e0728c", optional = true }
 
 # wasm32 has no system clock: `std::time::Instant::now()` /
 # `SystemTime::now()` panic at runtime.  `crate::clock` backs those with

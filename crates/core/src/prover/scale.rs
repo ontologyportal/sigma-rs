@@ -239,7 +239,6 @@ impl ScalePlanner {
 /// at/above `requested` — i.e. every large-KB call (SUMO-scale background)
 /// is untouched; this only shortens the climb for small/self-contained
 /// corpora (standalone TPTP problems, small test KBs).
-#[cfg(feature = "native-prover")]
 pub(crate) fn adaptive_start_budget(
     requested: usize,
     total_axioms: usize,
@@ -269,7 +268,6 @@ pub(crate) fn adaptive_start_budget(
 /// unchanged. A no-op whenever `total_axioms` is unknown or the corpus is
 /// large enough that genuine budget-search iterations are still useful —
 /// same safety property as `adaptive_start_budget`.
-#[cfg(feature = "native-prover")]
 pub(crate) fn effective_max_time_runs(
     configured: usize,
     total_axioms: usize,

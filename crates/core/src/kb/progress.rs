@@ -20,14 +20,13 @@ use super::KnowledgeBase;
 
 use crate::progress::*;
 
-pub use crate::progress::{ProgressEvent, ProgressSink};
+use crate::progress::ProgressEvent;
 
 impl<L: crate::layer::TopLayer> KnowledgeBase<L> {
     /// Install a [`ProgressSink`] on this KB so internal instrumentation
     /// emits structured events through it.
     ///
     /// Sinks are `Arc`-shared so the same sink can serve multiple KBs.
-    #[allow(dead_code)]
     pub fn set_progress_sink(&mut self, sink: DynSink) {
         self.progress = Some(sink);
     }
@@ -88,7 +87,6 @@ impl<L: crate::layer::TopLayer> KnowledgeBase<L> {
 /// let _span = profile_span!(self, "ingest.parse");
 /// // ... work ...
 /// ```
-#[macro_export]
 macro_rules! profile_span {
     ($self:ident, $phase:literal) => {
         $self.emit($crate::progress::ProgressEvent::PhaseStarted { name: $phase });
@@ -110,8 +108,10 @@ macro_rules! profile_span {
 /// let r = profile_call!(self, "ask.sine_select",
 ///     self.sine_select_for_query(query_kif, params));
 /// ```
-#[allow(unused_macros)]
-#[macro_export]
+#[cfg_attr(
+    not(any(feature = "external-prover", feature = "native-prover")),
+    allow(unused_macros)
+)]
 macro_rules! profile_call {
     ($self:ident, $phase:literal, $e:expr) => {{
         $self.emit($crate::progress::ProgressEvent::PhaseStarted { name: $phase });
@@ -123,9 +123,10 @@ macro_rules! profile_call {
 
 /// Installs a [`SinkGuard`] for the enclosing scope, equivalent to
 /// `let _guard = SinkGuard::install(self.progress.clone())`.
-#[macro_export]
 macro_rules! with_guard {
     ($self:ident) => {
         let _guard = $crate::progress::SinkGuard::install($self.progress.clone());
     };
 }
+
+pub(crate) use {profile_span, with_guard};

@@ -173,7 +173,10 @@ pub fn run_sweep(
             }
             let errors: Vec<_> = session
                 .kb()
-                .validate_session(&session_name)
+                .validate(
+                    sigmakee_rs_sdk::ValidationTarget::Session(&session_name),
+                    None,
+                )
                 .into_iter()
                 .filter(|d| matches!(d.severity, Severity::Error))
                 .collect();

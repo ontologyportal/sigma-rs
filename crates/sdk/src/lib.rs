@@ -17,7 +17,7 @@
 //! use sigmakee_rs_core::{NativeOpts, ProverLayer};
 //!
 //! let mut s = Session::<ProverLayer>::new("demo".into());        // native prover backend
-//! let errs = s.ingest(Source::Local(vec!["Merge.kif".into()]), true);  // file or dir
+//! let errs = s.ingest(Source::Local(vec!["Merge.kif".into()]));  // file or dir
 //! assert!(errs.is_empty());
 //! let r = s.ask("(instance Rex Animal)", Some(NativeOpts::default())).unwrap();
 //! println!("{:?}", r.status);
@@ -124,8 +124,9 @@ pub use session::{Backend, Session};
 pub use source::Source;
 
 pub use sigmakee_rs_core::{
-    Diagnostic, Instant, KnowledgeBase, ManKind, ManPage, ParentEdge, SemanticError, SentenceId,
-    SortSig, TptpLang, TptpOptions, DEFAULT_LANGUAGE, NATURAL_LANGUAGE_CLASS,
+    Diagnostic, DiagnosticSource, Instant, KnowledgeBase, ManKind, ManPage, ParentEdge,
+    SemanticError, SentenceForm, SentenceId, SortSig, TptpLang, TptpOptions, ValidationTarget,
+    DEFAULT_LANGUAGE, NATURAL_LANGUAGE_CLASS,
 };
 
 // Layer stack: the concrete top layers plus the traits downstream backend
@@ -165,17 +166,15 @@ pub use sigmakee_rs_core::types::{
 // there is no more process-global promotion state to re-export; a caller
 // wanting `-Wall`-style promotion applies it as an explicit, stateless
 // transform over the returned `Diagnostic`s (see `crates/cli`).
-pub use sigmakee_rs_core::{DiagResult, Severity, TellResult, ToDiagnostic};
+pub use sigmakee_rs_core::{DiagResult, IngestResult, Severity, ToDiagnostic};
 
 // Proof-source indexing + search + shared prover opts.
-#[cfg(feature = "external-prover")]
-pub use sigmakee_rs_core::RenderReport;
 #[cfg(feature = "native-prover")]
 pub use sigmakee_rs_core::Strategy;
 #[cfg(any(feature = "external-prover", feature = "native-prover"))]
-pub use sigmakee_rs_core::{
-    AuditBatch, AuditSample, AxiomSource, AxiomSourceIndex, CommonProverOpts, SampledAudit,
-};
+pub use sigmakee_rs_core::{AuditBatch, AuditSample, CommonProverOpts, SampledAudit};
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
+pub use sigmakee_rs_core::{RenderReport, RenderStyle};
 pub use sigmakee_rs_core::{
     SearchHit, SearchOpts, SearchSource, TaxConstraint, DEFAULT_CANDIDATE_LIMIT,
 };

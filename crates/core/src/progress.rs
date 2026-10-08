@@ -4,9 +4,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::semantics::errors::SemanticError;
-use crate::types::SentenceId;
-
 #[cfg(feature = "external-prover")]
 use crate::prover::ProverStatus;
 
@@ -220,29 +217,6 @@ pub enum ProgressEvent {
         elapsed: Duration,
     },
 
-    /// One sentence's row was deleted from LMDB.
-    PersistDeleted { sid: SentenceId },
-
-    /// A duplicate axiom was dropped during promote.
-    DuplicateDropped { sid: SentenceId },
-
-    /// Per-symbol DB write (gated behind `cfg(debug_assertions)`).
-    PersistedSymbol {
-        name: String,
-        id: u64,
-        was_present: bool,
-    },
-
-    /// Per-formula DB write.
-    PersistedFormula { id: u64 },
-
-    /// Per-clause hash interned.
-    PersistedClause {
-        hash: u64,
-        id: u64,
-        was_present: bool,
-    },
-
     // -- Parse & ingest ------------------------------------------------------
     /// File ingested into the KB (parse → intern → axiomatic).
     KifLoaded {
@@ -250,28 +224,6 @@ pub enum ProgressEvent {
         sentences: usize,
         errors: usize,
     },
-
-    /// Tokenizer finished one file.
-    Tokenized {
-        tag: String,
-        tokens: usize,
-        errors: usize,
-    },
-
-    /// Symbol interned.
-    SymbolInterned { name: String, id: u64 },
-
-    /// Sentence allocated.
-    SentenceAllocated { sid: SentenceId },
-
-    /// AST element built.
-    ElementBuilt,
-
-    /// Macro expansion (row variable).
-    MacroExpanded { input: String, output_count: usize },
-
-    /// Sentence pruned from the store (e.g. orphaned symbol).
-    SentencesPruned { kept: usize, dropped: usize },
 
     // -- SInE / clausify -----------------------------------------------------
     /// SInE index rebuilt.  `axioms` is the count of SInE-eligible
@@ -319,13 +271,6 @@ pub enum ProgressEvent {
     /// who want strongly-typed diagnostics should inspect
     /// `SemanticError` from the operation's report instead.
     Warning { code: &'static str, detail: String },
-
-    /// Hard semantic error surfaced through the event stream
-    /// (in addition to the `Result` path).  Carried by-clone so
-    /// consumers needn't lock on the KB to read it.
-    SemanticErrorEv {
-        error: std::sync::Arc<dyn SemanticError>,
-    },
 
     // -- Phase timing --------------------------------------------------------
     /// A named phase in the KB's work has started. Consumers that want timing

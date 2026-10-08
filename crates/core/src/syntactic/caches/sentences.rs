@@ -32,6 +32,10 @@ pub(crate) struct SentenceSide {
     /// row-var expansion).  Read through `roots_of_fingerprint` / related
     /// accessors.
     forward: DashMap<u64, SmallVec<[SentenceId; 2]>>,
+    /// Inverse of `forward` (`root -> producing fingerprints`), derived from
+    /// it on restore rather than persisted.  Read through
+    /// `fingerprints_producing`.
+    backward: DashMap<SentenceId, SmallVec<[u64; 2]>>,
     /// Sparse source-refcount: roots produced by *more than one* fingerprint
     /// (absent ⇒ exactly one source).
     source_overflow: DashMap<SentenceId, u32>,
@@ -104,6 +108,9 @@ impl EagerMapBehavior for SentenceCache {
 
     fn restore_side(&self, side: &SentenceSide, snap: SentenceSideSnapshot) {
         for (fp, sids) in snap.forward {
+            for &sid in &sids {
+                side.backward.entry(sid).or_default().push(fp);
+            }
             side.forward.insert(fp, sids.into_iter().collect());
         }
         for (sid, n) in snap.source_overflow {
@@ -329,29 +336,14 @@ impl SyntacticLayer {
         best.into_iter().map(|(sid, (_, sp))| (sid, sp)).collect()
     }
 
-    /// The source fingerprints that produced `sid` — the inverse of `forward`.
-    /// Linear scan (cold paths only, e.g. display / provenance).
+    /// The source fingerprints that produced `sid` (the `backward` map).
     pub(crate) fn fingerprints_producing(&self, sid: SentenceId) -> Vec<u64> {
         self.sentences
             .side()
-            .forward
-            .iter()
-            .filter(|e| e.value().contains(&sid))
-            .map(|e| *e.key())
-            .collect()
-    }
-
-    /// A snapshot of the whole `forward` map (`fingerprint -> roots`), for
-    /// bulk provenance.
-    // Sole caller is the ask-gated `root_source_nodes` bulk walk.
-    #[cfg(any(feature = "external-prover", feature = "native-prover"))]
-    pub(crate) fn fingerprint_roots(&self) -> Vec<(u64, Vec<SentenceId>)> {
-        self.sentences
-            .side()
-            .forward
-            .iter()
-            .map(|e| (*e.key(), e.value().to_vec()))
-            .collect()
+            .backward
+            .get(&sid)
+            .map(|fps| fps.to_vec())
+            .unwrap_or_default()
     }
 
     /// The recorded sub-sentence ids of `root` (its `Element::Sub`
@@ -419,6 +411,7 @@ impl EagerMap<SentenceCache> {
         }
 
         self.side().forward.entry(hash).or_default().push(root_sid);
+        self.side().backward.entry(root_sid).or_default().push(hash);
         let newly_root = self.side().roots.insert(root_sid);
         if newly_root {
             // Keyed off root status (not the body's `is_new`) so a sentence that
@@ -618,6 +611,18 @@ impl EagerMap<SentenceCache> {
 
         let mut removed_roots = Vec::new();
         for sid in sids {
+            let no_sources = self
+                .side()
+                .backward
+                .get_mut(&sid)
+                .map(|mut fps| {
+                    fps.retain(|fp| *fp != hash);
+                    fps.is_empty()
+                })
+                .unwrap_or(false);
+            if no_sources {
+                self.side().backward.remove(&sid);
+            }
             // Holding a `get`/`get_mut` guard across an `insert`/`remove` on the
             // same `DashMap` deadlocks; copy the count out first.
             let cur = self.side().source_overflow.get(&sid).map(|r| *r);
@@ -723,6 +728,21 @@ pub(crate) struct RemovedRoot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fingerprints_producing_tracks_sources_through_add_and_remove() {
+        let mut store = SyntacticLayer::default();
+        store.load_kif("(subclass Dog Entity)", "a.kif");
+        store.load_kif("(subclass Dog Entity)", "b.kif");
+        let sid = store.root_sids()[0];
+        assert_eq!(store.fingerprints_producing(sid).len(), 1);
+        let fp = store.fingerprints_producing(sid)[0];
+        assert_eq!(store.roots_of_fingerprint(fp), vec![sid]);
+
+        store.sentences.remove_hash(fp);
+        assert!(store.fingerprints_producing(sid).is_empty());
+        assert!(store.roots_of_fingerprint(fp).is_empty());
+    }
 
     /// Variables are interned with scope-qualified names (`X__<scope>`) during
     /// the sentence build, so `?X` in two distinct quantifier scopes yields two

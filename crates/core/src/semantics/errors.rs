@@ -111,37 +111,6 @@ impl ToDiagnostic for BoxedError {
     }
 }
 
-// -- The finding vocabulary ------------------------------------------------
-//
-// Each type is defined beside the code that raises it; they are re-exported
-// here so the rest of the semantic layer has a single import path for the
-// whole vocabulary regardless of where any one finding lives.
-
-pub use crate::kb::semantics::{
-    MissingDocumentation, MissingFormatString, MissingTermFormat, MultipleDocumentation,
-};
-pub use crate::semantics::caches::range::DoubleRange;
-pub use crate::semantics::validate::validators::arity::ArityMismatch;
-pub use crate::semantics::validate::validators::camel_case::TermCamelCase;
-pub use crate::semantics::validate::validators::domain::DomainMismatch;
-pub use crate::semantics::validate::validators::entity_ancestor::NoEntityAncestor;
-pub use crate::semantics::validate::validators::free_var_in_consequent::FreeVarInConsequent;
-pub use crate::semantics::validate::validators::head_is_relation::HeadNotRelation;
-pub use crate::semantics::validate::validators::iff_shape::ExistentialInIff;
-pub use crate::semantics::validate::validators::implies_shape::ExistentialInAntecedent;
-pub use crate::semantics::validate::validators::non_logical_arg::NonLogicalArg;
-pub use crate::semantics::validate::validators::only_rel::TooGeneralRel;
-pub use crate::semantics::validate::validators::quantifier_vacuous::QuantifierVacuous;
-pub use crate::semantics::validate::validators::relation_metadata::{
-    MissingArity, MissingDomain, MissingRange,
-};
-pub use crate::semantics::validate::validators::single_arity::SingleArity;
-pub use crate::semantics::validate::validators::single_use_variable::SingleUseVariable;
-pub use crate::semantics::validate::validators::symbol_case::{
-    FunctionCase, PredicateCase, TermCase,
-};
-pub use crate::semantics::validate::Other;
-
 /// Implement [`SemanticError`] for a finding type.
 ///
 /// The trailing items are spliced into the generated `impl`, so a finding that
@@ -166,23 +135,9 @@ pub(crate) use semantic_error;
 
 use thiserror::Error;
 
-/// The sentence head is not a symbol.
-#[derive(Debug, Clone, Error)]
-#[error("sentence head is not a symbol")]
-pub struct HeadInvalid {
-    pub sid: SentenceId,
-}
-semantic_error!(
-    HeadInvalid,
-    "E003",
-    "head-invalid",
-    Error,
-    fn anchors(&self) -> (Vec<SentenceId>, i32) {
-        (vec![self.sid], 0)
-    },
-);
-
 /// Symbols cannot be both a class and an instance.
+// No check raises this yet; see the module docs.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Error)]
 #[error("'{sym}' is declared as both an instance and a class (instance and subclass are disjoint)")]
 pub struct InstanceSubclassConflict {
@@ -195,63 +150,9 @@ semantic_error!(
     Error
 );
 
-/// A symbol is an instance of two disjoint classes.
-#[derive(Debug, Clone, Error)]
-#[error("'{sym}' is an instance of disjoint classes ({class1} and {class2})")]
-pub struct DisjointInstance {
-    pub sid: Vec<SentenceId>,
-    pub sym: String,
-    pub class1: String,
-    pub class2: String,
-}
-semantic_error!(
-    DisjointInstance,
-    "E014",
-    "disjoint-instance",
-    Error,
-    fn anchors(&self) -> (Vec<SentenceId>, i32) {
-        (self.sid.clone(), -1)
-    },
-);
-
-/// A symbol is a subclass of two disjoint classes.
-#[derive(Debug, Clone, Error)]
-#[error("'{sym}' is a subclass of disjoint classes ({class1} and {class2})")]
-pub struct DisjointSubclass {
-    pub sid: Vec<SentenceId>,
-    pub sym: String,
-    pub class1: String,
-    pub class2: String,
-}
-semantic_error!(
-    DisjointSubclass,
-    "E015",
-    "disjoint-subclass",
-    Error,
-    fn anchors(&self) -> (Vec<SentenceId>, i32) {
-        (self.sid.clone(), -1)
-    },
-);
-
-/// A subclass of a partitioned class is absent from the partition.
-#[derive(Debug, Clone, Error)]
-#[error("'{sym}' is a subclass of partitioned class '{partition_class}' but is not listed in the partition")]
-pub struct PartitionViolation {
-    pub sym: String,
-    pub partition_class: String,
-}
-semantic_error!(PartitionViolation, "E025", "partition-violation", Error);
-
-/// An instance of an exhaustively decomposed class matches no partition member.
-#[derive(Debug, Clone, Error)]
-#[error("'{sym}' is an instance of '{partition_class}' but does not match any partition member")]
-pub struct PartitionNonMember {
-    pub sym: String,
-    pub partition_class: String,
-}
-semantic_error!(PartitionNonMember, "E026", "partition-non-member", Error);
-
 /// A term appears in no rule.
+// No check raises this yet; see the module docs.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Error)]
 #[error("term '{sym}' does not appear in any rule (implication or biconditional)")]
 pub struct TermNoRule {
@@ -260,6 +161,8 @@ pub struct TermNoRule {
 semantic_error!(TermNoRule, "W027", "term-no-rule", Warning);
 
 /// A referenced term is declared in an unloaded constituent.
+// No check raises this yet; see the module docs.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Error)]
 #[error("constituent '{current}' references '{sym}' but its declaration lives in unloaded constituent '{defining_constituent}'")]
 pub struct MissingConstituentDep {
@@ -275,6 +178,8 @@ semantic_error!(
 );
 
 /// Two constituents reference each other's terms.
+// No check raises this yet; see the module docs.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Error)]
 #[error("constituents '{a}' and '{b}' mutually reference each other's terms")]
 pub struct MutualConstituentDep {

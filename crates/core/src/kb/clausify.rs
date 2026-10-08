@@ -38,29 +38,21 @@ fn clausify_all_in<S: TopLayer + 'static>(
 }
 
 /// Clausify a single ad hoc KIF formula (not pulled from the KB store) with
-/// `layer`'s clausifier and render its clauses as flat SUO-KIF. Returns an
-/// empty vec on a parse error or a formula that clausifies to nothing.
-fn clausify_formula_in<S: TopLayer + 'static>(layer: &ProverLayer<S>, kif: &str) -> Vec<String> {
-    let doc = crate::parse_document(
-        "clausify",
-        kif.to_string(),
-        crate::Parser::Kif { options: None },
-    );
-    if doc.has_errors() {
-        return Vec::new();
-    }
-    let asts: Vec<crate::AstNode> = doc
-        .ast
-        .into_iter()
-        .filter_map(|d| d.as_stmt().cloned())
-        .collect();
+/// `layer`'s clausifier and render its clauses as flat SUO-KIF. Empty for a
+/// formula that clausifies to nothing; an error when `kif` does not parse.
+fn clausify_formula_in<S: TopLayer + 'static>(
+    layer: &ProverLayer<S>,
+    kif: &str,
+) -> crate::DiagResult<Vec<String>> {
+    let asts = crate::prover::Conjecture::parse(kif, crate::Parser::Kif { options: None })
+        .map_err(|r| crate::Diagnostic::new_error("parse", "clausify-input", r.raw_output))?;
     let clauses = layer.clausify_asts(asts);
     let syn = &layer.semantic().syntactic;
     let mut sk = SkolemNames::default();
-    clauses
+    Ok(clauses
         .iter()
         .map(|c| clause_to_kif(c, &layer.atoms, syn, &mut sk))
-        .collect()
+        .collect())
 }
 
 impl<S: TopLayer + 'static> KnowledgeBase<ProverLayer<S>> {
@@ -70,7 +62,7 @@ impl<S: TopLayer + 'static> KnowledgeBase<ProverLayer<S>> {
     }
 
     /// See [`clausify_formula_in`].
-    pub fn clausify_formula(&self, kif: &str) -> Vec<String> {
+    pub fn clausify_formula(&self, kif: &str) -> crate::DiagResult<Vec<String>> {
         clausify_formula_in(&self.layer, kif)
     }
 }
@@ -89,7 +81,7 @@ impl<S: crate::trans::HasTranslation + 'static>
     }
 
     /// See [`clausify_formula_in`].
-    pub fn clausify_formula(&self, kif: &str) -> Vec<String> {
+    pub fn clausify_formula(&self, kif: &str) -> crate::DiagResult<Vec<String>> {
         clausify_formula_in(self.layer.inner_layer(), kif)
     }
 }
@@ -135,10 +127,21 @@ mod tests {
     #[test]
     fn single_formula_scratch_clausify() {
         let kb = kb_from("(instance Rex Dog)");
-        let clauses = kb.clausify_formula("(=> (instance ?X Cat) (instance ?X Animal))");
+        let clauses = kb
+            .clausify_formula("(=> (instance ?X Cat) (instance ?X Animal))")
+            .expect("well-formed KIF");
         assert_eq!(clauses.len(), 1);
         assert!(clauses[0].starts_with("(or "), "got: {}", clauses[0]);
         // The base KB's own axioms are untouched by a scratch clausify.
         assert_eq!(kb.clausify_all(), vec!["(instance Rex Dog)".to_string()]);
+    }
+
+    #[test]
+    fn clausify_formula_reports_malformed_input_as_an_error() {
+        let kb = kb_from("(subclass Cat Animal)");
+        let err = kb
+            .clausify_formula("(=> (instance ?X")
+            .expect_err("unbalanced");
+        assert_eq!(err.code, "clausify-input");
     }
 }

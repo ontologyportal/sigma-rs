@@ -229,7 +229,7 @@ impl<L: ProvingLayer> Session<L> {
     /// `&[]` focus).  `limit = 1` is the usual satisfiability check.  Selection /
     /// session ride in on `opts`.
     pub fn audit(&self, opts: L::Opts, limit: usize) -> SdkResult<ProverResult> {
-        Ok(self.kb.audit_consistency(&[], opts, limit))
+        Ok(self.kb.audit_consistency(&[], &opts, limit))
     }
 
     /// Single-contradiction satisfiability check (`audit` with `limit = 1`):
@@ -254,7 +254,7 @@ impl<L: ProvingLayer> Session<L> {
         src: Source,
         opts: Option<L::Opts>,
     ) -> Result<TestCaseOutcome, Vec<SdkError>> {
-        let mut tc = self.source_to_test_case(src)?;
+        let tc = self.source_to_test_case(src)?;
         // Precedence: an explicit (non-zero) caller timeout — e.g. CLI
         // `--timeout` — pins the budget for every case; otherwise each case uses
         // its own `(time N)` directive (`tc.timeout`).
@@ -289,11 +289,10 @@ impl<L: ProvingLayer> Session<L> {
                 Some(false) => ExpectedOutcome::NotProved,
             }
         };
-        // Peel the `.tq`/TPTP `Annotated{Conjecture}` wrapper to the bare
-        // formula (mirrors `ask_case`) so the conjecture normalizer interns
-        // it; otherwise the prover reports "No query sentence parsed".
-        tc.query = tc.query.map(|q| q.formula().clone());
-        let result = self.kb.ask(tc, Some(&self.name), &prover_opts);
+        if prover_opts.session().is_none() {
+            prover_opts.set_session(Some(self.name.clone()));
+        }
+        let result = self.kb.ask(tc, &prover_opts);
         let szs = szs_status(&result, has_fof_conjecture);
 
         let proved = matches!(result.status, ProverStatus::Proved);
@@ -346,18 +345,12 @@ impl<L: ProvingLayer> Session<L> {
     // -- internals -----------------------------------------------------------
 
     /// Discharge a fully-assembled `TestCase` through the core `ask` primitive.
-    fn ask_case(
-        &self,
-        mut tc: TestCase,
-        opts: Option<L::Opts>,
-    ) -> Result<ProverResult, Vec<SdkError>> {
-        // `ask`'s conjecture normalizer interns the bare formula; the `.tq` /
-        // TPTP parsers attach an `Annotated{Conjecture}` wrapper it doesn't peel
-        // (a negated conjecture's extra `not` is already baked into the formula
-        // by `renegate`, so the bare formula is still correct).
-        tc.query = tc.query.map(|q| q.formula().clone());
-        let prover_opts = opts.unwrap_or_default();
-        Ok(self.kb.ask(tc, Some(&self.name), &prover_opts))
+    fn ask_case(&self, tc: TestCase, opts: Option<L::Opts>) -> Result<ProverResult, Vec<SdkError>> {
+        let mut prover_opts = opts.unwrap_or_default();
+        if prover_opts.session().is_none() {
+            prover_opts.set_session(Some(self.name.clone()));
+        }
+        Ok(self.kb.ask(tc, &prover_opts))
     }
 }
 
@@ -375,6 +368,8 @@ impl Session<sigmakee_rs_core::ProverLayer> {
     /// CounterSatisfiable analogue; `Inconsistent` — the belief base
     /// itself is contradictory; `Unknown`/`Timeout` — budget.  Cited
     /// proof steps ride in `proof_kif` when `opts.want_proof` is set.
+    /// `InputError` when the KB does not declare `believes` a
+    /// `PropositionalAttitude` (SUMO's Merge.kif does).
     pub fn doxastic_ask(
         &self,
         agent: &str,
@@ -383,30 +378,33 @@ impl Session<sigmakee_rs_core::ProverLayer> {
     ) -> SdkResult<ProverResult> {
         Ok(self
             .kb
-            .doxastic_ask(agent, query_kif, opts.unwrap_or_default()))
+            .doxastic_ask(None, agent, query_kif, opts.unwrap_or_default()))
     }
 
     /// Is `agent`'s belief base consistent under full consequence
     /// closure?  `Consistent` / `Inconsistent` (cited contradiction
     /// transcripts in `contradiction_proofs`) / `Unknown`-`Timeout`.
-    /// An empty belief base is trivially `Consistent`.
+    /// An empty belief base is trivially `Consistent`; `InputError` when
+    /// the KB does not declare `believes` a `PropositionalAttitude`.
     pub fn doxastic_consistent(
         &self,
         agent: &str,
         opts: Option<sigmakee_rs_core::NativeOpts>,
     ) -> SdkResult<ProverResult> {
-        Ok(self.kb.doxastic_consistent(agent, opts.unwrap_or_default()))
+        Ok(self
+            .kb
+            .doxastic_consistent(None, agent, opts.unwrap_or_default()))
     }
 
     /// Clausify the KB's CNF form (native prover's own clausifier), one
     /// SUO-KIF clause per entry. `formula` is `None` to clausify every
     /// axiom currently loaded, or `Some(kif)` to clausify one ad hoc
     /// formula instead (not pulled from the KB store — the base KB is
-    /// untouched either way).
-    pub fn clausify(&self, formula: Option<&str>) -> Vec<String> {
+    /// untouched either way). A `formula` that does not parse is an error.
+    pub fn clausify(&self, formula: Option<&str>) -> SdkResult<Vec<String>> {
         match formula {
-            Some(kif) => self.kb.clausify_formula(kif),
-            None => self.kb.clausify_all(),
+            Some(kif) => self.kb.clausify_formula(kif).map_err(SdkError::from),
+            None => Ok(self.kb.clausify_all()),
         }
     }
 }
@@ -450,12 +448,15 @@ impl<L: ProvingLayer> OpenSession<'_, L> {
             &session_name,
         );
 
-        if res.has_errors() {
+        if !res.ok {
             return res.diagnostics.into_iter().map(SdkError::from).collect();
         }
 
         let diag = kb
-            .validate_session(&session_name)
+            .validate(
+                sigmakee_rs_core::ValidationTarget::Session(&session_name),
+                None,
+            )
             .into_iter()
             .map(SdkError::from)
             .collect();

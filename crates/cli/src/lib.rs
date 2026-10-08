@@ -3,7 +3,7 @@ pub mod config;
 pub mod progress;
 pub mod style;
 
-pub use sigmakee_rs_sdk::{KnowledgeBase as Kb, SemanticError, TellResult};
+pub use sigmakee_rs_sdk::{IngestResult, KnowledgeBase as Kb, SemanticError};
 
 // Error reporting macros
 
@@ -54,7 +54,7 @@ macro_rules! semantic_error {
     ($e:expr, $kb:expr) => {{
         use sigmakee_rs_sdk::ToDiagnostic;
         let _d = ($e).clone().to_diagnostic();
-        $kb.pretty_print_error(&_d, log::Level::Error);
+        $kb.pretty_print_error(&_d);
         eprintln!();
     }};
 }
@@ -70,7 +70,7 @@ macro_rules! semantic_warning {
         if !sigmakee_rs_sdk::warnings_suppressed() {
             use sigmakee_rs_sdk::ToDiagnostic;
             let _d = ($e).clone().to_diagnostic();
-            $kb.pretty_print_error(&_d, log::Level::Warn);
+            $kb.pretty_print_error(&_d);
             eprintln!();
         }
     }};

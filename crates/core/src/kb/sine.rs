@@ -20,15 +20,6 @@ impl<L: Layer + TopLayer> KnowledgeBase<L> {
             .sine_current(|idx| idx.axiom_count())
     }
 
-    /// The default SInE tolerance factor.
-    pub fn sine_tolerance(&self) -> f32 {
-        self.layer
-            .semantic()
-            .syntactic
-            .sine
-            .with_ref(|idx| idx.tolerance())
-    }
-
     /// Extract the symbols of a KIF conjecture string without mutating
     /// the KB's logical state.
     ///
@@ -46,7 +37,7 @@ impl<L: Layer + TopLayer> KnowledgeBase<L> {
     /// not stable across multiple calls because the name→id interning
     /// resets under roll-back.
     pub fn query_symbols(&mut self, query_kif: &str) -> DiagResult<HashSet<SymbolId>> {
-        let query_tag = crate::kb::session_tags::SESSION_SINE_QUERY;
+        let query_tag = crate::syntactic::session_tags::SESSION_SINE_QUERY;
 
         let outcome = self.ingest_source(
             SourceFile::inline_kif(query_tag, query_kif.to_string()),

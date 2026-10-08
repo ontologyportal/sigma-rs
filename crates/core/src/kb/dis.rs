@@ -8,6 +8,19 @@ use crate::SentenceId; // `.flat()` / `.pretty_print()` / `.format_plain()`
 use super::KnowledgeBase;
 use crate::Diagnostic;
 
+/// Which form of a stored sentence [`KnowledgeBase::render_sentence`] shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SentenceForm {
+    /// The normalized (canonicalized) structure the KB stores.
+    Normalized,
+    /// Every source formula that produced the sentence, in the syntax it was
+    /// parsed from (case, macro sugar, etc. preserved). A content-addressed
+    /// sentence can have several, each shown under a `; source i/n` header.
+    /// Falls back to the normalized form when no source is recorded (a
+    /// synthetic sentence, or one restored from persistence without it).
+    Source,
+}
+
 // -- DiagnosticSource impl ----------------------------------------------------
 //
 // Lets `Diagnostic::render(Some(&kb))` pull source-line context for
@@ -84,115 +97,50 @@ impl<L: crate::layer::TopLayer> crate::diagnostic::DiagnosticSource for Knowledg
 }
 
 impl<L: crate::layer::TopLayer> KnowledgeBase<L> {
-    /// Render a single sentence as a KIF string (for display).
-    pub fn sentence_to_string(&self, sid: SentenceId) -> String {
-        use crate::types::Element;
-        if !self.layer.semantic().syntactic.has_sentence(sid) {
-            return format!("<sid:{}>", sid);
-        }
-        let sentence = &self.layer.semantic().syntactic.sentence(sid).unwrap();
-        let parts: Vec<String> = sentence
-            .elements
-            .iter()
-            .map(|e| match e {
-                Element::Symbol(sym) => sym.to_string(),
-                Element::Variable { name, .. } => name.clone(),
-                Element::Literal(crate::types::Literal::Str(s)) => s.clone(),
-                Element::Literal(crate::types::Literal::Number(n)) => n.clone(),
-                Element::Op(op) => op.name().to_owned(),
-                Element::Sub(sub_id) => format!("({})", self.sentence_to_string(*sub_id)),
-            })
-            .collect();
-        format!("({})", parts.join(" "))
-    }
-
     /// Render a single sentence back to KIF notation (plain text, no ANSI).
     pub fn sentence_kif_str(&self, sid: SentenceId) -> String {
         crate::syntactic::sentence_to_plain_kif(sid, &self.layer.semantic().syntactic)
     }
 
-    /// Pretty-print a stored sentence as **ANSI-coloured, indented
-    /// KIF**. Sentences that fit within ~72 columns
-    /// at `base_indent` are kept on a single line; longer ones break
-    /// across lines with each top-level argument indented two columns
-    /// further.
+    /// Pretty-print a stored sentence as indented KIF. Sentences that fit
+    /// within ~72 columns at `base_indent` stay on one line; longer ones break
+    /// with each top-level argument indented two further columns.
     ///
-    /// Renders the **normalized (canonicalized)** sentence structure
-    /// directly — no source syntax involved. See [`Self::display_source_pretty`]
-    /// to render the original source formula(s) instead.
-    pub fn pretty_print_sentence(&self, sid: SentenceId, base_indent: usize) -> String {
-        self.layer
-            .semantic()
-            .syntactic
-            .sentence_to_ast(sid)
-            .pretty_print(base_indent)
+    /// `form` picks what is shown (see [`SentenceForm`]); `color` adds ANSI
+    /// colour codes for terminals and must be `false` for any other sink
+    /// (e.g. a browser DOM).
+    pub fn render_sentence(
+        &self,
+        sid: SentenceId,
+        form: SentenceForm,
+        color: bool,
+        base_indent: usize,
+    ) -> String {
+        let syn = &self.layer.semantic().syntactic;
+        match (form, color) {
+            (SentenceForm::Normalized, true) => syn.sentence_to_ast(sid).pretty_print(base_indent),
+            (SentenceForm::Normalized, false) => syn.sentence_to_ast(sid).format_plain(base_indent),
+            (SentenceForm::Source, true) => {
+                syn.display_source_pretty(sid, crate::syntactic::SourceMode::All, base_indent)
+            }
+            (SentenceForm::Source, false) => {
+                syn.display_source_plain(sid, crate::syntactic::SourceMode::All, base_indent)
+            }
+        }
     }
 
-    /// [`Self::pretty_print_sentence`]'s plain-text twin: the same indented,
-    /// width-wrapped layout with no ANSI colour codes — safe for contexts
-    /// that aren't a terminal (e.g. a browser DOM).
-    pub fn pretty_print_sentence_plain(&self, sid: SentenceId, base_indent: usize) -> String {
-        self.layer
-            .semantic()
-            .syntactic
-            .sentence_to_ast(sid)
-            .format_plain(base_indent)
-    }
-
-    /// Render every **source** formula that produced `sid`, ANSI-colour
-    /// pretty-printed, in the original syntax it was parsed from (case,
-    /// macro sugar, etc. preserved) rather than the canonicalized structure.
-    /// A content-addressed sentence can have several source formulas (logical
-    /// equivalents collapse to one sentence id); each is shown under a
-    /// `; source i/n` header when there is more than one. Falls back to
-    /// [`Self::pretty_print_sentence`]'s canonicalized rendering when no
-    /// source AST is recorded (a synthetic sentence, or one rehydrated from
-    /// persistence without its source).
-    pub fn display_source_pretty(&self, sid: SentenceId, base_indent: usize) -> String {
-        self.layer.semantic().syntactic.display_source_pretty(
-            sid,
-            crate::syntactic::SourceMode::All,
-            base_indent,
-        )
-    }
-
-    /// [`Self::display_source_pretty`]'s plain-text twin — no ANSI colour
-    /// codes, safe for contexts that aren't a terminal.
-    pub fn display_source_pretty_plain(&self, sid: SentenceId, base_indent: usize) -> String {
-        self.layer.semantic().syntactic.display_source_plain(
-            sid,
-            crate::syntactic::SourceMode::All,
-            base_indent,
-        )
-    }
-
-    /// Print a SemanticError with formula context to the log.
-    pub fn pretty_print_error(&self, e: &Diagnostic, _level: log::Level) {
+    /// Log a diagnostic with its formula context, at the diagnostic's own
+    /// severity.
+    pub fn pretty_print_error(&self, e: &Diagnostic) {
         e.emit(Some(self));
     }
 
     /// Render a diagnostic to its final string (header + source context),
     /// exactly as [`Self::pretty_print_error`] would log it.  Exposed so
-    /// callers can deduplicate identical renderings before emitting — e.g.
+    /// callers can deduplicate identical renderings before emitting -- e.g.
     /// `validate` collapses the many copies a row-variable-expanded axiom
     /// produces (each concrete arity is its own root sharing one source line).
     pub fn render_diagnostic(&self, e: &Diagnostic) -> String {
         e.render(Some(self))
-    }
-
-    /// Produce a short human-readable preview of a sentence.
-    pub fn formula_preview(&self, sid: SentenceId) -> String {
-        let store = &self.layer.semantic().syntactic;
-        if !store.has_sentence(sid) {
-            return format!("<sid:{}>", sid);
-        }
-        let sentence = store.sentence(sid).unwrap();
-        let display = format!("{:?}", sentence.elements);
-        if display.chars().count() > 60 {
-            let truncated: String = display.chars().take(60).collect();
-            format!("{}...", truncated)
-        } else {
-            display
-        }
     }
 }

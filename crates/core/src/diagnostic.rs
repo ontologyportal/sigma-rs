@@ -152,13 +152,9 @@ impl Diagnostic {
 
         if let Some(src) = ctx {
             if let Some(&sid) = self.sids.first() {
-                // Prefer the anchor sentence's own span; fall back to the
-                // enclosing root formula's span. Nested sub-sentences are
-                // content-addressed and carry no source span of their own.
-                let loc = src.sentence_location(sid).or_else(|| {
-                    (!self.range.file.is_empty() && !self.range.is_synthetic())
-                        .then(|| self.range.clone())
-                });
+                let loc = (!self.range.file.is_empty() && !self.range.is_synthetic())
+                    .then(|| self.range.clone())
+                    .or_else(|| src.sentence_location(sid));
                 if let Some(span) = loc {
                     out.push_str(&format!(
                         "\n{color_blue}  --> {color_reset}{}:{}",

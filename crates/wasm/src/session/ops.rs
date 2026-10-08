@@ -48,9 +48,7 @@ impl Session {
             .write()
             .expect("kb lock not poisoned")
             .restore_bytes(bytes)
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
-        self.install_runner();
-        Ok(())
+            .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     /// Run semantic validation over the whole KB. Returns a JS array of
@@ -95,9 +93,9 @@ impl Session {
     ///
     /// [`WasmLsp`]: crate::WasmLsp
     #[wasm_bindgen(js_name = toTptpIndexed)]
-    pub fn to_tptp_indexed(&mut self, lang: Option<String>, hide_numbers: Option<bool>) -> String {
-        let mut session_guard = self.session.write().expect("kb lock not poisoned");
-        let inner = session_guard.kb_mut();
+    pub fn to_tptp_indexed(&self, lang: Option<String>, hide_numbers: Option<bool>) -> String {
+        let session_guard = self.session.read().expect("kb lock not poisoned");
+        let inner = session_guard.kb();
         let opts = TptpOptions {
             lang: match lang.as_deref() {
                 Some("thf") => TptpLang::Thf,

@@ -16,12 +16,9 @@
 //   lower        — lower trans::ir::Problem → SysProblem (FFI)
 //   native_proof — walk a native Vampire Proof into KifProofStep / IrProofStep
 //   axiom_cache  — lazy whole-KB IR cache, shared by both runners
-//   axiom_source — AxiomSourceIndex: map proof steps back to source axioms
 //   bindings     — extract variable bindings from a native Vampire Proof
 
 pub mod subprocess;
-// Moved up to `prover::axiom_source` (no vampire coupling); path shim:
-pub use super::super::super::axiom_source;
 
 #[cfg(feature = "integrated-prover")]
 pub mod integrated;

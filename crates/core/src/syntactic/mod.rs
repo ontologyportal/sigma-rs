@@ -44,6 +44,7 @@ mod e2e;
 pub mod position;
 mod select;
 pub mod sentence;
+pub(crate) mod session_tags;
 pub mod sine;
 #[cfg(any(feature = "external-prover", feature = "native-prover"))]
 pub(crate) use select::SelectionParams;
@@ -215,6 +216,70 @@ impl SyntacticLayer {
                     .is_some_and(|s| matches!(s.op(), Some(crate::parse::OpKind::Implies)))
             })
             .collect()
+    }
+
+    /// The id the ingest-normalized negation of stored sentence `sid` would
+    /// have. Ingest keeps every stored formula negation-normalized
+    /// (parse/macros/caf.rs `push_negation_inward`: `not` over `and`/`or`
+    /// pushed by De Morgan, double negations cancelled), so the negation must
+    /// be computed in that same normal form for a content-hash probe to find
+    /// it:
+    ///
+    ///   * not (not X)      = X
+    ///   * not (and A B ..) = (or (not A) (not B) ..)  (children recursively)
+    ///   * not (or A B ..)  = (and (not A) (not B) ..)
+    ///   * not other        = (not other)  (atoms, `=>`, `<=>`, quantifiers --
+    ///     the fragments ingest leaves un-pushed)
+    ///
+    /// Hash-only: nothing is interned or stored. `None` for unresolvable ids
+    /// or element shapes ingest cannot produce in formula position.
+    pub(crate) fn negation_id(&self, sid: SentenceId) -> Option<SentenceId> {
+        use crate::parse::OpKind;
+        use crate::types::{Element, Sentence};
+        let wrap = |el: Element| -> SentenceId {
+            Sentence {
+                parent: Vec::new(),
+                elements: [Element::Op(OpKind::Not), el].into_iter().collect(),
+            }
+            .hash()
+        };
+        let s = self.sentence(sid)?;
+        match s.elements.first() {
+            Some(Element::Op(OpKind::Not)) if s.elements.len() == 2 => match &s.elements[1] {
+                Element::Sub(inner) => Some(*inner),
+                // `(not <bare atom>)`: its negation is the bare element, which
+                // is not a sentence.
+                _ => None,
+            },
+            Some(Element::Op(op @ (OpKind::And | OpKind::Or))) => {
+                let dual = if *op == OpKind::And {
+                    OpKind::Or
+                } else {
+                    OpKind::And
+                };
+                let mut elements = Vec::with_capacity(s.elements.len());
+                elements.push(Element::Op(dual));
+                for el in s.elements.iter().skip(1) {
+                    elements.push(match el {
+                        Element::Sub(c) => Element::Sub(self.negation_id(*c)?),
+                        // A bare propositional atom child: ingest negates it as
+                        // the sub-sentence `(not <atom>)`.
+                        Element::Symbol(_) | Element::Variable { .. } => {
+                            Element::Sub(wrap(el.clone()))
+                        }
+                        _ => return None,
+                    });
+                }
+                Some(
+                    Sentence {
+                        parent: Vec::new(),
+                        elements: elements.into_iter().collect(),
+                    }
+                    .hash(),
+                )
+            }
+            _ => Some(wrap(Element::Sub(sid))),
+        }
     }
 
     /// Allocate a synthetic (rewritten) sentence from `elements` into the main

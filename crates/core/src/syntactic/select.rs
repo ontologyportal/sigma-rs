@@ -152,7 +152,7 @@ impl SyntacticLayer {
     /// Filter a SentenceId list by the canonical default-excluded head
     /// predicates (`documentation`, `termFormat`, `domain`, …).
     pub(crate) fn filter_excluded_heads(&self, sids: &[SentenceId]) -> Vec<SentenceId> {
-        let excluded = crate::kb::export::excluded_heads_set();
+        let excluded = crate::semantics::consts::excluded_heads_set();
         sids.iter()
             .copied()
             .filter(|&sid| {
@@ -196,7 +196,7 @@ impl SyntacticLayer {
         /// How far down the ranking to scan for acceptable candidates.
         const SCAN_CAP: usize = 16;
 
-        let excluded = crate::kb::export::excluded_heads_set();
+        let excluded = crate::semantics::consts::excluded_heads_set();
 
         // PREDICATE-position symbols of a root: heads of the sentence and of
         // every sub-sentence.

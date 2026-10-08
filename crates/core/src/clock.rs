@@ -1,8 +1,7 @@
 //! Monotonic-clock shim.
 //!
 //! On every non-wasm target this is a straight re-export of
-//! [`std::time::Instant`] plus a `SystemTime`-backed [`epoch_nanos`] — zero
-//! behavioural change.
+//! [`std::time::Instant`] -- zero behavioural change.
 //!
 //! On `wasm32-unknown-unknown` the std clock is a trap: `Instant::now()` and
 //! `SystemTime::now()` **panic at runtime** ("time not implemented on this
@@ -18,30 +17,8 @@
 #[cfg(not(target_arch = "wasm32"))]
 pub use std::time::Instant;
 
-/// Nanoseconds since the Unix epoch. Used only to mint unique session tags,
-/// so millisecond granularity (all `Date::now()` offers) is fine on wasm.
-#[cfg(all(
-    not(target_arch = "wasm32"),
-    any(feature = "external-prover", feature = "native-prover")
-))]
-pub fn epoch_nanos() -> u128 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos()
-}
-
 #[cfg(target_arch = "wasm32")]
 pub use wasm::Instant;
-
-#[cfg(all(
-    target_arch = "wasm32",
-    any(feature = "external-prover", feature = "native-prover")
-))]
-pub fn epoch_nanos() -> u128 {
-    // `Date::now()` is f64 milliseconds since the Unix epoch.
-    (js_sys::Date::now() as u128).saturating_mul(1_000_000)
-}
 
 #[cfg(target_arch = "wasm32")]
 mod wasm {

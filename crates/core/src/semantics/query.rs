@@ -268,6 +268,88 @@ impl SemanticLayer {
         self.scope_filter_sids(self.syntactic.by_head_arg1(head, subject), scope)
     }
 
+    /// Whether `rel` is a propositional-attitude relation (`believes`,
+    /// `knows`, ...): an instance of `PropositionalAttitude` in `scope`.
+    pub(crate) fn is_attitude_scoped(&self, rel: SymbolId, scope: Scope) -> bool {
+        use crate::semantics::consts::PROPOSITIONAL_ATTITUDE_CLASS;
+        rel != PROPOSITIONAL_ATTITUDE_CLASS.id()
+            && self.is_instance_scoped(rel, scope)
+            && self.has_ancestor_scoped(rel, PROPOSITIONAL_ATTITUDE_CLASS.id(), scope)
+    }
+
+    /// Every asserted root `(R agent P)` with `R` in `attitude`'s family --
+    /// `attitude` itself and every relation declared (transitively) its
+    /// subrelation -- as `(content P, root)` pairs, sorted. Only compound
+    /// contents count: a bare-symbol content has no store-resident structure.
+    /// A rule antecedent `(believes ?A ?P)` is not an asserted root, so it
+    /// never contributes.
+    pub(crate) fn attitude_facts_scoped(
+        &self,
+        attitude: SymbolId,
+        agent: SymbolId,
+        scope: Scope,
+    ) -> Vec<(SentenceId, SentenceId)> {
+        let mut family = vec![attitude];
+        let mut seen: HashSet<SymbolId> = HashSet::from([attitude]);
+        let mut i = 0;
+        while let Some(&rel) = family.get(i) {
+            i += 1;
+            for (child, tax) in self.children_of_scoped(rel, scope) {
+                if matches!(tax, TaxRelation::Subrelation) && seen.insert(child) {
+                    family.push(child);
+                }
+            }
+        }
+        let mut out: Vec<(SentenceId, SentenceId)> = family
+            .into_iter()
+            .flat_map(|rel| self.subject_sids_scoped(rel, agent, scope))
+            .filter_map(|root| {
+                let s = self.syntactic.sentence(root)?;
+                match s.elements.as_slice() {
+                    [_, _, Element::Sub(content)] => Some((*content, root)),
+                    _ => None,
+                }
+            })
+            .collect();
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
+    /// The ground exhaustive decompositions of `class` visible in `scope` --
+    /// its `(partition class M ...)` and `(exhaustiveDecomposition class M ...)`
+    /// facts -- as `(fact sid, members)`, in sid order.
+    pub(crate) fn exhaustive_decompositions_scoped(
+        &self,
+        class: SymbolId,
+        scope: Scope,
+    ) -> Vec<(SentenceId, Vec<SymbolId>)> {
+        let heads = [
+            self.partition_role(),
+            crate::types::Symbol::hash_name("exhaustiveDecomposition"),
+        ];
+        let mut out: Vec<(SentenceId, Vec<SymbolId>)> = heads
+            .into_iter()
+            .flat_map(|head| self.subject_sids_scoped(head, class, scope))
+            .filter_map(|sid| {
+                let s = self.syntactic.sentence(sid)?;
+                let members: Option<Vec<SymbolId>> = s
+                    .elements
+                    .get(2..)
+                    .filter(|m| !m.is_empty())?
+                    .iter()
+                    .map(|el| match el {
+                        Element::Symbol(sym) => Some(sym.id()),
+                        _ => None,
+                    })
+                    .collect();
+                Some((sid, members?))
+            })
+            .collect();
+        out.sort_unstable_by_key(|(sid, _)| *sid);
+        out
+    }
+
     /// The neighbours of one adjacency `dir` in `scope`: the `Base` (axiom) edges
     /// unioned with the session overlay's edges when `scope` is a session.
     fn tax_neighbours(&self, dir: TaxDirection, scope: Scope) -> Vec<(SymbolId, TaxRelation)> {

@@ -3,25 +3,22 @@
 //! The modules in this folder are divided by which API they expose
 //! (e.g. `semantics.rs` -> `../semantics/*`).
 
-use std::collections::HashMap;
-
 use crate::layer::{Layer, TopLayer};
-#[cfg(any(feature = "external-prover", feature = "native-prover"))]
-use crate::prover::ProvingLayer;
 use crate::semantics::SemanticLayer;
 use crate::syntactic::SyntacticLayer;
-use crate::trans::{HasTranslation, TranslationLayer};
-use crate::types::SentenceId;
+#[cfg(feature = "external-prover")]
+use crate::trans::HasTranslation;
+use crate::trans::TranslationLayer;
 
 #[cfg(feature = "persist")]
 use crate::persist::LmdbEnv;
 
 #[macro_use]
 pub mod progress;
-pub(crate) mod assemble;
 #[cfg(feature = "native-prover")]
 pub mod clausify;
 pub mod dis;
+#[cfg(feature = "native-prover")]
 pub mod doxastic;
 pub mod export;
 pub mod ingest;
@@ -32,12 +29,11 @@ pub mod persist;
 pub mod prove;
 pub mod search;
 pub mod semantics;
-pub mod session_tags;
 pub mod sine;
 pub mod store;
 // Pure prose/AST rendering (no subprocess or regex deps); `proof_prose` below
 // consumes it to narrate proofs, which the native prover also produces.  Both
-// need a prover backend present (they import `KifProofStep`/`AxiomSource`), so
+// need a prover backend present (they import `KifProofStep`), so
 // they ride the same `any(ask, native-prover)` gate.
 #[cfg(any(feature = "external-prover", feature = "native-prover"))]
 pub(crate) mod natural_lang;
@@ -57,16 +53,6 @@ pub struct KnowledgeBase<L = TranslationLayer> {
     /// inner layers via [`Self::syntactic`] and [`Self::semantic`].
     pub(crate) layer: L,
 
-    /// Syntax-level dedup table.
-    ///
-    /// Maps `sentence_fingerprint(ast) -> SentenceId` for every accepted
-    /// root, letting syntactically-identical sentences (same token structure,
-    /// modulo whitespace and comments) be rejected without paying the
-    /// clausification cost. Evicted in `flush_session`; kept across
-    /// `make_session_axiomatic` since promoted axioms remain in the store and
-    /// should still block future duplicates.
-    pub(in crate::kb) syntax_fingerprints: HashMap<u64, SentenceId>,
-
     /// LMDB handle. None = purely in-memory.
     #[cfg(feature = "persist")]
     pub(in crate::kb) db: Option<LmdbEnv>,
@@ -79,33 +65,23 @@ pub struct KnowledgeBase<L = TranslationLayer> {
     pub(in crate::kb) progress: Option<crate::progress::DynSink>,
 }
 
-#[allow(dead_code)]
 impl<L: TopLayer + Layer> KnowledgeBase<L> {
     // -- Layer accessors -------------------------------------------------------
 
-    /// Middle layer (semantic).
+    /// Middle layer (semantic), for test suites.
+    #[cfg(test)]
     pub(crate) fn semantic(&self) -> &SemanticLayer {
         self.layer.semantic()
     }
 
     /// Bottom layer (raw parse store).
+    #[cfg(any(test, feature = "external-prover", feature = "native-prover"))]
     pub(crate) fn syntactic(&self) -> &SyntacticLayer {
         &self.layer.semantic().syntactic
     }
 
-    /// Mut access to the middle layer.
-    pub(crate) fn semantic_mut(&mut self) -> &mut SemanticLayer {
-        self.layer.semantic_mut()
-    }
-
-    /// Mut access to the bottom layer.
-    pub(crate) fn syntactic_mut(&mut self) -> &mut SyntacticLayer {
-        &mut self.layer.semantic_mut().syntactic
-    }
-
-    /// Crate-internal read-only access to the underlying [`SyntacticLayer`].
-    /// New code should prefer [`Self::syntactic`].
-    #[allow(dead_code)]
+    /// Test-only alias of [`Self::syntactic`], kept for existing test suites.
+    #[cfg(test)]
     pub(crate) fn store_for_testing(&self) -> &SyntacticLayer {
         self.syntactic()
     }
@@ -126,18 +102,10 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
     pub(in crate::kb) fn from_layer(layer: L) -> Self {
         Self {
             layer,
-            syntax_fingerprints: HashMap::new(),
             #[cfg(feature = "persist")]
             db: None,
             progress: None,
         }
-    }
-}
-
-impl<L: HasTranslation + TopLayer> KnowledgeBase<L> {
-    /// Top layer (translation).
-    pub(crate) fn translation(&self) -> &TranslationLayer {
-        self.layer.translation()
     }
 }
 
@@ -153,14 +121,6 @@ impl KnowledgeBase {
 impl Default for KnowledgeBase {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-#[cfg(any(feature = "external-prover", feature = "native-prover"))]
-impl<L: ProvingLayer> KnowledgeBase<L> {
-    /// Read-only access to the proving top layer.
-    pub fn prover(&self) -> &L {
-        &self.layer
     }
 }
 
@@ -217,13 +177,13 @@ impl
     /// native saturation prover (with TPTP export, as in
     /// [`new_native_translating`](KnowledgeBase::new_native_translating))
     /// topped by an [`ExternalProverLayer`] driving `backend`.  [`ask`] runs
-    /// the external backend; [`ask_query_dialect_native`] /
-    /// [`audit_consistency_native`] run the native one.
+    /// the external backend; [`ask_query_dialect_native`] and the `*_with`
+    /// entry points given [`native`] run the native one.
     ///
     /// [`ExternalProverLayer`]: crate::prover::ExternalProverLayer
     /// [`ask`]: KnowledgeBase::ask
     /// [`ask_query_dialect_native`]: KnowledgeBase::ask_query_dialect_native
-    /// [`audit_consistency_native`]: KnowledgeBase::audit_consistency_native
+    /// [`native`]: KnowledgeBase::native
     pub fn new_external_native(backend: crate::prover::external::Prover) -> Self {
         Self::from_layer(crate::prover::ExternalProverLayer::new(
             backend,

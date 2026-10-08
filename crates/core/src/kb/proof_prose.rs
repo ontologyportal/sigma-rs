@@ -26,12 +26,11 @@ use std::collections::{BTreeSet, HashMap};
 
 use crate::layer::{Layer, TopLayer};
 use crate::parse::ast::AstNode;
-use crate::parse::fingerprint::canonical_sentence_fingerprint;
 use crate::parse::OpKind;
 use crate::prover::proof::KifProofStep;
-use crate::{AxiomSource, AxiomSourceIndex, SentenceId};
+use crate::{DiagnosticSource, SentenceId, Span};
 
-use super::natural_lang::RenderReport;
+use super::natural_lang::{RenderReport, RenderStyle};
 use super::KnowledgeBase;
 
 /// Deterministic connective rotation for the derivation chain.
@@ -53,36 +52,34 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
         steps: &[KifProofStep],
         language: &str,
     ) -> RenderReport {
-        let src_idx = self.build_axiom_source_index();
-        self.render_proof_prose_with(conjecture, steps, language, &src_idx)
+        let locations = self.sentence_locations();
+        self.render_proof_prose_with(conjecture, steps, language, &locations)
     }
 
-    /// [`render_proof_prose`](Self::render_proof_prose) against an index the
-    /// caller already has.
-    ///
-    /// Building the index walks every root sentence and fingerprints its whole
-    /// AST, so it is the most expensive pass either prose call makes. A caller
-    /// narrating several transcripts from one KB — an audit renders one per
-    /// contradiction — should build it once and reuse it here.
+    /// [`render_proof_prose`](Self::render_proof_prose) against a sentence
+    /// location map ([`DiagnosticSource::sentence_locations`]) the caller
+    /// already has. Building the map walks the whole source index, so a caller
+    /// narrating several transcripts from one KB -- an audit renders one per
+    /// contradiction -- should build it once and reuse it here.
     pub fn render_proof_prose_with(
         &self,
         conjecture: Option<&AstNode>,
         steps: &[KifProofStep],
         language: &str,
-        src_idx: &AxiomSourceIndex,
+        locations: &HashMap<SentenceId, Span>,
     ) -> RenderReport {
         let mut missing: BTreeSet<String> = BTreeSet::new();
         let mut render = |f: &AstNode| -> String {
-            let r = self.render_formula(f, language);
+            let r = self.render_formula(f, language, RenderStyle::Plain);
             missing.extend(r.missing);
             r.rendered
         };
         let cite = |step: &KifProofStep| -> String {
             step.source_sid
-                .and_then(|sid| src_idx.lookup_by_sid(sid))
-                .map(|a| {
-                    let file = a.file.rsplit('/').next().unwrap_or(&a.file);
-                    format!(" ({}:{})", file, a.line)
+                .and_then(|sid| locations.get(&sid))
+                .map(|span| {
+                    let file = span.file.rsplit('/').next().unwrap_or(&span.file);
+                    format!(" ({}:{})", file, span.line)
                 })
                 .unwrap_or_default()
         };
@@ -250,37 +247,6 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
             rendered: text,
             missing: missing.into_iter().collect(),
         }
-    }
-
-    /// Build a fresh [`AxiomSourceIndex`] by canonically hashing every
-    /// root sentence in the KB.
-    ///
-    /// The index is a snapshot, not a live view; re-run it if the KB
-    /// mutates. Includes sentences from every loaded file, including
-    /// ephemeral ones like `__query__` / `__sine_query__`. Callers that
-    /// want only "real" source files typically filter by
-    /// [`AxiomSource::file`] starting with `/` or by excluding the
-    /// `__` prefix.
-    pub fn build_axiom_source_index(&self) -> AxiomSourceIndex {
-        let store = self.syntactic();
-        let mut by_hash: HashMap<u64, Vec<AxiomSource>> = HashMap::new();
-        let mut by_sid: HashMap<SentenceId, AxiomSource> = HashMap::new();
-        // Resolved in one pass over the fingerprint->roots map: per-root
-        // `source_node_of` lookups scan that same map and would make this
-        // builder quadratic in KB size.
-        for (sid, node) in store.root_source_nodes() {
-            let h = canonical_sentence_fingerprint(&node);
-            let span = node.span();
-            let entry = AxiomSource {
-                sid,
-                file: span.file.clone(),
-                line: span.line,
-            };
-            by_hash.entry(h).or_default().push(entry.clone());
-            // A sid is unique in the KB, so a blind `insert` is correct.
-            by_sid.insert(sid, entry);
-        }
-        AxiomSourceIndex { by_hash, by_sid }
     }
 }
 

@@ -2,7 +2,9 @@
 
 use thiserror::Error;
 
-use crate::semantics::errors::{ArityMismatch, BoxedError, DomainMismatch, SemanticError};
+use crate::semantics::errors::{BoxedError, SemanticError};
+use crate::semantics::validate::validators::arity::ArityMismatch;
+use crate::semantics::validate::validators::domain::DomainMismatch;
 
 use crate::cache::events::{Event, EventKind};
 use crate::cache::{CacheBehavior, EntryCache};

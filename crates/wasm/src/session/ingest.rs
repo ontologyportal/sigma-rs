@@ -22,25 +22,18 @@ impl Session {
     pub fn load_kif(&mut self, kif_text: &str, file_tag: &str) -> Result<JsValue, JsValue> {
         let mut session_guard = self.session.write().expect("kb lock not poisoned");
         let inner = session_guard.kb_mut();
-        let result = inner.load(
+        let result = inner.load_and_promote(
             sigmakee_rs_core::SourceFile::kif(
                 std::path::PathBuf::from(file_tag),
                 kif_text.to_string(),
             ),
             file_tag,
         );
-        let mut errors: Vec<String> = result
+        let errors: Vec<String> = result
             .diagnostics
             .iter()
             .map(|e: &sigmakee_rs_core::Diagnostic| e.to_string())
             .collect();
-        // Promote the freshly-loaded source into the searchable axiom base.
-        // Skipping this leaves the axioms as inert session support the
-        // given-clause loop never force-includes, so queries come back
-        // Disproved/Unknown against an effectively empty theory.
-        if let Err(e) = inner.make_session_axiomatic(file_tag) {
-            errors.push(format!("promote failed: {:?}", e));
-        }
         serde_wasm_bindgen::to_value(&errors).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 

@@ -298,7 +298,7 @@ impl Session {
                 .ok_or_else(|| JsValue::from_str("Audit target has no source formula."))?;
             out.push(AuditTarget {
                 source: format!("{source:016x}"),
-                kif: kb.pretty_print_sentence_plain(sid, 0),
+                kif: kb.render_sentence(sid, sigmakee_rs_core::SentenceForm::Normalized, false, 0),
                 roots: kb.source_roots(source).len(),
             });
         }
@@ -327,7 +327,9 @@ impl Session {
         let session_guard = self.session.read().expect("kb lock not poisoned");
         let inner = session_guard.kb();
         let clauses = match formula {
-            Some(kif) => inner.clausify_formula(&kif),
+            Some(kif) => inner
+                .clausify_formula(&kif)
+                .map_err(|e| JsValue::from_str(&e.to_string()))?,
             None => inner.clausify_all(),
         };
         serde_wasm_bindgen::to_value(&clauses).map_err(|e| JsValue::from_str(&e.to_string()))
@@ -375,7 +377,10 @@ fn resolve_audit_focus(
     let candidates: Vec<_> = if focus.unchanged {
         roots
             .into_iter()
-            .filter(|&sid| kb.pretty_print_sentence_plain(sid, 0) == focus.kif)
+            .filter(|&sid| {
+                kb.render_sentence(sid, sigmakee_rs_core::SentenceForm::Normalized, false, 0)
+                    == focus.kif
+            })
             .collect()
     } else {
         roots
@@ -483,7 +488,7 @@ mod recheck_tests {
         AuditFocus {
             file: "test.kif".into(),
             source: format!("{fp:016x}"),
-            kif: kb.pretty_print_sentence_plain(sid, 0),
+            kif: kb.render_sentence(sid, sigmakee_rs_core::SentenceForm::Normalized, false, 0),
             unchanged,
         }
     }
@@ -498,7 +503,9 @@ mod recheck_tests {
         let mut edited = focus(&after, "(instance Alice Animal)", false);
         edited.kif = original.kif;
         let sid = resolve_audit_focus(&after, &edited).expect("edited target");
-        assert!(after.pretty_print_sentence_plain(sid, 0).contains("Animal"));
+        assert!(after
+            .render_sentence(sid, sigmakee_rs_core::SentenceForm::Normalized, false, 0)
+            .contains("Animal"));
         edited.file = "missing.kif".into();
         assert!(resolve_audit_focus(&after, &edited).is_err());
     }

@@ -35,7 +35,10 @@ fn validate_buffer_flow_after_save() {
         staged.sids.is_empty(),
         "identical buffer should stage an empty diff"
     );
-    let diags = kb.validate_file("e001-test.kif");
+    let diags = kb.validate(
+        sigmakee_rs_core::ValidationTarget::File("e001-test.kif"),
+        None,
+    );
     for d in &diags {
         eprintln!("diag: {} {}", d.code, d.message);
     }

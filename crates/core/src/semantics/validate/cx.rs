@@ -11,7 +11,9 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use crate::semantics::types::{RelationDomain, RelationRange, Scope};
+use crate::semantics::caches::disjoint::DisjointSet;
+use crate::semantics::caches::doc_coverage::DocCoverage;
+use crate::semantics::types::{RelationDomain, RelationRange, Scope, TaxRelation};
 use crate::semantics::SemanticLayer;
 use crate::syntactic::sentence::Sentence;
 use crate::{SentenceId, SymbolId};
@@ -85,6 +87,75 @@ impl<'a> Cx<'a> {
     pub(crate) fn has_ancestor_by_name(&self, sym: SymbolId, ancestor: &str) -> bool {
         self.layer
             .has_ancestor_by_name_scoped(sym, ancestor, self.scope)
+    }
+
+    /// Immediate taxonomy parents of `sym`, as `(parent, relation)` pairs.
+    pub(crate) fn parents(&self, sym: SymbolId) -> Vec<(SymbolId, TaxRelation)> {
+        self.layer.parents_of_scoped(sym, self.scope)
+    }
+
+    /// The taxonomy edge kind a head symbol asserts, if any.
+    pub(crate) fn tax_role(&self, head: SymbolId) -> Option<TaxRelation> {
+        self.layer.tax_role_of(head)
+    }
+
+    /// The ground facts `(head subject OBJ)`, as `(OBJ, sid)` pairs.
+    pub(crate) fn binary_objects(
+        &self,
+        head: SymbolId,
+        subject: SymbolId,
+    ) -> Vec<(SymbolId, SentenceId)> {
+        self.layer.ground_binary_objects(head, subject, self.scope)
+    }
+
+    /// The classes declared disjoint with `class`, each with its declaring
+    /// fact.
+    pub(crate) fn disjoint_with(&self, class: SymbolId) -> Arc<DisjointSet> {
+        self.layer.disjoint_with_scoped(class, self.scope)
+    }
+
+    /// Whether `rel` is a propositional-attitude relation.
+    pub(crate) fn is_attitude(&self, rel: SymbolId) -> bool {
+        self.layer.is_attitude_scoped(rel, self.scope)
+    }
+
+    /// `agent`'s asserted `attitude` facts, as `(content, root)` pairs.
+    pub(crate) fn attitude_facts(
+        &self,
+        attitude: SymbolId,
+        agent: SymbolId,
+    ) -> Vec<(SentenceId, SentenceId)> {
+        self.layer
+            .attitude_facts_scoped(attitude, agent, self.scope)
+    }
+
+    /// The id the store-normalized negation of `sid` would have.
+    pub(crate) fn negation_id(&self, sid: SentenceId) -> Option<SentenceId> {
+        self.layer.syntactic.negation_id(sid)
+    }
+
+    /// The sentence that defines `sym`, if any.
+    pub(crate) fn defining_sentence(&self, sym: SymbolId) -> Option<SentenceId> {
+        self.layer.defining_sentence(sym)
+    }
+
+    /// Whole-KB documentation coverage.
+    pub(crate) fn doc_coverage(&self) -> Arc<DocCoverage> {
+        self.layer.doc_coverage()
+    }
+
+    /// Whether `sym` is a CNF skolem constant rather than KB vocabulary.
+    pub(crate) fn is_skolem(&self, sym: SymbolId) -> bool {
+        self.layer.syntactic.is_skolem(sym)
+    }
+
+    /// The exhaustive decompositions of `class`, as `(fact sid, members)`.
+    pub(crate) fn exhaustive_decompositions(
+        &self,
+        class: SymbolId,
+    ) -> Vec<(SentenceId, Vec<SymbolId>)> {
+        self.layer
+            .exhaustive_decompositions_scoped(class, self.scope)
     }
 
     pub(crate) fn domain(&self, rel: SymbolId) -> Arc<Vec<RelationDomain>> {

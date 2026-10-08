@@ -1,21 +1,17 @@
 //! TPTP export entrypoints on `KnowledgeBase`: `to_tptp`,
-//! `format_sentence_tptp`, and their helpers.
+//! `sentence_tptp`, and their helpers.
 
-use std::collections::HashSet;
 #[cfg(feature = "external-prover")]
-use std::time::{SystemTime, UNIX_EPOCH};
-
-use super::assemble::{assemble_tptp_indexed, AssemblyOpts};
-#[cfg(feature = "external-prover")]
-use crate::cache::events::Event;
+use crate::layer::Layer;
 #[cfg(feature = "external-prover")]
 use crate::prover::Conjecture;
-#[cfg(feature = "external-prover")]
-use crate::syntactic::SelectionParams;
+use crate::semantics::consts::DEFAULT_EXCLUDED_HEADS;
+use crate::trans::assemble::{assemble_tptp_indexed, AssemblyOpts};
 use crate::types::SentenceId;
 #[cfg(feature = "external-prover")]
-use crate::{Diagnostic, ExternalOpts, Parser, ProveCtx, SourceFile, TestCase};
+use crate::{Diagnostic, ExternalOpts, Parser, SourceFile, TestCase};
 use crate::{HasTranslation, TptpLang};
+use std::collections::HashSet;
 
 use super::KnowledgeBase;
 
@@ -29,7 +25,7 @@ impl<L: HasTranslation> KnowledgeBase<L> {
     /// Emits SID-based axiom names (`kb_<sid>`), per-axiom KIF comments when
     /// `opts.show_kif_comment` is set, and applies the `excluded` predicate
     /// filter before conversion.
-    pub fn to_tptp(&mut self, opts: &TptpOptions, session: Option<&str>) -> String {
+    pub fn to_tptp(&self, opts: &TptpOptions, session: Option<&str>) -> String {
         self.to_tptp_indexed(opts, session, None)
     }
 
@@ -38,61 +34,30 @@ impl<L: HasTranslation> KnowledgeBase<L> {
     /// [`assemble_tptp_indexed`]. Powers a "jump to this axiom" pane without
     /// re-scanning the (potentially large, whole-KB) output text.
     pub fn to_tptp_indexed(
-        &mut self,
+        &self,
         opts: &TptpOptions,
         session: Option<&str>,
         axiom_lines: Option<&mut std::collections::HashMap<SentenceId, u32>>,
     ) -> String {
         crate::with_guard!(self);
 
-        let mode = opts.lang;
-        let syn = &self.layer.semantic().syntactic;
-
-        let mut axioms_sorted: Vec<SentenceId> = self
+        let candidates: Vec<SentenceId> = self
             .axiom_ids_set()
             .into_iter()
-            .chain(syn.synthetic_origin.keys().copied())
-            .filter(|&sid| {
-                !self.sentence_excluded(sid, &opts.excluded)
-                    && !self
-                        .layer
-                        .translation()
-                        .suppressed
-                        .read()
-                        .unwrap()
-                        .contains(&sid)
-            })
+            .chain(
+                self.layer
+                    .semantic()
+                    .syntactic
+                    .synthetic_origin
+                    .keys()
+                    .copied(),
+            )
             .collect();
-        axioms_sorted.sort_unstable();
-        axioms_sorted.dedup();
-
-        // Session assertions (hypotheses) fold into the axiom list so one
-        // `build_problem` pass assembles everything.
-        if let Some(name) = session {
-            for sid in self.session_sids(name) {
-                if self.sentence_excluded(sid, &opts.excluded) {
-                    continue;
-                }
-                axioms_sorted.push(sid);
-            }
-            axioms_sorted.sort_unstable();
-            axioms_sorted.dedup();
-        }
-
-        // Whole-KB translate has no selection step — "the selected axioms"
-        // is everything about to be emitted, i.e. `axioms_sorted` itself.
-        let mode = syn.resolve_tptp_lang(mode, &axioms_sorted);
-        let (axiom_problem, axiom_sid_map) =
-            self.layer.translation().build_problem(&axioms_sorted, mode);
-
-        assemble_tptp_indexed(
-            &axiom_problem,
-            &axiom_sid_map,
-            &AssemblyOpts {
-                show_kif: opts.show_kif_comment,
-                layer: Some(self.layer.semantic()),
-                ..AssemblyOpts::default()
-            },
+        self.export_tptp_from_sids(
+            opts,
+            candidates,
+            std::iter::empty::<SentenceId>(),
+            session,
             axiom_lines,
         )
     }
@@ -122,7 +87,7 @@ impl<L: HasTranslation> KnowledgeBase<L> {
     /// too-low percentage can under-select for a given query.
     #[cfg(any(feature = "external-prover", feature = "native-prover"))]
     pub fn to_tptp_selected(
-        &mut self,
+        &self,
         opts: &TptpOptions,
         seed_sids: &[SentenceId],
         session: Option<&str>,
@@ -135,7 +100,6 @@ impl<L: HasTranslation> KnowledgeBase<L> {
 
         crate::with_guard!(self);
 
-        let mode = opts.lang;
         let syn = &self.layer.semantic().syntactic;
 
         let mut seed: HashSet<crate::SymbolId> = HashSet::new();
@@ -156,32 +120,6 @@ impl<L: HasTranslation> KnowledgeBase<L> {
             &ctx,
         );
 
-        let mut axioms_sorted: Vec<SentenceId> = selected
-            .into_iter()
-            .filter(|&sid| {
-                !self.sentence_excluded(sid, &opts.excluded)
-                    && !self
-                        .layer
-                        .translation()
-                        .suppressed
-                        .read()
-                        .unwrap()
-                        .contains(&sid)
-            })
-            .collect();
-        axioms_sorted.sort_unstable();
-        axioms_sorted.dedup();
-
-        // Session assertions (hypotheses) fold in UNFILTERED by selection —
-        // see doc comment above.
-        if let Some(name) = session {
-            for sid in self.session_sids(name) {
-                if self.sentence_excluded(sid, &opts.excluded) {
-                    continue;
-                }
-                axioms_sorted.push(sid);
-            }
-        }
         // Ensure that all taxonomy chains are correctly closed
         let scope = match session {
             Some(name) => crate::semantics::types::Scope::Session(
@@ -189,15 +127,56 @@ impl<L: HasTranslation> KnowledgeBase<L> {
             ),
             None => crate::semantics::types::Scope::Base,
         };
-        axioms_sorted.extend(
-            self.layer
-                .semantic()
-                .taxonomy_closure_facts_scoped(&seed, 4000, scope),
-        );
+        let taxonomy_facts = self
+            .layer
+            .semantic()
+            .taxonomy_closure_facts_scoped(&seed, 4000, scope);
+        self.export_tptp_from_sids(opts, selected, taxonomy_facts, session, axiom_lines)
+    }
+
+    /// Filter, merge, translate, and assemble a candidate axiom set.
+    ///
+    /// The whole-KB and SInE-selected export paths differ only in how they
+    /// collect candidates. They share exclusion, session-support, ordering,
+    /// language-resolution, and assembly semantics here.
+    fn export_tptp_from_sids<I, R>(
+        &self,
+        opts: &TptpOptions,
+        candidates: I,
+        required_sids: R,
+        session: Option<&str>,
+        axiom_lines: Option<&mut std::collections::HashMap<SentenceId, u32>>,
+    ) -> String
+    where
+        I: IntoIterator<Item = SentenceId>,
+        R: IntoIterator<Item = SentenceId>,
+    {
+        let suppressed = self.layer.translation().suppressed.read().unwrap();
+        let mut axioms_sorted: Vec<SentenceId> = candidates
+            .into_iter()
+            .filter(|&sid| {
+                !self.sentence_excluded(sid, &opts.excluded) && !suppressed.contains(&sid)
+            })
+            .collect();
+        drop(suppressed);
+
+        // Session assertions are explicit support hypotheses, not SInE
+        // candidates, so include them regardless of how `candidates` was made.
+        if let Some(name) = session {
+            axioms_sorted.extend(
+                self.session_sids(name)
+                    .into_iter()
+                    .filter(|&sid| !self.sentence_excluded(sid, &opts.excluded)),
+            );
+        }
+        // The selected-export path appends its taxonomy chain after filtering:
+        // these facts are required to preserve the selected query's ancestry.
+        axioms_sorted.extend(required_sids);
         axioms_sorted.sort_unstable();
         axioms_sorted.dedup();
 
-        let mode = syn.resolve_tptp_lang(mode, &axioms_sorted);
+        let syn = &self.layer.semantic().syntactic;
+        let mode = syn.resolve_tptp_lang(opts.lang, &axioms_sorted);
         let (axiom_problem, axiom_sid_map) =
             self.layer.translation().build_problem(&axioms_sorted, mode);
 
@@ -211,142 +190,6 @@ impl<L: HasTranslation> KnowledgeBase<L> {
             },
             axiom_lines,
         )
-    }
-
-    /// Render a testcase to TPTP.
-    ///
-    /// Like [`KnowledgeBase::to_tptp`], but accepts optional [`ExternalOpts`]
-    /// controlling axiom selection.
-    ///
-    /// # Errors
-    ///
-    /// Returns the ingestion diagnostics if interning the testcase's
-    /// hypotheses or conjecture fails.
-    #[cfg(feature = "external-prover")]
-    pub fn tc_to_tptp(
-        &self,
-        tc: TestCase,
-        translation_opts: &TptpOptions,
-        session: Option<&str>,
-        prover_opts: Option<ExternalOpts>,
-    ) -> Result<String, Vec<Diagnostic>> {
-        let syn = &self.layer.semantic().syntactic;
-        let uuid = format!(
-            "{:x}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_millis()
-        );
-        let session = session.unwrap_or(&uuid);
-        let mode = translation_opts.lang;
-        let prover_opts = prover_opts.unwrap_or_default();
-
-        // Intern the hypotheses into the session as force-included support axioms.
-        let support = self.ingest_source(
-            SourceFile {
-                parser: Parser::Kif { options: None },
-                name: tc.file_name.clone(),
-                path: tc.file_name.clone().into(),
-                origin: crate::FileOrigin::Local(crate::types::LocalProvenance::UNKNOWN),
-                contents: String::new(),
-                prebuilt: Some(tc.axioms),
-            },
-            session,
-            true,
-        );
-        if support.errors.iter().any(|d| d.is_err()) {
-            return Err(support.errors);
-        }
-        let problem_sids: Vec<SentenceId> = support
-            .emitted
-            .into_iter()
-            .filter_map(|e| match e {
-                Event::RootAdded { sid } => Some(sid),
-                _ => None,
-            })
-            .collect();
-
-        // Intern the conjecture (if any), collecting its SInE seed symbols and sid.
-        let (seed_syms, query_sid): (HashSet<_>, Option<SentenceId>) = match tc.query.clone() {
-            Some(query) => {
-                let (normalized, _) = Conjecture::normalize(vec![query]);
-                let syms = Conjecture::seed(&normalized);
-                let res = self.ingest_source(
-                    SourceFile {
-                        parser: Parser::Kif { options: None },
-                        name: tc.file_name.clone(),
-                        path: tc.file_name.clone().into(),
-                        origin: crate::FileOrigin::Local(crate::types::LocalProvenance::UNKNOWN),
-                        contents: String::new(),
-                        prebuilt: Some(normalized),
-                    },
-                    session,
-                    true,
-                );
-                if res.errors.iter().any(|d| d.is_err()) {
-                    return Err(res.errors);
-                }
-                let sid = res.emitted.into_iter().find_map(|e| match e {
-                    Event::RootAdded { sid } => Some(sid),
-                    _ => None,
-                });
-                (syms, sid)
-            }
-            None => (HashSet::new(), None),
-        };
-
-        // SInE-select the relevant KB axioms from the conjecture's seed.
-        let (mut selected, frontier) = syn.select_relevant(
-            &seed_syms,
-            prover_opts.selection,
-            &SelectionParams::default(),
-            &ProveCtx::default(),
-        );
-        selected.extend(frontier);
-
-        // Drop the explicitly-added hypotheses and conjecture from the SInE set
-        // to avoid duplicating them, or re-asserting the un-negated conjecture
-        // as an axiom.
-        let mut explicit: HashSet<SentenceId> = problem_sids.iter().copied().collect();
-        explicit.extend(query_sid);
-        let axiom_sids: Vec<SentenceId> = selected.difference(&explicit).copied().collect();
-
-        let mut all_axioms = axiom_sids;
-        for &sid in &problem_sids {
-            if Some(sid) == query_sid {
-                continue;
-            } // never add the conjecture as support
-            if self.sentence_excluded(sid, &translation_opts.excluded) {
-                continue;
-            }
-            all_axioms.push(sid);
-        }
-        let conjecture: Vec<SentenceId> = query_sid.into_iter().collect();
-        let query_scope = crate::semantics::types::Scope::Session(
-            crate::syntactic::caches::session::session_id(session),
-        );
-        // The "selected axioms" here are the SInE-selected set plus support
-        // hypotheses; the conjecture's own numerals matter just as much as
-        // an axiom's, so it's scanned too.
-        let mode = syn.resolve_tptp_lang(mode, all_axioms.iter().chain(conjecture.iter()));
-        let (problem, sid_map, _qvm) = self.layer.translation().assemble_problem(
-            &all_axioms,
-            &problem_sids,
-            &conjecture,
-            mode,
-            Some(query_scope),
-        );
-        Ok(assemble_tptp_indexed(
-            &problem,
-            &sid_map,
-            &AssemblyOpts {
-                show_kif: translation_opts.show_kif_comment,
-                layer: Some(self.layer.semantic()),
-                ..AssemblyOpts::default()
-            },
-            None,
-        ))
     }
 
     /// Return the head predicate name of a sentence, if it has one.
@@ -375,67 +218,139 @@ impl<L: HasTranslation> KnowledgeBase<L> {
             .unwrap_or(false)
     }
 
-    /// Render a single sentence as TPTP.
+    /// Render one sentence as a TPTP formula body -- no `fof(...)` /
+    /// `tff(...)` framing; callers add their own `<kw>(name, role, ...)`.
     ///
-    /// Returns the formula body only (no `tff(...)` / `fof(...)` wrapper);
-    /// callers add their own `<kw>(name, role, ...)` framing.  Respects
-    /// `opts.query` (existential wrap for conjectures vs universal wrap
-    /// for axioms), `opts.lang`, and `opts.hide_numbers`.
-    pub fn format_sentence_tptp(&mut self, sid: SentenceId, opts: &TptpOptions) -> String {
+    /// Respects `opts.query` (existential wrap of free variables, the
+    /// conjecture form; otherwise the universal axiom form), `opts.lang`, and
+    /// `opts.hide_numbers` (ignored by typed languages). `None` when the
+    /// sentence was suppressed by the rewrite pass -- see
+    /// [`Self::synthetic_replacements_of`] for what replaced it -- or cannot
+    /// be lowered.
+    pub fn sentence_tptp(&self, sid: SentenceId, opts: &TptpOptions) -> Option<String> {
         crate::with_guard!(self);
-        self.layer.translation().ensure_rewrite_pass();
-
-        let mode = opts.lang;
         let trans = self.layer.translation();
+        trans.ensure_rewrite_pass();
+        let typed = opts.lang.is_typed();
+        let cf = if opts.query {
+            trans
+                .lower_conjecture(sid, typed, opts.hide_numbers, None)
+                .map(|(cf, _qvm)| cf)
+        } else if typed {
+            trans.formula_tff(sid)
+        } else if opts.hide_numbers {
+            trans.formula_fof(sid)
+        } else {
+            trans.lower_axiom(sid, false, false)
+        }?;
+        Some(cf.formula.to_tptp())
+    }
 
-        if opts.query {
-            return trans
-                .lower_conjecture(sid, mode.is_typed(), opts.hide_numbers, None)
-                .map(|(cf, _qvm)| cf.formula.to_tptp())
-                .unwrap_or_default();
-        }
+    /// `true` if `sid` was suppressed by the rewrite pass (its synthetic
+    /// replacement, not the original, is what the prover sees).
+    pub fn is_suppressed(&self, sid: SentenceId) -> bool {
+        let trans = self.layer.translation();
+        trans.ensure_rewrite_pass();
         trans
-            .lower_axiom(sid, mode.is_typed(), opts.hide_numbers)
-            .map(|cf| cf.formula.to_tptp())
-            .unwrap_or_default()
+            .suppressed
+            .read()
+            .is_ok_and(|suppressed| suppressed.contains(&sid))
+    }
+
+    /// The synthetic sentences that replaced `sid` (transitively), if it
+    /// was normalized / guard-augmented by the rewrite pass.  Empty for
+    /// sentences that pass through unchanged.
+    pub fn synthetic_replacements_of(&self, sid: SentenceId) -> Vec<SentenceId> {
+        let trans = self.layer.translation();
+        trans.ensure_rewrite_pass();
+        trans.synthetic_replacements(&[sid])
     }
 }
 
-/// Canonical SUMO bookkeeping predicates that are noise for a theorem
-/// prover and are filtered out of any TPTP shipped to Vampire.
-///
-/// Both [`TptpOptions::default`] and the KB-layer excluded-head filter
-/// source their exclusion set from this list. Per-call overrides for
-/// non-default exclusion sets stay on `TptpOptions::excluded`.
-pub fn default_excluded_heads() -> &'static [&'static str] {
-    // TODO replace with semantic constants
-    &[
-        // Signature metadata — redundant once translation has emitted a
-        // `tff(..., type, ...)` declaration for the head.
-        "domain",
-        "domainSubclass",
-        "range",
-        "rangeSubclass",
-        // Documentation / surface-form metadata.
-        "documentation",
-        "format",
-        "termFormat",
-        "externalImage",
-        "relatedExternalConcept",
-        "relatedInternalConcept",
-        "formerName",
-        "abbreviation",
-        "conventionalShortName",
-        "conventionalLongName",
-    ]
-}
+#[cfg(feature = "external-prover")]
+impl<L: HasTranslation + Layer> KnowledgeBase<L> {
+    /// Render a test case as the TPTP problem an external prover is handed
+    /// for it: the hypotheses (plus `prover_opts.session`'s assertions) as
+    /// hypotheses, the conjecture, and the axioms selected at
+    /// `prover_opts.selection`.  Hypotheses and conjecture are staged as
+    /// [`ask`](KnowledgeBase::ask) stages them and rolled back before
+    /// returning, so the KB is left unchanged.
+    /// `translation_opts` picks the TPTP dialect and whether KIF comments are
+    /// emitted.
+    ///
+    /// # Errors
+    ///
+    /// Returns the diagnostics of a hypothesis or conjecture that failed to
+    /// stage.
+    pub fn tc_to_tptp(
+        &self,
+        tc: TestCase,
+        translation_opts: &TptpOptions,
+        prover_opts: &ExternalOpts,
+    ) -> Result<String, Vec<Diagnostic>> {
+        crate::with_guard!(self);
+        let trans = self.layer.translation();
+        trans.ensure_rewrite_pass();
+        let staged =
+            self.stage_hypotheses(&tc.file_name, tc.axioms, prover_opts.session.as_deref());
+        let mut errors: Vec<Diagnostic> = staged
+            .errors
+            .iter()
+            .filter(|d| d.is_err())
+            .cloned()
+            .collect();
 
-/// Lazy `HashSet<&'static str>` view of [`default_excluded_heads`] for
-/// fast lookup.  Initialised on first use; lives for the process.
-pub(crate) fn excluded_heads_set() -> &'static HashSet<&'static str> {
-    use std::sync::OnceLock;
-    static SET: OnceLock<HashSet<&'static str>> = OnceLock::new();
-    SET.get_or_init(|| default_excluded_heads().iter().copied().collect())
+        let query_key = trans.semantic.syntactic.unique_source_key("query");
+        let mut query_sids = Vec::new();
+        if let Some(query) = tc.query {
+            let (mut normalized, _) = Conjecture::normalize(vec![query]);
+            for ast in &mut normalized {
+                ast.attribute_to(&query_key);
+            }
+            let outcome = self.ingest_source(
+                SourceFile {
+                    parser: Parser::Kif { options: None },
+                    name: query_key.clone(),
+                    path: std::path::PathBuf::new(),
+                    origin: crate::FileOrigin::Inline,
+                    contents: String::new(),
+                    prebuilt: Some(normalized),
+                },
+                &query_key,
+                false,
+            );
+            errors.extend(outcome.errors.into_iter().filter(|d| d.is_err()));
+            query_sids = trans.semantic.syntactic.file_root_sids(&query_key);
+        }
+
+        let tptp = errors.is_empty().then(|| {
+            let built = trans.query_problem(
+                &query_sids,
+                prover_opts.selection,
+                staged.session.as_deref(),
+                translation_opts.lang,
+                &self.prove_ctx(),
+            );
+            assemble_tptp_indexed(
+                &built.problem,
+                &built.sid_map,
+                &AssemblyOpts {
+                    show_kif: translation_opts.show_kif_comment,
+                    layer: Some(&trans.semantic),
+                    ..AssemblyOpts::default()
+                },
+                None,
+            )
+        });
+
+        let _ = self.ingest_source(
+            SourceFile::truncate(std::path::PathBuf::from(&query_key)),
+            &query_key,
+            false,
+        );
+        self.unstage_hypotheses(staged);
+        tptp.ok_or(errors)
+    }
 }
 
 /// Options controlling TPTP output.
@@ -459,7 +374,7 @@ pub struct TptpOptions {
 
 impl Default for TptpOptions {
     fn default() -> Self {
-        let excluded: HashSet<String> = default_excluded_heads()
+        let excluded: HashSet<String> = DEFAULT_EXCLUDED_HEADS
             .iter()
             .map(|s| (*s).to_string())
             .collect();
@@ -564,5 +479,189 @@ mod session_support_tests {
                 "pct={pct:?}: the asserted (subclass Dog Mammal) is missing:\n{tptp}"
             );
         }
+    }
+
+    #[test]
+    fn selected_taxonomy_facts_bypass_the_axiom_exclusion_filter() {
+        let mut kb = kb_with("(subclass Dog Mammal)\n(subclass Mammal Animal)");
+        assert!(kb.tell("(instance Rex Dog)", "s").ok);
+        assert!(kb.tell("(instance Rex Animal)", "q").ok);
+        let mut seed = kb.session_sids("s");
+        seed.extend(kb.session_sids("q"));
+
+        let mut opts = TptpOptions::default();
+        opts.excluded.insert("subclass".to_string());
+        let tptp = kb.to_tptp_selected(&opts, &seed, Some("s"), None, Some(0.0001));
+
+        assert!(
+            tptp.contains("s__subclass(s__Dog,s__Mammal)"),
+            "the required taxonomy fact must survive explicit exclusion:\n{tptp}"
+        );
+
+        kb.flush_session("s");
+        kb.flush_session("q");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TptpOptions;
+    use crate::{KnowledgeBase, TptpLang};
+
+    fn kb_with(kif: &str) -> KnowledgeBase {
+        let mut kb = KnowledgeBase::new();
+        let r = kb.reload_kif(kif, &std::path::PathBuf::from("t.kif"), "t.kif");
+        assert!(r.ok, "load failed: {:?}", r.diagnostics);
+        kb.make_session_axiomatic("t.kif").expect("promote");
+        kb
+    }
+
+    #[test]
+    fn sentence_tptp_wraps_free_variables_by_role() {
+        let kb = kb_with("(=> (instance ?X Dog) (instance ?X Animal))");
+        let sid = kb.syntactic().root_sids()[0];
+        let axiom = kb.sentence_tptp(sid, &TptpOptions::default()).unwrap();
+        let query = kb
+            .sentence_tptp(
+                sid,
+                &TptpOptions {
+                    query: true,
+                    ..TptpOptions::default()
+                },
+            )
+            .unwrap();
+        assert!(axiom.starts_with('!'), "axiom form is universal: {axiom}");
+        assert!(
+            query.starts_with('?'),
+            "conjecture form is existential: {query}"
+        );
+    }
+
+    #[test]
+    fn sentence_tptp_hides_numbers_only_when_asked() {
+        let kb = kb_with("(lessThan 1 2)");
+        let sid = kb.syntactic().root_sids()[0];
+        let fof = |hide_numbers| TptpOptions {
+            lang: TptpLang::Fof,
+            hide_numbers,
+            ..TptpOptions::default()
+        };
+        let hidden = kb.sentence_tptp(sid, &fof(true)).unwrap();
+        let shown = kb.sentence_tptp(sid, &fof(false)).unwrap();
+        assert_ne!(hidden, shown, "hidden: {hidden} / shown: {shown}");
+    }
+
+    #[test]
+    fn sentence_tptp_of_unknown_sid_is_none() {
+        let kb = kb_with("(instance Rex Dog)");
+        assert!(kb.sentence_tptp(12345, &TptpOptions::default()).is_none());
+    }
+}
+
+#[cfg(all(test, feature = "external-prover"))]
+mod test_case_tests {
+    use super::KnowledgeBase;
+    use crate::{parse_document, ExternalOpts, Parser, TestCase, TptpOptions};
+
+    fn kb() -> KnowledgeBase {
+        let mut kb = KnowledgeBase::new();
+        let r = kb.reload_kif(
+            "(subclass Dog Mammal)\n(subclass Mammal Animal)\n(instance Rex Dog)\n",
+            &std::path::PathBuf::from("t.kif"),
+            "t.kif",
+        );
+        assert!(r.ok, "load failed: {:?}", r.diagnostics);
+        kb.make_session_axiomatic("t.kif").expect("promote");
+        kb
+    }
+
+    fn kif(text: &str) -> Vec<crate::AstNode> {
+        parse_document(
+            "case.kif.tq",
+            text.to_string(),
+            Parser::Kif { options: None },
+        )
+        .ast
+        .iter()
+        .filter_map(|d| d.as_stmt().cloned())
+        .collect()
+    }
+
+    fn case(hypotheses: &str, query: &str) -> TestCase {
+        TestCase {
+            axioms: kif(hypotheses),
+            ..TestCase::conjecture("case.kif.tq", kif(query).remove(0))
+        }
+    }
+
+    fn user_opts() -> ExternalOpts {
+        ExternalOpts {
+            session: Some("user".into()),
+            ..ExternalOpts::default()
+        }
+    }
+
+    #[test]
+    fn a_test_case_renders_hypotheses_session_support_and_the_conjecture() {
+        let mut kb = kb();
+        assert!(kb.tell("(instance Max Dog)", "user").ok);
+        let tptp = kb
+            .tc_to_tptp(
+                case("(instance Fido Dog)", "(instance Fido Animal)"),
+                &TptpOptions::default(),
+                &user_opts(),
+            )
+            .expect("translates");
+        let conjecture = tptp
+            .lines()
+            .find(|l| l.contains(", conjecture,"))
+            .expect("a conjecture");
+        assert!(conjecture.contains("s__Fido"), "{tptp}");
+        assert!(tptp.contains("s__Max"), "session support missing:\n{tptp}");
+        assert!(
+            tptp.contains("s__Mammal"),
+            "selected axioms missing:\n{tptp}"
+        );
+    }
+
+    #[test]
+    fn translating_a_test_case_leaves_the_kb_unchanged() {
+        let mut kb = kb();
+        assert!(kb.tell("(instance Max Dog)", "user").ok);
+        let before = kb.session_sids("user");
+        kb.tc_to_tptp(
+            case("(instance Fido Dog)", "(instance Fido Animal)"),
+            &TptpOptions::default(),
+            &user_opts(),
+        )
+        .expect("translates");
+        assert_eq!(
+            kb.session_sids("user"),
+            before,
+            "no hypothesis or conjecture left behind"
+        );
+
+        let next = kb
+            .tc_to_tptp(
+                case("(instance Tom Dog)", "(instance Rex Animal)"),
+                &TptpOptions::default(),
+                &user_opts(),
+            )
+            .expect("translates");
+        assert!(!next.contains("s__Fido"), "an earlier case leaked:\n{next}");
+    }
+
+    #[test]
+    fn a_test_case_without_a_conjecture_renders_its_hypotheses() {
+        let kb = kb();
+        let tc = TestCase {
+            query: None,
+            ..case("(instance Fido Dog)", "(instance Fido Animal)")
+        };
+        let tptp = kb
+            .tc_to_tptp(tc, &TptpOptions::default(), &ExternalOpts::default())
+            .expect("translates");
+        assert!(!tptp.contains(", conjecture,"), "{tptp}");
+        assert!(tptp.contains("s__Fido"), "{tptp}");
     }
 }

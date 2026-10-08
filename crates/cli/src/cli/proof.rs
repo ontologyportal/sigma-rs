@@ -17,9 +17,13 @@ use sigmakee_rs_sdk::AstKif;
 use sigmakee_rs_sdk::AstNode;
 use sigmakee_rs_sdk::TopLayer;
 use sigmakee_rs_sdk::{
-    emit_proof, render_graphviz, tptp_highlight, AxiomSourceIndex, ConvertedStmt, Emitter,
-    KifProofStep, KnowledgeBase, ProverResult, RenderReport, SzsStatus,
+    emit_proof, render_graphviz, tptp_highlight, ConvertedStmt, Emitter, KifProofStep,
+    KnowledgeBase, ProverResult, RenderReport, RenderStyle, SzsStatus,
 };
+
+/// Source location of each sentence, from
+/// [`sigmakee_rs_sdk::DiagnosticSource::sentence_locations`].
+type Locations = std::collections::HashMap<sigmakee_rs_sdk::SentenceId, sigmakee_rs_sdk::Span>;
 
 /// `true` for the "machine-readable, nothing else on stdout" formats —
 /// `casc` (strict SZS/TPTP) and `graphviz` (strict DOT) — both of which
@@ -57,12 +61,12 @@ pub fn print_proof<L: TopLayer>(
     status: SzsStatus,
 ) {
     print_proof_impl(
-        &kb.build_axiom_source_index(),
+        &sigmakee_rs_sdk::DiagnosticSource::sentence_locations(kb),
         result,
         format,
         name,
         status,
-        &|f, lang| kb.render_formula_colored(f, lang),
+        &|f, lang| kb.render_formula(f, lang, RenderStyle::Colored),
     )
 }
 
@@ -75,12 +79,12 @@ pub fn print_proof_native(
     status: SzsStatus,
 ) {
     print_proof_impl(
-        &kb.build_axiom_source_index(),
+        &sigmakee_rs_sdk::DiagnosticSource::sentence_locations(kb),
         result,
         format,
         name,
         status,
-        &|f, lang| kb.render_formula_colored(f, lang),
+        &|f, lang| kb.render_formula(f, lang, RenderStyle::Colored),
     )
 }
 
@@ -128,7 +132,7 @@ fn print_step(text: &str) {
 }
 
 fn print_proof_impl(
-    src_idx: &AxiomSourceIndex,
+    locations: &Locations,
     result: &ProverResult,
     format: &str,
     name: &str,
@@ -184,7 +188,7 @@ fn print_proof_impl(
                     step.formula.pretty_print(2)
                 };
                 println!("        {}", text.replace('\n', "\n        "));
-                print_step_source(step, src_idx);
+                print_step_source(step, locations);
             }
         }
         lang => {
@@ -211,7 +215,7 @@ fn print_proof_impl(
                     );
                     all_missing.extend(report.missing);
                 }
-                print_step_source(step, src_idx);
+                print_step_source(step, locations);
             }
             if !all_missing.is_empty() {
                 eprintln!(
@@ -244,57 +248,20 @@ fn print_step_header(step: &KifProofStep) {
     println!("  {:>3}. [{}]{}", step.index + 1, step.rule, premises);
 }
 
-/// When `step` is an axiom-role step, print the source file and line(s) the
-/// axiom came from.
-///
-/// Two lookup strategies, tried in order:
-///
-///   1. **Direct sid lookup** — when [`KifProofStep::source_sid`] is present,
-///      [`lookup_by_sid`] gives an exact hit.
-///   2. **Canonical-hash fallback** — when the sid is absent, fall back to
-///      [`AxiomSourceIndex::lookup`] via `canonical_sentence_fingerprint`.
-///
-/// Ephemeral internal files (`__query__`, `__sine_query__`, …) are excluded.
-/// The hash path may list multiple sources when the same formula is declared
-/// in more than one file; the sid path always yields a single entry.
-///
-/// [`lookup_by_sid`]: sigmakee_rs_sdk::AxiomSourceIndex::lookup_by_sid
-fn print_step_source(step: &KifProofStep, idx: &AxiomSourceIndex) {
+/// When `step` is an axiom-role step with a source sid, print the source
+/// file and line the axiom came from. Ephemeral internal sources
+/// (`__query(N)__`, `__sine_query__`, ...) are not printed.
+fn print_step_source(step: &KifProofStep, locations: &Locations) {
     if step.rule != "axiom" {
         return;
     }
-
-    // Strategy 1 — direct sid lookup.
-    if let Some(sid) = step.source_sid {
-        if let Some(src) = idx.lookup_by_sid(sid) {
-            if !src.file.starts_with("__") {
-                println!(
-                    "        {color_bright_black}↳ {}:{}{color_reset}",
-                    src.file, src.line,
-                );
-                return;
-            }
-            // Ephemeral source: the sid is authoritative, so suppress
-            // rather than falling through to the hash path.
-            return;
-        }
-    }
-
-    // Strategy 2 — canonical-hash fallback.
-    let sources = idx.lookup(&step.formula);
-    let visible: Vec<_> = sources
-        .iter()
-        .filter(|s| !s.file.starts_with("__"))
-        .collect();
-    if visible.is_empty() {
+    let Some(span) = step.source_sid.and_then(|sid| locations.get(&sid)) else {
         return;
+    };
+    if !span.file.starts_with("__") {
+        println!(
+            "        {color_bright_black}-> {}:{}{color_reset}",
+            span.file, span.line,
+        );
     }
-    let joined: Vec<String> = visible
-        .iter()
-        .map(|s| format!("{}:{}", s.file, s.line))
-        .collect();
-    println!(
-        "        {color_bright_black}↳ {}{color_reset}",
-        joined.join(", ")
-    );
 }

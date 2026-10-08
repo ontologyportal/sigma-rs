@@ -20,7 +20,7 @@ impl Session {
         let sids = inner.lookup(pattern);
         let results: Vec<String> = sids
             .iter()
-            .map(|&sid| inner.sentence_to_string(sid))
+            .map(|&sid| inner.sentence_kif_str(sid))
             .collect();
         serde_wasm_bindgen::to_value(&results).map_err(|e| JsValue::from_str(&e.to_string()))
     }

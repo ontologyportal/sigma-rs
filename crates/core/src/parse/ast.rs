@@ -184,6 +184,24 @@ impl AstNode {
         }
     }
 
+    /// Attribute this statement to source `file`: the formula's top-level span
+    /// is the occurrence the source store records and later retracts by file,
+    /// so a node ingested under a source key other than the file it was
+    /// parsed from must carry that key to be rolled back.
+    #[cfg(any(feature = "external-prover", feature = "native-prover"))]
+    pub(crate) fn attribute_to(&mut self, file: &str) {
+        match self {
+            AstNode::Annotated { formula, .. } => formula.attribute_to(file),
+            AstNode::List { span, .. }
+            | AstNode::Symbol { span, .. }
+            | AstNode::Variable { span, .. }
+            | AstNode::RowVariable { span, .. }
+            | AstNode::Str { span, .. }
+            | AstNode::Number { span, .. }
+            | AstNode::Operator { span, .. } => span.file = file.to_string(),
+        }
+    }
+
     /// Consume any top-level [`AstNode::Annotated`] wrapper and return the inner
     /// formula by value, or return `self` unchanged for a bare formula.
     pub fn strip_annotation(self) -> AstNode {

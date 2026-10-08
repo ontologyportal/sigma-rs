@@ -58,6 +58,14 @@ pub enum Backend {
 /// then ingest / assert / prove / translate / validate against it.
 pub struct Session<L: TopLayer> {
     kb: KnowledgeBase<L>,
+    #[cfg_attr(
+        not(any(
+            feature = "external-prover",
+            feature = "native-prover",
+            feature = "snapshot"
+        )),
+        allow(dead_code)
+    )]
     name: String,
     /// The WordNet lexicon, if loaded (see [`Session::load_lexicon`] /
     /// [`Session::set_lexicon`] in `session::lexicon`). `Arc`, not owned: a
@@ -178,8 +186,8 @@ impl<L: TopLayer> Session<L> {
     /// clone (see [`KnowledgeBase::snapshot_clone`]).  The fork keeps this
     /// session's name, progress sink, and — for an external backend — its
     /// configured prover, but carries no DB handle, so ingesting / promoting /
-    /// proving on it leaves *this* session untouched.  Requires `persist`.
-    #[cfg(feature = "persist")]
+    /// proving on it leaves *this* session untouched.  Requires `snapshot`.
+    #[cfg(feature = "snapshot")]
     pub fn fork(&self) -> crate::SdkResult<Self> {
         let kb = self.kb.snapshot_clone().map_err(crate::SdkError::from)?;
         Ok(Self {
@@ -220,13 +228,10 @@ mod tests {
     #[test]
     fn native_session_ingests_then_proves() {
         let mut s = Session::<ProverLayer>::new(SESSION.to_string());
-        s.ingest(
-            reader(
-                "t.kif",
-                "(subclass Dog Mammal) (subclass Mammal Animal) (instance Rex Dog)",
-            ),
-            true,
-        );
+        s.ingest(reader(
+            "t.kif",
+            "(subclass Dog Mammal) (subclass Mammal Animal) (instance Rex Dog)",
+        ));
         let r = s.ask("(instance Rex Animal)", Some(fast())).unwrap();
         assert_eq!(
             r.status,
@@ -239,15 +244,13 @@ mod tests {
     #[test]
     fn doxastic_ask_closes_belief_context_and_stays_read_only() {
         let mut s = Session::<ProverLayer>::new(SESSION.to_string());
-        s.ingest(
-            reader(
-                "dox.kif",
-                "(domain believes 2 Formula)\n\
+        s.ingest(reader(
+            "dox.kif",
+            "(instance believes PropositionalAttitude)\n\
+             (domain believes 2 Formula)\n\
              (believes John (p a))\n\
              (believes John (=> (p a) (q a)))",
-            ),
-            true,
-        );
+        ));
         // Full closure inside the context: modus ponens over the beliefs.
         let r = s.doxastic_ask("John", "(q a)", Some(fast())).unwrap();
         assert_eq!(
@@ -341,7 +344,7 @@ fof(goal, conjecture, animal(rex)).\n",
     // background → ingested + bulk-promoted → the conjecture proves), and
     // confirm none of that leaked back into the master.
     #[test]
-    #[cfg(feature = "persist")] // `fork` rides on the persist-gated snapshot/restore
+    #[cfg(feature = "snapshot")]
     fn fork_runs_a_tptp_test_in_isolation() {
         let master = Session::<ProverLayer>::new("master".to_string());
 
@@ -375,7 +378,7 @@ fof(goal, conjecture, animal(rex)).\n";
     fn parser_autodetect_picks_tptp_by_extension() {
         // A `.p` source routes through the TPTP parser (KIF would reject `fof`).
         let mut s = Session::<ProverLayer>::new(SESSION.to_string());
-        s.ingest(reader("p.p", "fof(a, axiom, mammal(rex))."), true);
+        s.ingest(reader("p.p", "fof(a, axiom, mammal(rex))."));
     }
 
     #[test]
@@ -383,7 +386,7 @@ fof(goal, conjecture, animal(rex)).\n";
         let mut s = Session::<ProverLayer>::new(SESSION.to_string());
         // No extension, no `(`/`fof(` head → detection fails → hard error.
         assert!(s
-            .ingest(reader("noext", "just some prose"), true)
+            .ingest(reader("noext", "just some prose"))
             .iter()
             .any(|e| e.is_err()));
     }
@@ -391,13 +394,10 @@ fof(goal, conjecture, animal(rex)).\n";
     #[test]
     fn check_consistency_passes_a_clean_kb() {
         let mut s = Session::<ProverLayer>::new(SESSION.to_string());
-        s.ingest(
-            reader(
-                "c.kif",
-                "(instance Rex Dog)\n(=> (instance ?X Dog) (barks ?X))",
-            ),
-            true,
-        );
+        s.ingest(reader(
+            "c.kif",
+            "(instance Rex Dog)\n(=> (instance ?X Dog) (barks ?X))",
+        ));
         let r = s.check_consistency(fast()).unwrap();
         assert_eq!(
             r.status,
@@ -410,7 +410,7 @@ fof(goal, conjecture, animal(rex)).\n";
     #[test]
     fn check_consistency_flags_a_contradiction() {
         let mut s = Session::<ProverLayer>::new(SESSION.to_string());
-        s.ingest(reader("c.kif", "(barks Rex)\n(not (barks Rex))"), true);
+        s.ingest(reader("c.kif", "(barks Rex)\n(not (barks Rex))"));
         let r = s.check_consistency(fast()).unwrap();
         assert_eq!(
             r.status,
@@ -423,7 +423,7 @@ fof(goal, conjecture, animal(rex)).\n";
     #[test]
     fn audit_enumerates_contradictions() {
         let mut s = Session::<ProverLayer>::new(SESSION.to_string());
-        s.ingest(reader("c.kif", "(barks Rex)\n(not (barks Rex))"), true);
+        s.ingest(reader("c.kif", "(barks Rex)\n(not (barks Rex))"));
         let r = s.audit(fast(), 4).unwrap();
         assert_eq!(
             r.status,
@@ -437,14 +437,11 @@ fof(goal, conjecture, animal(rex)).\n";
     fn sampled_audit_view_reports_per_subproblem_outcomes() {
         use crate::session::views::{AuditStopReason, AuditTarget};
         let mut s = Session::<ProverLayer>::new(SESSION.to_string());
-        s.ingest(
-            reader(
-                "c.kif",
-                "(p a)\n(p b)\n(=> (p ?X) (q ?X))\n(=> (q ?X) (r ?X))\n\
+        s.ingest(reader(
+            "c.kif",
+            "(p a)\n(p b)\n(=> (p ?X) (q ?X))\n(=> (q ?X) (r ?X))\n\
                  (=> (r ?X) (s ?X))\n(=> (s ?X) (t ?X))",
-            ),
-            true,
-        );
+        ));
         let whole = |batch| sigmakee_rs_core::AuditSample {
             seed: 3,
             step: 0,
@@ -495,7 +492,7 @@ fof(goal, conjecture, animal(rex)).\n";
         use crate::session::views::{AuditFocusView, AuditTarget};
         let text = "(p a)\n(barks Rex)\n(not (barks Rex))\n";
         let mut s = Session::<ProverLayer>::new(SESSION.to_string());
-        s.ingest(reader("c.kif", text), true);
+        s.ingest(reader("c.kif", text));
         let offset = text.find("(not").unwrap() + 2;
         let sid = s
             .kb()

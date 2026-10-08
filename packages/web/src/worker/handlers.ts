@@ -318,8 +318,9 @@ export const handlers = {
     wordnetOnly?: boolean;
     taxonomy?: TaxConstraint[];
   }): { hits: SearchHit[] } {
-    // The page loads WordNet on first search; if loading failed, search runs without WordNet
-    // hits -- the SDK/wasm session tolerates no lexicon installed.
+    // WordNet is loaded eagerly at boot (see boot.ts / kb-cache.ts); if that
+    // failed or hasn't finished, `search` just runs without WordNet hits --
+    // the SDK/wasm session tolerates no lexicon installed.
     return {
       hits: active().search(query, {
         limit: limit ?? 100,

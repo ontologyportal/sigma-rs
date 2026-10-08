@@ -33,7 +33,7 @@ default            = ["persist", "ask", "parallel", "http", "git", "lexicon"]
 # differently from sigmakee-rs-core; downstream consumers enable here and we
 # pass it through.  Activating any of these may change the public
 # API surface (e.g. `ask` adds AskOp / TestOp).
-persist            = ["sigmakee-rs-core/persist"]
+persist            = ["snapshot", "sigmakee-rs-core/persist"]
 snapshot           = ["sigmakee-rs-core/snapshot"]
 external-prover    = ["sigmakee-rs-core/external-prover"]
 ask                = ["external-prover", "sigmakee-rs-core/ask"]

@@ -191,6 +191,21 @@ pub enum Element {
     Op(OpKind),
 }
 
+/// The symbol-table key a variable is interned under: `<name>__<scope>`, so
+/// two quantifier scopes binding the same name never alias to one symbol.
+fn scoped_variable_name(name: &str, scope: u64) -> String {
+    format!("{name}__{scope}")
+}
+
+/// `true` if `name` is a variable's scope-qualified interning key (see
+/// [`scoped_variable_name`]) rather than ontology vocabulary. No SUMO term
+/// ends in `__<digits>`, so the shape is an exact discriminator.
+pub(crate) fn is_scoped_variable_name(name: &str) -> bool {
+    name.rsplit_once("__").is_some_and(|(base, scope)| {
+        !base.is_empty() && !scope.is_empty() && scope.bytes().all(|b| b.is_ascii_digit())
+    })
+}
+
 impl Element {
     /// Build an [`Element`] from an [`AstNode`], returning the element along
     /// with any nested sub-sentences and symbols to be interned. Returns
@@ -212,7 +227,7 @@ impl Element {
             }
             AstNode::Variable { name, .. } => {
                 let scope = ctx.scope_for(name);
-                let sym = Symbol::from(format!("{}__{}", name, scope));
+                let sym = Symbol::from(scoped_variable_name(name, scope));
                 Some((
                     Element::Variable {
                         id: sym.id(),
@@ -248,5 +263,28 @@ impl Element {
                 unreachable!("Annotated statements should be stripped before sentence building")
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_scoped_variable_name, scoped_variable_name};
+
+    #[test]
+    fn scoped_variable_name_round_trips_through_detection() {
+        assert!(is_scoped_variable_name(&scoped_variable_name("X", 3)));
+        assert!(is_scoped_variable_name("Human__15551"));
+        assert!(is_scoped_variable_name("FOO__BAR__7"));
+    }
+
+    #[test]
+    fn ontology_terms_are_not_scoped_variable_names() {
+        assert!(!is_scoped_variable_name("HumanDoll"));
+        assert!(!is_scoped_variable_name("subordinateInOrganization"));
+        assert!(!is_scoped_variable_name("w__chase_12")); // skolem naming, non-digit suffix
+        assert!(!is_scoped_variable_name("__3")); // no base name before the scope
+        assert!(!is_scoped_variable_name("Foo__")); // no scope after the separator
+        assert!(!is_scoped_variable_name("plain"));
+        assert!(!is_scoped_variable_name(""));
     }
 }

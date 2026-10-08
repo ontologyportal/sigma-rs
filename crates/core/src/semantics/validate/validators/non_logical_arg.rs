@@ -8,6 +8,8 @@ use crate::semantics::validate::cx::Cx;
 use crate::semantics::validate::traits::OperatorValidator;
 use crate::{Element, OpKind, SentenceId};
 
+use super::common::is_logical_sentence;
+
 #[derive(Debug, Clone, Error)]
 #[error("argument {arg} of the operator, {op}, must be logical (predicate or operator) sentence")]
 pub struct NonLogicalArg {
@@ -60,22 +62,6 @@ impl OperatorValidator for NonLogicalArgCheck {
             })
             .collect()
     }
-}
-
-/// Whether `sid` denotes a truth-valued sentence rather than a term.
-fn is_logical_sentence(cx: &Cx<'_>, sid: SentenceId) -> bool {
-    let Some(sentence) = cx.sentence(sid) else {
-        return false;
-    };
-    if sentence.is_operator() {
-        return true;
-    }
-    let head_id = match sentence.elements.first() {
-        Some(Element::Symbol(sym)) => sym.id(),
-        Some(Element::Variable { .. }) => return true,
-        _ => return false,
-    };
-    !cx.is_function(head_id)
 }
 
 #[cfg(test)]

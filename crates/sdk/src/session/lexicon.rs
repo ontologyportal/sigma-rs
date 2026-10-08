@@ -78,15 +78,12 @@ mod tests {
         use crate::{SearchOpts, Source};
 
         let mut s = Session::<ProverLayer>::new("t".into());
-        s.ingest(
-            Source::Reader {
-                name: "t.kif".into(),
-                reader: Box::new(std::io::Cursor::new(Vec::from(
-                    "(documentation Canine EnglishLanguage \"A carnivorous mammal.\")",
-                ))),
-            },
-            true,
-        );
+        s.ingest(Source::Reader {
+            name: "t.kif".into(),
+            reader: Box::new(std::io::Cursor::new(Vec::from(
+                "(documentation Canine EnglishLanguage \"A carnivorous mammal.\")",
+            ))),
+        });
 
         let plain = s.search("dog", &SearchOpts::default()).unwrap();
         assert!(

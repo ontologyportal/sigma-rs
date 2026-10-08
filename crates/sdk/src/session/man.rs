@@ -383,15 +383,12 @@ mod session_tests {
     #[test]
     fn manpage_projects_a_view_and_resolves_cross_refs() {
         let mut s = Session::<ProverLayer>::new("man".into());
-        let _ = s.ingest(
-            Source::Reader {
-                name: "d.kif".into(),
-                reader: Box::new(std::io::Cursor::new(
-                    br#"(documentation Dog EnglishLanguage "A &%Mammal that barks.")"#.to_vec(),
-                )),
-            },
-            true,
-        );
+        let _ = s.ingest(Source::Reader {
+            name: "d.kif".into(),
+            reader: Box::new(std::io::Cursor::new(
+                br#"(documentation Dog EnglishLanguage "A &%Mammal that barks.")"#.to_vec(),
+            )),
+        });
 
         let view = s.manpage("Dog").expect("Dog has a man page");
         assert_eq!(view.name, "Dog");

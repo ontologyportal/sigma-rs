@@ -1,6 +1,6 @@
 //! `syntactic::sessions` — per-session sentence membership and axiom status.
 //!
-//! A *session* is an ingest tag (a file name, `__query__`, …). This cache maps
+//! A *session* is an ingest tag (a file name, `__query(N)__`, ...). This cache maps
 //! each session to the root sentences it produced and whether it has been
 //! axiomatized.
 //!

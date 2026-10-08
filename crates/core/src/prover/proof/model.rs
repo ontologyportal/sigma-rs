@@ -50,11 +50,10 @@ pub struct KifProofStep {
     /// Source [`crate::SentenceId`] when this step traces directly back to an
     /// input axiom whose name Vampire preserved (requires
     /// `--output_axiom_names on`).  `None` for derived steps, for
-    /// older Vampire builds, and for anonymous axioms.  Downstream
-    /// consumers (e.g. proof-display in the CLI) should prefer this
-    /// for O(1) source lookup when present and fall back to the
-    /// canonical-hash path on [`crate::axiom_source::AxiomSourceIndex`]
-    /// when `None`
+    /// older Vampire builds, the embedded prover, and anonymous axioms.
+    /// Proof display resolves it to a source location through
+    /// [`crate::DiagnosticSource::sentence_locations`]; a step without one
+    /// is shown without a source.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_sid: Option<crate::types::SentenceId>,
 }

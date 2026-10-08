@@ -245,10 +245,9 @@ pub fn vampire_cli_args(timeout_secs: &str) -> Vec<String> {
         // them (axiom tails become `file('/dev/stdin', unknown)`);
         // with this option on the tails become
         // `file('/dev/stdin', kb_42)`, letting the proof-display
-        // path map each axiom-role step back to its source sid in
-        // O(1) via `AxiomSourceIndex::lookup_by_sid` — much cheaper
-        // and more robust (survives CNF transforms and alpha-
-        // renaming) than the canonical-fingerprint fallback.
+        // path map each axiom-role step back to its source sid and
+        // from there to a source location (survives CNF transforms
+        // and alpha-renaming).
         "--output_axiom_names".into(),
         "on".into(),
     ]

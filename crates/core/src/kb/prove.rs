@@ -13,8 +13,6 @@ use std::path::PathBuf;
 use crate::layer::{Layer, TopLayer};
 use crate::prover::{CommonProverOpts, ProverResult, ProverStatus, ProvingLayer};
 use crate::types::{SentenceId, SourceFile};
-#[cfg(feature = "native-prover")]
-use crate::SineParams;
 use crate::{Parser, TestCase};
 
 use super::KnowledgeBase;
@@ -22,10 +20,14 @@ use super::KnowledgeBase;
 impl<L: ProvingLayer + TopLayer + Layer> KnowledgeBase<L> {
     /// Discharge a test-case query against the KB with the top layer's prover.
     ///
-    /// `session` is an optional in-memory session whose assertions become
-    /// hypotheses.  `opts` carries the layer's proving parameters.
-    pub fn ask(&self, tc: TestCase, session: Option<&str>, opts: &L::Opts) -> ProverResult {
-        self.ask_with(&self.layer, tc, session, opts)
+    /// `opts` carries the layer's proving parameters, including the optional
+    /// in-memory session whose assertions become hypotheses.
+    ///
+    /// A test case with hypotheses but no conjecture is answered by a
+    /// consistency audit focused on those hypotheses (`Consistent` /
+    /// `Inconsistent`), never `Proved`; one with neither is an `InputError`.
+    pub fn ask(&self, tc: TestCase, opts: &L::Opts) -> ProverResult {
+        self.ask_with(&self.layer, tc, opts)
     }
 
     /// Saturate the base (plus optional session support) for up to `limit`
@@ -35,7 +37,7 @@ impl<L: ProvingLayer + TopLayer + Layer> KnowledgeBase<L> {
     pub fn audit_consistency(
         &self,
         focus: &[SentenceId],
-        opts: L::Opts,
+        opts: &L::Opts,
         limit: usize,
     ) -> ProverResult {
         self.audit_with(&self.layer, focus, opts, limit)
@@ -44,7 +46,7 @@ impl<L: ProvingLayer + TopLayer + Layer> KnowledgeBase<L> {
     /// Single-contradiction satisfiability check (`limit = 1`) over the whole
     /// base plus optional session support carried by `opts`.
     pub fn check_satisfiable(&self, opts: L::Opts) -> ProverResult {
-        self.audit_consistency(&[], opts, 1)
+        self.audit_consistency(&[], &opts, 1)
     }
 
     /// [`audit_sampled_with`](KnowledgeBase::audit_sampled_with) on the top
@@ -69,97 +71,123 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
         &self,
         prover: &P,
         tc: TestCase,
-        session: Option<&str>,
         opts: &P::Opts,
     ) -> ProverResult {
         with_guard!(self);
         self.debug(format!("ask: query={}", tc.query_kif().unwrap_or_default()));
 
-        let session = session.map_or_else(
-            || format!("{:x}", crate::clock::epoch_nanos()),
-            |s| s.to_string(),
-        );
-
-        let Some(query) = tc.query else {
-            return ProverResult::default();
-        };
+        // No conjecture: an axioms-only problem asks whether its hypotheses
+        // are consistent with the KB (the TPTP reading), answered by a
+        // focused audit below. With nothing at all there is no question, and
+        // an empty audit focus would mean the whole base.
+        // The `.tq` / TPTP parsers wrap the conjecture in `Annotated`; the
+        // conjecture normalizer interns the bare formula (a negated
+        // conjecture's `not` is already baked in by `renegate`).
+        let query = tc.query.map(|q| q.formula().clone());
+        if query.is_none() && tc.axioms.is_empty() {
+            return ProverResult {
+                status: ProverStatus::InputError,
+                raw_output: "test case has neither a conjecture nor hypotheses".into(),
+                ..Default::default()
+            };
+        }
+        let staged = self.stage_hypotheses(&tc.file_name, tc.axioms, opts.session());
         // Hypothesis-staging failures must not stay silent: a hypothesis
         // that never reached the session could be the one that makes the set
         // unsatisfiable, so its loss poisons any confident
         // Disproved/Satisfiable verdict (withheld after the prove below).
         // Assembly losses recorded by the parser (`unaccounted_inputs`)
         // ride the same gate.
-        let mut input_failures = tc.unaccounted_inputs;
-        // Mirror of the staged source below, kept for the rollback: the
-        // source cache reconciles per source name, so the truncate must
-        // target EXACTLY the source the hypotheses were ingested under —
-        // truncating anything else removes nothing and the hypotheses
-        // leak into the store for every later ask.
-        let staged: Option<SourceFile> = (!tc.axioms.is_empty()).then(|| SourceFile {
-            parser: Parser::Kif { options: None },
-            name: tc.file_name.clone(),
-            path: tc.file_name.clone().into(),
-            origin: crate::FileOrigin::Local(crate::types::LocalProvenance::UNKNOWN),
-            contents: String::new(),
-            prebuilt: None,
-        });
-        if !tc.axioms.is_empty() {
-            let p = tc.file_name.clone().into();
-            let outcome = self.ingest_source(
-                SourceFile {
-                    parser: Parser::Kif { options: None },
-                    name: tc.file_name,
-                    path: p,
-                    origin: crate::FileOrigin::Local(crate::types::LocalProvenance::UNKNOWN),
-                    contents: String::new(),
-                    prebuilt: Some(tc.axioms),
-                },
-                &session,
-                true,
-            );
-            input_failures += outcome.errors.len();
-        }
+        let input_failures = tc.unaccounted_inputs + staged.errors.len();
 
-        let query_tag = crate::kb::session_tags::SESSION_QUERY;
-
-        // Scope the prover to the same session the support was staged under, so
-        // the engine force-includes those hypotheses.  `session` is the single
-        // source of truth (a caller-set `opts.session` would otherwise diverge
-        // from where `tc.axioms` just landed).
-        let opts = {
-            let mut o = opts.clone();
-            o.set_session(Some(session.clone()));
-            o
-        };
+        // Scope the prover to the session the hypotheses were staged under,
+        // so the engine force-includes them.
+        let mut opts = opts.clone();
+        opts.set_session(staged.session.clone());
 
         // The layer's `prove` warms up, prepares the conjecture (its own
         // intern + rollback via `cleanup`), runs the shared scaling loop, and
         // returns.  `ProveCtx` carries this KB's progress sink down to it.
         let ctx = self.prove_ctx();
-        let mut result = prover.prove(vec![query], &opts, &ctx);
+        let mut result = match query {
+            Some(query) => prover.prove(vec![query], &opts, &ctx),
+            None => {
+                let focus = staged
+                    .key
+                    .as_deref()
+                    .map(|key| self.layer.semantic().syntactic.file_root_sids(key))
+                    .unwrap_or_default();
+                if focus.is_empty() {
+                    ProverResult {
+                        status: ProverStatus::InputError,
+                        raw_output: "no hypothesis reached the session to audit".into(),
+                        ..Default::default()
+                    }
+                } else {
+                    prover.audit_consistency(&focus, &opts, 1, &ctx)
+                }
+            }
+        };
         // Input-completeness gate: staged-hypothesis / assembly losses make
         // a confident "no" (Disproved/Satisfiable) unsound — demote it to
         // Unknown/GaveUp with a loud reason.  Proved verdicts stand.
         result.withhold_countermodel(input_failures, "hypothesis staging / test-case assembly");
 
-        // Roll back any session-scoped axioms staged for this ask.  The
-        // '__query__' truncate covers the external layer's conjecture tag
-        // (usually already cleaned by its own `cleanup` — harmless no-op);
-        // the staged HYPOTHESES live under `tc.file_name` and need their
-        // own truncate, or they persist in the store and feed every later
-        // ask's session support and every whole-store scan.
-        profile_call!(self, "ask.rollback", {
-            let _ = self.ingest_source(
-                SourceFile::truncate(PathBuf::from(query_tag)),
-                &session,
-                true,
-            );
-            if let Some(src) = staged {
-                let _ = self.ingest_source(src, &session, true);
-            }
-        });
-
+        profile_call!(self, "ask.rollback", self.unstage_hypotheses(staged));
         result
+    }
+
+    /// Stage a test case's hypotheses into `session` (a fresh one when
+    /// `None`) under the source `file_name` they came from, so proof steps
+    /// still cite it.  Without hypotheses nothing is staged and the
+    /// session is passed through.
+    pub(super) fn stage_hypotheses(
+        &self,
+        file_name: &str,
+        mut axioms: Vec<crate::AstNode>,
+        session: Option<&str>,
+    ) -> StagedHypotheses {
+        if axioms.is_empty() {
+            return StagedHypotheses {
+                session: session.map(str::to_string),
+                key: None,
+                errors: Vec::new(),
+            };
+        }
+        let session = session.map_or_else(
+            || self.layer.semantic().syntactic.unique_source_key("ask"),
+            str::to_string,
+        );
+        let key = file_name.to_string();
+        for ast in &mut axioms {
+            ast.attribute_to(&key);
+        }
+        let outcome = self.ingest_source(
+            SourceFile {
+                parser: Parser::Kif { options: None },
+                name: key.clone(),
+                path: PathBuf::from(&key),
+                origin: crate::FileOrigin::Local(crate::types::LocalProvenance::UNKNOWN),
+                contents: String::new(),
+                prebuilt: Some(axioms),
+            },
+            &session,
+            true,
+        );
+        StagedHypotheses {
+            errors: outcome.errors,
+            session: Some(session),
+            key: Some(key),
+        }
+    }
+
+    /// Roll back [`stage_hypotheses`](Self::stage_hypotheses): re-ingest its
+    /// source key empty, so the hypotheses do not leak into later asks or
+    /// whole-store scans.
+    pub(super) fn unstage_hypotheses(&self, staged: StagedHypotheses) {
+        if let (Some(key), Some(session)) = (staged.key, staged.session) {
+            let _ = self.ingest_source(SourceFile::truncate(PathBuf::from(key)), &session, true);
+        }
     }
 
     /// [`audit_consistency`](KnowledgeBase::audit_consistency) with `prover`
@@ -168,10 +196,10 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
         &self,
         prover: &P,
         focus: &[SentenceId],
-        opts: P::Opts,
+        opts: &P::Opts,
         limit: usize,
     ) -> ProverResult {
-        prover.audit_consistency(focus, &opts, limit, &self.prove_ctx())
+        prover.audit_consistency(focus, opts, limit, &self.prove_ctx())
     }
 
     /// The sweep a sampled audit walks: every promoted axiom (or only
@@ -226,7 +254,7 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
                 break;
             }
             let started = crate::clock::Instant::now();
-            let mut r = self.audit_with(prover, focus, opts.clone(), limit - proofs.len());
+            let mut r = self.audit_with(prover, focus, opts, limit - proofs.len());
             inconsistent |= r.status == ProverStatus::Inconsistent;
             let mut found = std::mem::take(&mut r.contradiction_proofs);
             if found.is_empty() && !r.proof_kif.is_empty() {
@@ -270,6 +298,17 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
         };
         out
     }
+}
+
+/// Hypotheses [`KnowledgeBase::stage_hypotheses`] staged for one call.
+pub(super) struct StagedHypotheses {
+    /// The session the prover reasons in: the caller's, a fresh one holding
+    /// the hypotheses, or `None` when there was neither.
+    pub(super) session: Option<String>,
+    /// The source key the hypotheses were ingested under, if any.
+    key: Option<String>,
+    /// Diagnostics of hypotheses that failed to stage.
+    pub(super) errors: Vec<crate::Diagnostic>,
 }
 
 /// Which slice of the sweep a sampled audit checks (see
@@ -319,59 +358,65 @@ fn splitmix64(mut x: u64) -> u64 {
     x ^ (x >> 31)
 }
 
-/// Parse a query in `dialect` into the bare conjecture formulas a prover
-/// takes.  `Err` carries the `InputError` result for a malformed query,
-/// which must leave no residue (the parse never reached any store).
-fn parse_query(query: &str, dialect: Parser) -> Result<Vec<crate::AstNode>, Box<ProverResult>> {
-    // A query is never an axiom-library ingest, so a TPTP-framed query
-    // must keep `conjecture`-role formulas
-    let dialect = match dialect {
-        Parser::Tptp { options } => {
-            let mut options = options.unwrap_or_default();
-            options.keep_conjectures = true;
-            Parser::Tptp {
-                options: Some(options),
-            }
+/// The single conjecture a parsed query asks: its one formula, or the
+/// conjunction of several.
+fn conjoin(mut asts: Vec<crate::AstNode>) -> Option<crate::AstNode> {
+    match asts.len() {
+        0 => None,
+        1 => asts.pop(),
+        _ => {
+            let span = asts[0].span().clone();
+            let and = crate::AstNode::Operator {
+                op: crate::OpKind::And,
+                span: span.clone(),
+            };
+            Some(crate::AstNode::List {
+                elements: std::iter::once(and).chain(asts).collect(),
+                span,
+            })
         }
-        other => other,
-    };
-    let doc = crate::parse_document("ask_query", query.to_string(), dialect);
-    if doc.has_errors() {
-        return Err(Box::new(ProverResult {
-            status: ProverStatus::InputError,
-            raw_output: format!(
-                "query parse error ({} diagnostic(s))",
-                doc.parse_errors.len()
-            ),
-            ..Default::default()
-        }));
     }
-    // `as_stmt()` keeps a TPTP `fof(name, role, formula)`'s `Annotated`
-    // framing; the provers (like every KIF-parsed query, which never
-    // carries that framing) want the bare formula.
-    Ok(doc
-        .ast
-        .into_iter()
-        .filter_map(|d| d.as_stmt().map(|n| n.formula().clone()))
-        .collect())
+}
+
+/// Parse an ad hoc `query` in `dialect` into the [`TestCase`] `ask` takes.
+/// A TPTP problem is partitioned by role (`conjecture` -> query,
+/// `hypothesis` and background `axiom`s -> hypotheses); any other dialect
+/// carries no roles, so its formulas are conjoined into one conjecture.
+/// `Err` carries the `InputError` result for a malformed or empty query.
+fn query_test_case(query: &str, dialect: Parser) -> Result<TestCase, Box<ProverResult>> {
+    let input_error = |raw_output: String| {
+        Box::new(ProverResult {
+            status: ProverStatus::InputError,
+            raw_output,
+            ..Default::default()
+        })
+    };
+    match dialect {
+        Parser::Tptp { options } => crate::parse::tptp::test_case::parse_tptp_test_with(
+            query,
+            "ask_query",
+            options.unwrap_or_default(),
+        )
+        .map_err(|d| input_error(format!("query parse error: {}", d.message))),
+        other => match crate::prover::Conjecture::parse(query, other).map(conjoin)? {
+            Some(ast) => Ok(TestCase::conjecture("ask_query", ast)),
+            None => Err(input_error("query parsed to no formula".into())),
+        },
+    }
 }
 
 /// The native prover's query entry point, shared by the bare native stack
 /// and the native layer nested under an external one.
 #[cfg(feature = "native-prover")]
-fn native_ask_query_dialect<S: TopLayer + 'static>(
-    layer: &crate::prover::saturate::ProverLayer<S>,
-    ctx: &crate::ProveCtx,
+fn native_ask_query_dialect<L: TopLayer + Layer, S: TopLayer + 'static>(
+    kb: &KnowledgeBase<L>,
+    prover: &crate::prover::saturate::ProverLayer<S>,
     query: &str,
-    session: Option<&str>,
-    sine: SineParams,
-    mut opts: crate::NativeOpts,
+    opts: &crate::NativeOpts,
     dialect: Parser,
 ) -> ProverResult {
-    opts.selection = sine;
-    opts.session = session.map(|s| s.to_string());
-    match parse_query(query, dialect) {
-        Ok(asts) => layer.prove_native(asts, opts, ctx),
+    match query_test_case(query, dialect) {
+        Ok(tc) => kb.ask_with(prover, tc, opts),
         Err(r) => *r,
     }
 }
@@ -380,29 +425,19 @@ fn native_ask_query_dialect<S: TopLayer + 'static>(
 impl<T: crate::trans::HasTranslation + 'static>
     KnowledgeBase<crate::prover::ExternalProverLayer<T>>
 {
-    /// Ask the external prover to discharge `query` (a single conjecture in
-    /// `dialect`) under `opts`, with optional in-memory `session` support --
-    /// the external counterpart of the native
-    /// [`ask_query_dialect`](KnowledgeBase::ask_query_dialect).
+    /// Ask the external prover to discharge `query` (parsed in `dialect`,
+    /// see [`query_test_case`]) under `opts`, whose `session` names optional
+    /// in-memory support and whose `selection` seeds axiom selection.
     pub fn ask_query_dialect(
         &self,
         query: &str,
-        session: Option<&str>,
         opts: &crate::ExternalOpts,
         dialect: Parser,
     ) -> ProverResult {
-        let ast = match parse_query(query, dialect) {
-            Ok(mut asts) if !asts.is_empty() => asts.swap_remove(0),
-            Ok(_) => {
-                return ProverResult {
-                    status: ProverStatus::InputError,
-                    raw_output: "query parsed to no formula".into(),
-                    ..Default::default()
-                }
-            }
-            Err(r) => return *r,
-        };
-        self.ask(TestCase::conjecture("ask_query", ast), session, opts)
+        match query_test_case(query, dialect) {
+            Ok(tc) => self.ask(tc, opts),
+            Err(r) => *r,
+        }
     }
 }
 
@@ -410,8 +445,10 @@ impl<T: crate::trans::HasTranslation + 'static>
 impl<S: crate::trans::HasTranslation + 'static>
     KnowledgeBase<crate::prover::ExternalProverLayer<crate::prover::saturate::ProverLayer<S>>>
 {
-    /// The native prover nested under this KB's external layer.
-    fn native(&self) -> &crate::prover::saturate::ProverLayer<S> {
+    /// The native prover nested under this KB's external layer, for the
+    /// `*_with` entry points ([`audit_with`](KnowledgeBase::audit_with),
+    /// [`audit_sampled_with`](KnowledgeBase::audit_sampled_with)).
+    pub fn native(&self) -> &crate::prover::saturate::ProverLayer<S> {
         self.layer.inner_layer()
     }
 
@@ -420,66 +457,30 @@ impl<S: crate::trans::HasTranslation + 'static>
     pub fn ask_query_dialect_native(
         &self,
         query: &str,
-        session: Option<&str>,
-        sine: SineParams,
-        opts: crate::NativeOpts,
+        opts: &crate::NativeOpts,
         dialect: Parser,
     ) -> ProverResult {
-        native_ask_query_dialect(
-            self.native(),
-            &self.prove_ctx(),
-            query,
-            session,
-            sine,
-            opts,
-            dialect,
-        )
-    }
-
-    /// [`audit_consistency`](KnowledgeBase::audit_consistency) on the nested
-    /// native prover instead of the external backend.
-    pub fn audit_consistency_native(
-        &self,
-        focus: &[SentenceId],
-        opts: crate::NativeOpts,
-        limit: usize,
-    ) -> ProverResult {
-        self.audit_with(self.native(), focus, opts, limit)
-    }
-
-    /// [`audit_sampled_with`](KnowledgeBase::audit_sampled_with) on the
-    /// nested native prover instead of the external backend.
-    pub fn audit_sampled_native(
-        &self,
-        order: &[SentenceId],
-        sample: AuditSample,
-        opts: &crate::NativeOpts,
-    ) -> SampledAudit {
-        self.audit_sampled_with(self.native(), order, sample, opts)
+        native_ask_query_dialect(self, self.native(), query, opts, dialect)
     }
 }
 
 #[cfg(feature = "native-prover")]
 impl<S: TopLayer + 'static> KnowledgeBase<crate::prover::saturate::ProverLayer<S>> {
-    /// Ask the native saturation prover to discharge `query_kif` (a single KIF
-    /// conjecture) under SInE selection `sine` and optional in-memory `session`
-    /// support.  Convenience wrapper: parses the query, folds `sine` / `session`
-    /// into the consolidated [`NativeOpts`](crate::NativeOpts), and runs the
-    /// `&self` native prove driver.
+    /// [`ask_query_dialect`](Self::ask_query_dialect) on a SUO-KIF
+    /// conjecture, with `session` and `sine` folded into `opts`.
     pub fn ask_query(
         &self,
         query_kif: &str,
         session: Option<&str>,
-        sine: SineParams,
+        sine: crate::SineParams,
         opts: crate::NativeOpts,
     ) -> ProverResult {
-        self.ask_query_dialect(
-            query_kif,
-            session,
-            sine,
-            opts,
-            Parser::Kif { options: None },
-        )
+        let opts = crate::NativeOpts {
+            session: session.map(str::to_string),
+            selection: sine,
+            ..opts
+        };
+        self.ask_query_dialect(query_kif, &opts, Parser::Kif { options: None })
     }
 
     /// Same as [`ask_query`](Self::ask_query) but parses `query` in `dialect`
@@ -487,20 +488,10 @@ impl<S: TopLayer + 'static> KnowledgeBase<crate::prover::saturate::ProverLayer<S
     pub fn ask_query_dialect(
         &self,
         query: &str,
-        session: Option<&str>,
-        sine: SineParams,
-        opts: crate::NativeOpts,
+        opts: &crate::NativeOpts,
         dialect: Parser,
     ) -> ProverResult {
-        native_ask_query_dialect(
-            &self.layer,
-            &self.prove_ctx(),
-            query,
-            session,
-            sine,
-            opts,
-            dialect,
-        )
+        native_ask_query_dialect(self, &self.layer, query, opts, dialect)
     }
 }
 
@@ -525,17 +516,69 @@ mod dialect_tests {
         }
     }
 
+    fn audit() -> NativeOpts {
+        NativeOpts {
+            session: Some("audit".into()),
+            ..fast()
+        }
+    }
+
     #[test]
     fn ask_query_dialect_proves_a_tptp_conjecture() {
         let kb = kb_native("(subclass Dog Mammal)\n(subclass Mammal Animal)\n");
         let res = kb.ask_query_dialect(
             "fof(g, conjecture, subclass('Dog', 'Animal')).",
-            None,
-            SineParams::default(),
-            fast(),
+            &fast(),
             Parser::Tptp { options: None },
         );
         assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
+    }
+
+    #[test]
+    fn ask_query_dialect_stages_tptp_axioms_and_hypotheses_as_support() {
+        let kb = kb_native("(subclass Mammal Animal)\n");
+        let unsupported = kb.ask_query_dialect(
+            "fof(g, conjecture, subclass('Dog', 'Animal')).",
+            &fast(),
+            Parser::Tptp { options: None },
+        );
+        assert_ne!(unsupported.status, ProverStatus::Proved);
+        for role in ["axiom", "hypothesis"] {
+            let res = kb.ask_query_dialect(
+                &format!(
+                    "fof(a, {role}, subclass('Dog', 'Mammal')).\n\
+                     fof(g, conjecture, subclass('Dog', 'Animal'))."
+                ),
+                &fast(),
+                Parser::Tptp { options: None },
+            );
+            assert_eq!(
+                res.status,
+                ProverStatus::Proved,
+                "{role}: {}",
+                res.raw_output
+            );
+        }
+        assert!(
+            kb.syntactic().file_root_sids("ask_query").is_empty(),
+            "staged TPTP support must roll back"
+        );
+    }
+
+    #[test]
+    fn ask_query_dialect_audits_a_tptp_problem_without_a_conjecture() {
+        let kb = kb_native("(=> (p ?X) (q ?X))\n(p a)\n");
+        let res = kb.ask_query_dialect(
+            "fof(h, axiom, ~q(a)).",
+            &audit(),
+            Parser::Tptp { options: None },
+        );
+        assert_eq!(
+            res.status,
+            ProverStatus::Inconsistent,
+            "raw: {}",
+            res.raw_output
+        );
     }
 
     #[test]
@@ -543,12 +586,66 @@ mod dialect_tests {
         let kb = kb_native("(subclass Dog Mammal)\n");
         let res = kb.ask_query_dialect(
             "fof(g, conjecture, subclass('Dog'", // missing close
-            None,
-            SineParams::default(),
-            fast(),
+            &fast(),
             Parser::Tptp { options: None },
         );
         assert_eq!(res.status, ProverStatus::InputError);
+    }
+
+    /// A test case carrying only hypotheses, parsed from KIF.
+    fn hypotheses_only(kif: &str) -> crate::TestCase {
+        let doc = crate::parse_document("hyp.kif", kif.to_string(), Parser::Kif { options: None });
+        let axioms: Vec<crate::AstNode> = doc
+            .ast
+            .into_iter()
+            .filter_map(|d| d.as_stmt().cloned())
+            .collect();
+        let mut tc = crate::TestCase::conjecture("hyp.kif", axioms[0].clone());
+        tc.query = None;
+        tc.axioms = axioms;
+        tc
+    }
+
+    #[test]
+    fn ask_without_conjecture_audits_consistent_hypotheses() {
+        let kb = kb_native("(=> (p ?X) (q ?X))\n(p a)\n");
+        let res = kb.ask(hypotheses_only("(r b)"), &audit());
+        assert_eq!(
+            res.status,
+            ProverStatus::Consistent,
+            "raw: {}",
+            res.raw_output
+        );
+    }
+
+    #[test]
+    fn ask_without_conjecture_finds_hypotheses_inconsistent_with_kb() {
+        let kb = kb_native("(=> (p ?X) (q ?X))\n(p a)\n");
+        let res = kb.ask(hypotheses_only("(not (q a))"), &audit());
+        assert_eq!(
+            res.status,
+            ProverStatus::Inconsistent,
+            "raw: {}",
+            res.raw_output
+        );
+    }
+
+    #[test]
+    fn ask_with_neither_conjecture_nor_hypotheses_is_an_input_error() {
+        let kb = kb_native("(p a)\n");
+        let mut tc = hypotheses_only("(r b)");
+        tc.axioms.clear();
+        let res = kb.ask(tc, &fast());
+        assert_eq!(res.status, ProverStatus::InputError);
+    }
+
+    #[test]
+    fn audit_by_ask_rolls_back_its_hypotheses() {
+        let kb = kb_native("(=> (p ?X) (q ?X))\n(p a)\n");
+        let roots_before = kb.syntactic().root_sids().len();
+        let _ = kb.ask(hypotheses_only("(not (q a))"), &audit());
+        assert_eq!(kb.syntactic().root_sids().len(), roots_before);
+        assert!(kb.session_sids("audit").is_empty());
     }
 
     #[test]
@@ -668,6 +765,7 @@ mod custom_runner_tests {
     use std::sync::{Arc, Mutex};
 
     use super::KnowledgeBase;
+    use crate::layer::TopLayer;
     use crate::prover::vampire_proof::result_from_transcript;
     use crate::prover::{
         ExternalOpts, Prover, ProverOpts, ProverResult, ProverRunner, ProverStatus,
@@ -731,11 +829,7 @@ fof(f4, plain, $false, inference(resolution, [], [f1, f3])).\n\
             seen: Mutex::new(Vec::new()),
         });
         let kb = kb_with(runner.clone());
-        let res = kb.ask(
-            query("(instance Rex Animal)"),
-            None,
-            &ExternalOpts::default(),
-        );
+        let res = kb.ask(query("(instance Rex Animal)"), &ExternalOpts::default());
         assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
         assert_eq!(res.proof_kif.len(), 4, "proof steps: {:?}", res.proof_kif);
 
@@ -747,6 +841,84 @@ fof(f4, plain, $false, inference(resolution, [], [f1, f3])).\n\
         assert!(
             tptp.contains("s__Rex") && tptp.contains("s__Animal"),
             "conjecture symbols missing in:\n{tptp}"
+        );
+    }
+
+    fn kif(text: &str) -> Vec<crate::AstNode> {
+        parse_document("hyp.kif", text.to_string(), Parser::Kif { options: None })
+            .ast
+            .iter()
+            .filter_map(|d| d.as_stmt().cloned())
+            .collect()
+    }
+
+    #[test]
+    fn two_live_asks_of_one_conjecture_hold_separate_query_tags() {
+        use crate::prover::ProvingLayer;
+        let kb = kb_with(Arc::new(Canned {
+            transcript: THEOREM,
+            seen: Mutex::new(Vec::new()),
+        }));
+        let first = kb
+            .layer
+            .prepare(kif("(instance Rex Animal)"))
+            .expect("first");
+        let second = kb
+            .layer
+            .prepare(kif("(instance Rex Animal)"))
+            .expect("second");
+        let sid = first.sents[0].1;
+        assert_eq!(second.sents[0].1, sid, "one content-addressed sentence");
+        let stored = |kb: &KnowledgeBase<crate::prover::ExternalProverLayer>| {
+            kb.layer.semantic().syntactic.sentence(sid).is_some()
+        };
+
+        kb.layer.cleanup(first);
+        assert!(stored(&kb), "the other ask's conjecture survives");
+        kb.layer.cleanup(second);
+        assert!(!stored(&kb), "the last cleanup removes it");
+    }
+
+    #[test]
+    fn an_ask_leaves_neither_its_conjecture_nor_its_hypotheses_behind() {
+        let kb = kb_with(Arc::new(Canned {
+            transcript: THEOREM,
+            seen: Mutex::new(Vec::new()),
+        }));
+        let roots = |kb: &KnowledgeBase<crate::prover::ExternalProverLayer>| {
+            kb.layer.semantic().syntactic.root_sids()
+        };
+        let before = roots(&kb);
+        let tc = TestCase {
+            axioms: kif("(instance Fido Dog)"),
+            ..query("(instance Fido Animal)")
+        };
+        let res = kb.ask(tc, &ExternalOpts::default());
+        assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
+        assert_eq!(roots(&kb), before);
+    }
+
+    #[test]
+    fn a_multi_formula_query_asks_their_conjunction() {
+        let runner = Arc::new(Canned {
+            transcript: THEOREM,
+            seen: Mutex::new(Vec::new()),
+        });
+        let kb = kb_with(runner.clone());
+        let res = kb.ask_query_dialect(
+            "(instance Rex Animal)\n(subclass Dog Animal)",
+            &ExternalOpts::default(),
+            Parser::Kif { options: None },
+        );
+        assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
+        let seen = runner.seen.lock().unwrap();
+        let conjecture = seen[0]
+            .lines()
+            .find(|l| l.contains("conjecture"))
+            .expect("a conjecture line");
+        assert!(
+            conjecture.contains("s__Rex") && conjecture.contains("s__Dog"),
+            "both formulas in the conjecture: {conjecture}"
         );
     }
 
@@ -776,7 +948,7 @@ fof(f4, plain, $false, inference(resolution, [], [f1, f3])).\n\
             selection: crate::SineParams::strict(),
             ..ExternalOpts::default()
         };
-        let res = kb.audit_consistency(&rex, opts, 1);
+        let res = kb.audit_consistency(&rex, &opts, 1);
         assert_eq!(
             res.status,
             ProverStatus::Consistent,
@@ -801,11 +973,7 @@ fof(f4, plain, $false, inference(resolution, [], [f1, f3])).\n\
             seen: Mutex::new(Vec::new()),
         });
         let kb = kb_with(runner.clone());
-        let res = kb.ask(
-            query("(instance Rex Animal)"),
-            None,
-            &ExternalOpts::default(),
-        );
+        let res = kb.ask(query("(instance Rex Animal)"), &ExternalOpts::default());
         // A saturated verdict on a three-axiom KB has nowhere to widen to,
         // so the loop's classification is what reaches the caller.
         assert_eq!(
@@ -829,7 +997,7 @@ fof(f4, plain, $false, inference(resolution, [], [f1, f3])).\n\
             mode: crate::TptpLang::Thf,
             ..ExternalOpts::default()
         };
-        let res = kb.ask(query("(instance Rex Animal)"), None, &opts);
+        let res = kb.ask(query("(instance Rex Animal)"), &opts);
         assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
         let seen = runner.seen.lock().unwrap();
         let tptp = &seen[0];
@@ -863,6 +1031,35 @@ fof(f4, plain, $false, inference(resolution, [], [f1, f3])).\n\
         }
     }
 
+    #[cfg(feature = "snapshot")]
+    #[test]
+    fn restore_bytes_keeps_the_configured_runner_and_cache_config() {
+        let runner = Arc::new(Structured(Mutex::new(Vec::new())));
+        let mut kb = KnowledgeBase::new_external(Prover::Custom(runner.clone()));
+        let r = kb.reload_kif(
+            "(subclass Dog Mammal)\n(instance Rex Dog)\n",
+            &std::path::PathBuf::from("test.kif"),
+            "test.kif",
+        );
+        assert!(r.ok);
+        kb.make_session_axiomatic("test.kif").expect("promote");
+        kb.cache_config().set_max_threads(5);
+
+        let bytes = kb.snapshot_bytes().expect("snapshot");
+        kb.restore_bytes(&bytes).expect("restore");
+        assert_eq!(kb.cache_config().max_threads(), 5);
+        assert!(kb.symbol_id("Rex").is_some(), "contents thawed");
+
+        runner.0.lock().unwrap().clear();
+        let res = kb.ask(query("(instance Rex Mammal)"), &ExternalOpts::default());
+        assert_eq!(res.status, ProverStatus::Proved, "{}", res.raw_output);
+        assert_eq!(
+            *runner.0.lock().unwrap(),
+            ["fo"],
+            "the configured runner, not the default one, answered"
+        );
+    }
+
     #[test]
     fn the_driver_hands_the_runner_the_representation_mode_selects() {
         let runner = Arc::new(Structured(Mutex::new(Vec::new())));
@@ -884,7 +1081,7 @@ fof(f4, plain, $false, inference(resolution, [], [f1, f3])).\n\
                 mode,
                 ..ExternalOpts::default()
             };
-            let res = kb.ask(query("(instance Rex Mammal)"), None, &opts);
+            let res = kb.ask(query("(instance Rex Mammal)"), &opts);
             assert_eq!(
                 res.status,
                 ProverStatus::Proved,
@@ -915,7 +1112,7 @@ mod nested_stack_tests {
         ExternalOpts, ExternalProverLayer, Prover, ProverLayer, ProverOpts, ProverResult,
         ProverRunner, ProverStatus,
     };
-    use crate::{NativeOpts, Parser, SineParams, TranslationLayer};
+    use crate::{NativeOpts, Parser, TranslationLayer};
 
     struct Canned(Mutex<Vec<String>>);
 
@@ -965,7 +1162,6 @@ fof(f4, plain, $false, inference(resolution, [], [f1, f3])).\n\
 
         let ext = kb.ask_query_dialect(
             "(instance Rex Animal)",
-            None,
             &ExternalOpts::default(),
             Parser::Kif { options: None },
         );
@@ -974,9 +1170,7 @@ fof(f4, plain, $false, inference(resolution, [], [f1, f3])).\n\
 
         let nat = kb.ask_query_dialect_native(
             "(instance Rex Animal)",
-            None,
-            SineParams::default(),
-            fast(),
+            &fast(),
             Parser::Kif { options: None },
         );
         assert_eq!(nat.status, ProverStatus::Proved, "raw: {}", nat.raw_output);
@@ -985,9 +1179,7 @@ fof(f4, plain, $false, inference(resolution, [], [f1, f3])).\n\
 
         let nat = kb.ask_query_dialect_native(
             "(instance Rex Plant)",
-            None,
-            SineParams::default(),
-            fast(),
+            &fast(),
             Parser::Kif { options: None },
         );
         assert_ne!(nat.status, ProverStatus::Proved, "raw: {}", nat.raw_output);
@@ -1003,9 +1195,10 @@ fof(f4, plain, $false, inference(resolution, [], [f1, f3])).\n\
         assert!(t.ok, "tell failed: {:?}", t.diagnostics);
         let nat = kb.ask_query_dialect_native(
             "(instance Fido Animal)",
-            Some("s1"),
-            SineParams::default(),
-            fast(),
+            &NativeOpts {
+                session: Some("s1".into()),
+                ..fast()
+            },
             Parser::Kif { options: None },
         );
         assert_eq!(nat.status, ProverStatus::Proved, "raw: {}", nat.raw_output);
@@ -1015,7 +1208,7 @@ fof(f4, plain, $false, inference(resolution, [], [f1, f3])).\n\
     fn the_native_audit_runs_on_the_nested_prover() {
         let runner = Arc::new(Canned(Mutex::new(Vec::new())));
         let kb = kb_both(runner.clone());
-        let res = kb.audit_consistency_native(&[], fast(), 1);
+        let res = kb.audit_with(kb.native(), &[], &fast(), 1);
         assert_eq!(
             res.status,
             ProverStatus::Consistent,
@@ -1030,7 +1223,6 @@ fof(f4, plain, $false, inference(resolution, [], [f1, f3])).\n\
         let kb = kb_both(Arc::new(Canned(Mutex::new(Vec::new()))));
         let res = kb.ask_query_dialect(
             "(instance Rex",
-            None,
             &ExternalOpts::default(),
             Parser::Kif { options: None },
         );

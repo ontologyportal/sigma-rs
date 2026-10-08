@@ -82,6 +82,7 @@ where
             SearchSource::TermFormat => "term  ",
             SearchSource::Documentation => "doc   ",
             SearchSource::Format => "format",
+            SearchSource::Name => "name  ",
             SearchSource::WordNet => "wn    ",
         };
 

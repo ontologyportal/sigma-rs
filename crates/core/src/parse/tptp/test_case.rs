@@ -66,15 +66,25 @@ pub fn parse_tptp_test_content(
     file_name: &str,
     remap: bool,
 ) -> DiagResult<TestCase> {
-    let base = if remap {
+    let options = if remap {
         TptpParseOptions::default()
     } else {
         TptpParseOptions::none()
     };
+    parse_tptp_test_with(content, file_name, options)
+}
+
+/// [`parse_tptp_test_content`] with explicit parse `options` (conjectures
+/// are always kept, whatever `options` says).
+pub fn parse_tptp_test_with(
+    content: &str,
+    file_name: &str,
+    options: TptpParseOptions,
+) -> DiagResult<TestCase> {
     let probe = Parser::Tptp {
         options: Some(TptpParseOptions {
             keep_conjectures: true,
-            ..base
+            ..options
         }),
     };
     let (items, mut errors) = probe.parse(content, file_name);

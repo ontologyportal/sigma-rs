@@ -12,7 +12,7 @@
 //!      `--batch` per subproblem, one subproblem per call so each prints a
 //!      progress line.
 //!   4. Render the contradictions, citing each axiom-role step back to its
-//!      `file:line` via `build_axiom_source_index`, and print the position to
+//!      `file:line` via `sentence_locations`, and print the position to
 //!      resume from.
 //!
 //! Requires the `ask` feature.
@@ -96,7 +96,7 @@ where
             );
             let mut opts = <L::Opts as ProverOptsFor>::from_manager(manager);
             opts.set_session(Some(sess.clone()));
-            let mut result = session.kb().audit_consistency(&sids, opts, manager.limit);
+            let mut result = session.kb().audit_consistency(&sids, &opts, manager.limit);
             session.kb_mut().flush_session(&sess);
             log::info!("{}", result.raw_output);
             if result.contradiction_proofs.is_empty() && !result.proof_kif.is_empty() {
@@ -129,7 +129,7 @@ where
     };
     let n = proofs.len();
     if sweep.json {
-        let src_idx = session.kb().build_axiom_source_index();
+        let locations = sigmakee_rs_sdk::DiagnosticSource::sentence_locations(session.kb());
         let contradictions: Vec<serde_json::Value> = proofs
             .iter()
             .map(|steps| {
@@ -138,7 +138,7 @@ where
                     .iter()
                     .filter_map(|st| {
                         let sid = st.source_sid.filter(|sid| seen.insert(*sid))?;
-                        let a = src_idx.lookup_by_sid(sid);
+                        let a = locations.get(&sid);
                         Some(serde_json::json!({
                             "file": a.map(|a| a.file.clone()),
                             "line": a.map(|a| a.line),
@@ -163,7 +163,7 @@ where
     }
 
     if n > 0 {
-        let src_idx = session.kb().build_axiom_source_index();
+        let locations = sigmakee_rs_sdk::DiagnosticSource::sentence_locations(session.kb());
         let plain =
             crate::style::is_ugly() || !std::io::IsTerminal::is_terminal(&std::io::stdout());
 
@@ -175,7 +175,7 @@ where
                     if !seen.insert(sid) {
                         continue;
                     }
-                    if let Some(a) = src_idx.lookup_by_sid(sid) {
+                    if let Some(a) = locations.get(&sid) {
                         let f = fmt_formula(&st.formula, 6, plain);
                         axioms.push((f, format!("{}:{}", a.file, a.line)));
                     }
@@ -196,7 +196,7 @@ where
             let pages: Vec<String> = proofs
                 .iter()
                 .enumerate()
-                .map(|(i, steps)| render_derivation(i + 1, steps, &src_idx, plain))
+                .map(|(i, steps)| render_derivation(i + 1, steps, &locations, plain))
                 .collect();
             let paged = !plain && page_derivations(&pages).is_ok();
             if !paged {
@@ -245,7 +245,7 @@ where
     );
 
     let opts = <L::Opts as ProverOptsFor>::from_manager(manager);
-    let src_idx = kb.build_axiom_source_index();
+    let locations = sigmakee_rs_sdk::DiagnosticSource::sentence_locations(kb);
     let mut seen: HashSet<Vec<SentenceId>> = HashSet::new();
     let mut proofs: Vec<Vec<KifProofStep>> = Vec::new();
     let (mut problems, mut clean, mut contradictory) = (0usize, 0usize, 0usize);
@@ -269,8 +269,8 @@ where
                 .focus
                 .iter()
                 .map(|sid| {
-                    src_idx
-                        .lookup_by_sid(*sid)
+                    locations
+                        .get(sid)
                         .map_or_else(|| "?".to_string(), |a| format!("{}:{}", a.file, a.line))
                 })
                 .collect();
@@ -426,14 +426,14 @@ fn fmt_formula(f: &sigmakee_rs_sdk::AstNode, indent: usize, plain: bool) -> Stri
 fn render_derivation(
     num: usize,
     steps: &[sigmakee_rs_sdk::KifProofStep],
-    src_idx: &sigmakee_rs_sdk::AxiomSourceIndex,
+    locations: &std::collections::HashMap<sigmakee_rs_sdk::SentenceId, sigmakee_rs_sdk::Span>,
     plain: bool,
 ) -> String {
     let mut s = format!("Contradiction #{num} ({} steps):\n", steps.len());
     for st in steps {
         let trace = st
             .source_sid
-            .and_then(|sid| src_idx.lookup_by_sid(sid))
+            .and_then(|sid| locations.get(&sid))
             .map(|a| format!("   [{}:{}]", a.file, a.line))
             .unwrap_or_default();
         s.push_str(&format!("  {:>3}. [{:<18}]{}\n", st.index, st.rule, trace));

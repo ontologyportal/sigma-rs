@@ -30,7 +30,6 @@ pub(crate) use proof::tstp as tptp_proof;
 // classification + proof-step extraction, no subprocess spawning. See the
 // module doc for how this relates to `external`'s `ask`-gated
 // `VampireRunner`.
-pub mod axiom_source;
 #[cfg(feature = "external-prover")]
 pub mod vampire_proof;
 
@@ -198,16 +197,36 @@ pub trait ProvingLayer: TopLayer {
         } else if let Some(r) = self.try_portfolio(&prepared, total_timeout, opts, ctx) {
             r
         } else {
-            use crate::prover::scale::{drive, ScaleConfig};
-            use crate::syntactic::sine::{
-                scale_factor, scale_max_disproofs, scale_max_time_runs, scale_min_budget,
+            use crate::prover::scale::{
+                adaptive_start_budget, drive, effective_max_time_runs, ScaleConfig,
             };
+            use crate::syntactic::sine::{
+                default_budget, scale_factor, scale_max_disproofs, scale_max_time_runs,
+                scale_min_budget,
+            };
+            // A small indexed universe has no budget search worth running:
+            // start the climb where it can be filled and give the one
+            // attempt that matters the whole slice (see the helpers' docs).
+            let total_axioms = self
+                .semantic()
+                .syntactic
+                .sine_current(|idx| idx.axiom_count());
+            let min_budget = scale_min_budget();
             let cfg = ScaleConfig {
                 factor: scale_factor(),
                 max_disproofs: scale_max_disproofs(),
-                max_time_runs: scale_max_time_runs(),
-                min_budget: scale_min_budget(),
+                max_time_runs: effective_max_time_runs(
+                    scale_max_time_runs(),
+                    total_axioms,
+                    min_budget,
+                ),
+                min_budget,
                 total_timeout,
+            };
+            let requested = selection.auto_budget.unwrap_or_else(default_budget);
+            let selection = SineParams {
+                auto_budget: Some(adaptive_start_budget(requested, total_axioms, &cfg)),
+                ..selection
             };
             drive(selection, cfg, Self::remap, |params, slice| {
                 self.prove_once(&prepared, params, slice, opts, ctx)
@@ -256,6 +275,8 @@ pub trait CommonProverOpts {
     /// force-included hypotheses).  `kb.ask` calls this so the engine reasons in
     /// the same session its conjecture's support was staged under.
     fn set_session(&mut self, session: Option<String>);
+    /// The session whose assertions ride in as hypotheses, if any.
+    fn session(&self) -> Option<&str>;
     /// Reconfigure for a standalone TPTP problem (`.p` / `.tptp`).  The native
     /// backend swaps in its complete-calculus, full-saturation strategy: the
     /// KIF path's set-of-support tiering is structurally unable to prove
@@ -291,6 +312,46 @@ pub struct Conjecture {
 
 #[cfg(any(feature = "external-prover", feature = "native-prover"))]
 impl Conjecture {
+    /// Parse a query in `dialect` into the bare conjecture formulas a prover
+    /// takes.  `Err` carries the `InputError` result for a malformed query,
+    /// which must leave no residue (the parse never reached any store).
+    pub(crate) fn parse(
+        query: &str,
+        dialect: crate::Parser,
+    ) -> Result<Vec<crate::AstNode>, Box<result::ProverResult>> {
+        // A query is never an axiom-library ingest, so a TPTP-framed query
+        // must keep `conjecture`-role formulas
+        let dialect = match dialect {
+            crate::Parser::Tptp { options } => {
+                let mut options = options.unwrap_or_default();
+                options.keep_conjectures = true;
+                crate::Parser::Tptp {
+                    options: Some(options),
+                }
+            }
+            other => other,
+        };
+        let doc = crate::parse_document("ask_query", query.to_string(), dialect);
+        if doc.has_errors() {
+            return Err(Box::new(result::ProverResult {
+                status: ProverStatus::InputError,
+                raw_output: format!(
+                    "query parse error ({} diagnostic(s))",
+                    doc.parse_errors.len()
+                ),
+                ..Default::default()
+            }));
+        }
+        // `as_stmt()` keeps a TPTP `fof(name, role, formula)`'s `Annotated`
+        // framing; the provers (like every KIF-parsed query, which never
+        // carries that framing) want the bare formula.
+        Ok(doc
+            .ast
+            .into_iter()
+            .filter_map(|d| d.as_stmt().map(|n| n.formula().clone()))
+            .collect())
+    }
+
     /// Macro-expand + normalize the raw conjecture ASTs (preserving a leading
     /// `(forall …)` so the refutation negation skolemizes).  The second
     /// return counts input asts whose normalization yielded NOTHING — a
@@ -340,5 +401,42 @@ fn collect_ast_symbols(
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(all(test, any(feature = "external-prover", feature = "native-prover")))]
+mod tests {
+    use super::{Conjecture, ProverStatus};
+    use crate::Parser;
+
+    #[test]
+    fn parse_kif_query_yields_its_formulas() {
+        let asts = Conjecture::parse("(subclass Dog Animal)", Parser::Kif { options: None })
+            .expect("well-formed KIF");
+        assert_eq!(asts.len(), 1);
+    }
+
+    #[test]
+    fn parse_tptp_keeps_the_conjecture_and_strips_its_framing() {
+        let tptp = Conjecture::parse(
+            "fof(g, conjecture, subclass('Dog', 'Animal')).",
+            Parser::Tptp { options: None },
+        )
+        .expect("well-formed TPTP");
+        let kif = Conjecture::parse("(subclass Dog Animal)", Parser::Kif { options: None })
+            .expect("well-formed KIF");
+        assert_eq!(tptp.len(), 1, "the conjecture-role formula is kept");
+        assert_eq!(
+            tptp[0].fingerprint(),
+            kif[0].fingerprint(),
+            "a TPTP query reaches the prover as the same bare formula as KIF"
+        );
+    }
+
+    #[test]
+    fn parse_malformed_query_is_an_input_error() {
+        let err = Conjecture::parse("(subclass Dog", Parser::Kif { options: None })
+            .expect_err("unbalanced parens");
+        assert_eq!(err.status, ProverStatus::InputError);
     }
 }

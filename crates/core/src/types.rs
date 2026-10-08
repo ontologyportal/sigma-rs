@@ -182,6 +182,17 @@ pub struct SourceFile {
 }
 
 impl SourceFile {
+    /// The key the source store tracks this source under: its path, else its
+    /// name, else `inline`.  Re-ingesting a source with the same key replaces
+    /// its previous contents.
+    pub fn key(&self) -> String {
+        match self.path.to_str().unwrap_or("") {
+            "" if self.name.is_empty() => "inline".to_string(),
+            "" => self.name.clone(),
+            path => path.to_string(),
+        }
+    }
+
     /// Builds a KIF source file from a path and its contents.
     ///
     /// Origin is tagged `Local` with [`LocalProvenance::UNKNOWN`] — this

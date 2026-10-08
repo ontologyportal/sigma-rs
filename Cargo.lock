@@ -3209,7 +3209,7 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 [[package]]
 name = "vampire-prover"
 version = "0.6.0"
-source = "git+https://github.com/theo-kim/vampire-rs?rev=f25670d5ddec82594aa9019029e7ea8961acc8c8#f25670d5ddec82594aa9019029e7ea8961acc8c8"
+source = "git+https://github.com/theo-kim/vampire-rs?rev=513435d3088cf740b326a97e91f69b18e3e0728c#513435d3088cf740b326a97e91f69b18e3e0728c"
 dependencies = [
  "libc",
  "vampire-sys",
@@ -3218,7 +3218,7 @@ dependencies = [
 [[package]]
 name = "vampire-sys"
 version = "0.6.0"
-source = "git+https://github.com/theo-kim/vampire-rs?rev=f25670d5ddec82594aa9019029e7ea8961acc8c8#f25670d5ddec82594aa9019029e7ea8961acc8c8"
+source = "git+https://github.com/theo-kim/vampire-rs?rev=513435d3088cf740b326a97e91f69b18e3e0728c#513435d3088cf740b326a97e91f69b18e3e0728c"
 dependencies = [
  "cmake",
 ]

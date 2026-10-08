@@ -55,36 +55,24 @@
 use super::KnowledgeBase;
 use crate::parse::ast::AstNode;
 
-pub use crate::semantics::render::RenderReport;
+pub use crate::semantics::render::{RenderReport, RenderStyle};
 
 #[cfg(test)]
 use crate::semantics::render::{ANSI_LINKED, ANSI_NEG, ANSI_OP, ANSI_RESET, ANSI_VAR};
 
 impl<L: crate::layer::TopLayer> KnowledgeBase<L> {
     /// Render `formula` to natural language in `language` (e.g.
-    /// `"EnglishLanguage"`).  Plain (no ANSI escapes) — safe for logs / files /
-    /// JSON.  See [`crate::semantics::render`] for the template DSL.
-    pub fn render_formula(&self, formula: &AstNode, language: &str) -> RenderReport {
-        self.layer.semantic().render_formula(formula, language)
-    }
-
-    /// Same as [`render_formula`](Self::render_formula) but wraps variables,
-    /// `&%Symbol` cross-references, negations, and structural operators in ANSI
-    /// colour escapes for terminal output.
-    pub fn render_formula_colored(&self, formula: &AstNode, language: &str) -> RenderReport {
+    /// `"EnglishLanguage"`) in the given `style`.  See
+    /// [`crate::semantics::render`] for the template DSL.
+    pub fn render_formula(
+        &self,
+        formula: &AstNode,
+        language: &str,
+        style: RenderStyle,
+    ) -> RenderReport {
         self.layer
             .semantic()
-            .render_formula_colored(formula, language)
-    }
-
-    /// Same as [`render_formula`](Self::render_formula) but paraphrases
-    /// variables as generic noun phrases (e.g. "an entity" / "the entity",
-    /// or the variable's asserted class when an `instance` / `subclass`
-    /// conjunct declares one) instead of showing `?Var`.
-    pub fn render_formula_paraphrase(&self, formula: &AstNode, language: &str) -> RenderReport {
-        self.layer
-            .semantic()
-            .render_formula_paraphrase(formula, language)
+            .render_formula(formula, language, style)
     }
 }
 
@@ -147,7 +135,7 @@ mod tests {
     fn positive_binary_predicate() {
         let kb = kb_with_english_templates("");
         let f = parse_kif_formula("(instance Fido Dog)");
-        let r = kb.render_formula(&f, "EnglishLanguage");
+        let r = kb.render_formula(&f, "EnglishLanguage", RenderStyle::Plain);
         assert_eq!(r.rendered, "fido is an instance of dog");
         assert!(r.missing.is_empty(), "unexpected misses: {:?}", r.missing);
     }
@@ -161,7 +149,7 @@ mod tests {
                (termFormat EnglishLanguage between "between")"#,
         );
         let f = parse_kif_formula("(between Fido Juno Dog Animal)");
-        let r = kb.render_formula(&f, "EnglishLanguage");
+        let r = kb.render_formula(&f, "EnglishLanguage", RenderStyle::Plain);
         assert_eq!(
             r.rendered, "fido sits between juno, dog",
             "{{2-4}} is exclusive of 4, so `animal` (arg 4) must NOT appear"
@@ -176,7 +164,7 @@ mod tests {
                (termFormat EnglishLanguage listing "listing")"#,
         );
         let f = parse_kif_formula("(listing Fido Juno Dog Animal)");
-        let r = kb.render_formula(&f, "EnglishLanguage");
+        let r = kb.render_formula(&f, "EnglishLanguage", RenderStyle::Plain);
         assert_eq!(r.rendered, "the list holds juno, dog, animal");
     }
 
@@ -188,7 +176,7 @@ mod tests {
                (termFormat EnglishLanguage tight "tight")"#,
         );
         let f = parse_kif_formula("(tight Fido Juno Dog)");
-        let r = kb.render_formula(&f, "EnglishLanguage");
+        let r = kb.render_formula(&f, "EnglishLanguage", RenderStyle::Plain);
         assert_eq!(r.rendered, "fido :: juno,dog");
     }
 
@@ -200,7 +188,7 @@ mod tests {
                (termFormat EnglishLanguage anyof "anyof")"#,
         );
         let f = parse_kif_formula("(anyof Fido Juno Dog)");
-        let r = kb.render_formula(&f, "EnglishLanguage");
+        let r = kb.render_formula(&f, "EnglishLanguage", RenderStyle::Plain);
         assert_eq!(r.rendered, "either fido or juno or dog");
     }
 
@@ -213,12 +201,17 @@ mod tests {
                (format EnglishLanguage over "[%*{2-9}[,]]")
                (termFormat EnglishLanguage over "over")"#,
         );
-        let empty = kb.render_formula(&parse_kif_formula("(empt Fido Juno)"), "EnglishLanguage");
+        let empty = kb.render_formula(
+            &parse_kif_formula("(empt Fido Juno)"),
+            "EnglishLanguage",
+            RenderStyle::Plain,
+        );
         assert_eq!(empty.rendered, "[]", "3-3 selects nothing");
         // Upper bound past the real arity stops at the last argument.
         let over = kb.render_formula(
             &parse_kif_formula("(over Fido Juno Dog)"),
             "EnglishLanguage",
+            RenderStyle::Plain,
         );
         assert_eq!(over.rendered, "[juno, dog]");
     }
@@ -231,7 +224,11 @@ mod tests {
             r#"(format EnglishLanguage broke "%1 %*{2-} then")
                (termFormat EnglishLanguage broke "broke")"#,
         );
-        let r = kb.render_formula(&parse_kif_formula("(broke Fido Juno)"), "EnglishLanguage");
+        let r = kb.render_formula(
+            &parse_kif_formula("(broke Fido Juno)"),
+            "EnglishLanguage",
+            RenderStyle::Plain,
+        );
         assert!(
             r.rendered.contains("%*"),
             "expected literal marker, got {:?}",
@@ -251,6 +248,7 @@ mod tests {
         let r = kb.render_formula(
             &parse_kif_formula("(partition Animal Dog Fido Juno)"),
             "EnglishLanguage",
+            RenderStyle::Plain,
         );
         assert_eq!(
             r.rendered,
@@ -259,6 +257,7 @@ mod tests {
         let a = kb.render_formula(
             &parse_kif_formula("(AssignmentFn Dog Fido Juno)"),
             "EnglishLanguage",
+            RenderStyle::Plain,
         );
         assert_eq!(a.rendered, "dog(fido, juno)");
     }
@@ -267,7 +266,7 @@ mod tests {
     fn negated_n_marker_becomes_not() {
         let kb = kb_with_english_templates("");
         let f = parse_kif_formula("(not (instance Fido Dog))");
-        let r = kb.render_formula(&f, "EnglishLanguage");
+        let r = kb.render_formula(&f, "EnglishLanguage", RenderStyle::Plain);
         assert_eq!(r.rendered, "fido is not an instance of dog");
         assert!(r.missing.is_empty(), "unexpected misses: {:?}", r.missing);
     }
@@ -276,7 +275,7 @@ mod tests {
     fn custom_negation_phrase() {
         let kb = kb_with_english_templates("");
         let f = parse_kif_formula("(not (likes Fido Juno))");
-        let r = kb.render_formula(&f, "EnglishLanguage");
+        let r = kb.render_formula(&f, "EnglishLanguage", RenderStyle::Plain);
         assert!(r.rendered.contains("does not"), "got: {}", r.rendered);
         assert!(r.rendered.contains("likes"), "got: {}", r.rendered);
     }
@@ -290,7 +289,7 @@ mod tests {
                (termFormat EnglishLanguage meetsSpatially "meets")"#,
         );
         let f = parse_kif_formula("(meetsSpatially Fido Juno)");
-        let r = kb.render_formula(&f, "EnglishLanguage");
+        let r = kb.render_formula(&f, "EnglishLanguage", RenderStyle::Plain);
         assert_eq!(r.rendered, "fido meets juno");
     }
 
@@ -303,7 +302,7 @@ mod tests {
                (termFormat EnglishLanguage hasPurpose "has purpose")"#,
         );
         let f = parse_kif_formula("(hasPurpose Fido Juno)");
-        let r = kb.render_formula(&f, "EnglishLanguage");
+        let r = kb.render_formula(&f, "EnglishLanguage", RenderStyle::Plain);
         assert_eq!(r.rendered, "fido has the purpose juno");
     }
 
@@ -317,7 +316,7 @@ mod tests {
                (termFormat EnglishLanguage meetsSpatially "meets")"#,
         );
         let f = parse_kif_formula("(not (meetsSpatially Fido Juno))");
-        let r = kb.render_formula(&f, "EnglishLanguage");
+        let r = kb.render_formula(&f, "EnglishLanguage", RenderStyle::Plain);
         assert_eq!(r.rendered, "fido does not meet juno");
     }
 
@@ -330,7 +329,7 @@ mod tests {
                (termFormat EnglishLanguage meetsSpatially "meets")"#,
         );
         let f = parse_kif_formula("(meetsSpatially Fido Juno)");
-        let r = kb.render_formula(&f, "EnglishLanguage");
+        let r = kb.render_formula(&f, "EnglishLanguage", RenderStyle::Plain);
         assert_eq!(r.rendered, "fido meet juno");
     }
 
@@ -344,7 +343,7 @@ mod tests {
                (termFormat EnglishLanguage hasAttr "has attribute")"#,
         );
         let f = parse_kif_formula("(hasAttr Fido Friendly)");
-        let r = kb.render_formula(&f, "EnglishLanguage");
+        let r = kb.render_formula(&f, "EnglishLanguage", RenderStyle::Plain);
         assert_eq!(r.rendered, "fido has the attribute friendly");
     }
 
@@ -352,7 +351,7 @@ mod tests {
     fn conjunction_rendering() {
         let kb = kb_with_english_templates("");
         let f = parse_kif_formula("(and (instance Fido Dog) (instance Fido Animal))");
-        let r = kb.render_formula(&f, "EnglishLanguage");
+        let r = kb.render_formula(&f, "EnglishLanguage", RenderStyle::Plain);
         assert_eq!(
             r.rendered,
             "fido is an instance of dog and fido is an instance of animal"
@@ -363,7 +362,7 @@ mod tests {
     fn implication_rendering() {
         let kb = kb_with_english_templates("");
         let f = parse_kif_formula("(=> (instance Fido Dog) (instance Fido Animal))");
-        let r = kb.render_formula(&f, "EnglishLanguage");
+        let r = kb.render_formula(&f, "EnglishLanguage", RenderStyle::Plain);
         assert_eq!(
             r.rendered,
             "if fido is an instance of dog then fido is an instance of animal"
@@ -374,7 +373,7 @@ mod tests {
     fn quantifier_rendering() {
         let kb = kb_with_english_templates("");
         let f = parse_kif_formula("(forall (?X) (instance ?X Animal))");
-        let r = kb.render_formula(&f, "EnglishLanguage");
+        let r = kb.render_formula(&f, "EnglishLanguage", RenderStyle::Plain);
         assert_eq!(r.rendered, "for every ?X , ?X is an instance of animal");
     }
 
@@ -382,7 +381,7 @@ mod tests {
     fn missing_format_records_miss_and_falls_back() {
         let kb = kb_with_english_templates("");
         let f = parse_kif_formula("(undefinedRel Fido Dog)");
-        let r = kb.render_formula(&f, "EnglishLanguage");
+        let r = kb.render_formula(&f, "EnglishLanguage", RenderStyle::Plain);
         assert!(
             r.missing
                 .iter()
@@ -399,7 +398,7 @@ mod tests {
     fn missing_termformat_records_miss() {
         let kb = kb_with_english_templates("");
         let f = parse_kif_formula("(instance UnknownThing Dog)");
-        let r = kb.render_formula(&f, "EnglishLanguage");
+        let r = kb.render_formula(&f, "EnglishLanguage", RenderStyle::Plain);
         assert!(
             r.missing.iter().any(|m| m == "termFormat:UnknownThing"),
             "expected termFormat:UnknownThing miss, got: {:?}",
@@ -420,7 +419,7 @@ mod tests {
         let kb = kb_with_english_templates("");
         for name in ["true", "false", "True", "False"] {
             let f = parse_kif_formula(name);
-            let r = kb.render_formula(&f, "EnglishLanguage");
+            let r = kb.render_formula(&f, "EnglishLanguage", RenderStyle::Plain);
             let expected = name.to_lowercase();
             assert_eq!(
                 r.rendered, expected,
@@ -441,7 +440,7 @@ mod tests {
                 name: name.to_string(),
                 span: Span::point("test".to_string(), 0, 0, 0),
             };
-            let r = kb.render_formula(&node, "EnglishLanguage");
+            let r = kb.render_formula(&node, "EnglishLanguage", RenderStyle::Plain);
             let expected = name.trim_start_matches('$').to_lowercase();
             assert_eq!(
                 r.rendered, expected,
@@ -506,8 +505,12 @@ mod tests {
         ];
         for kif in cases {
             let f = parse_kif_formula(kif);
-            let plain = kb.render_formula(&f, "EnglishLanguage").rendered;
-            let coloured = kb.render_formula_colored(&f, "EnglishLanguage").rendered;
+            let plain = kb
+                .render_formula(&f, "EnglishLanguage", RenderStyle::Plain)
+                .rendered;
+            let coloured = kb
+                .render_formula(&f, "EnglishLanguage", RenderStyle::Colored)
+                .rendered;
             assert_eq!(
                 strip_ansi(&coloured),
                 plain,
@@ -533,7 +536,9 @@ mod tests {
             "(not (likes Fido Juno))",
         ] {
             let f = parse_kif_formula(kif);
-            let coloured = kb.render_formula_colored(&f, "EnglishLanguage").rendered;
+            let coloured = kb
+                .render_formula(&f, "EnglishLanguage", RenderStyle::Colored)
+                .rendered;
             assert!(
                 coloured.contains("\x1b["),
                 "expected ANSI colour in {}: {:?}",
@@ -545,8 +550,12 @@ mod tests {
         // Conversely, a bare predicate with no variables, `&%`, or
         // connectives has nothing to colour — coloured == plain.
         let f = parse_kif_formula("(instance Fido Dog)");
-        let plain = kb.render_formula(&f, "EnglishLanguage").rendered;
-        let coloured = kb.render_formula_colored(&f, "EnglishLanguage").rendered;
+        let plain = kb
+            .render_formula(&f, "EnglishLanguage", RenderStyle::Plain)
+            .rendered;
+        let coloured = kb
+            .render_formula(&f, "EnglishLanguage", RenderStyle::Colored)
+            .rendered;
         assert_eq!(
             plain, coloured,
             "bare predicate with no colourable class should render identically"
@@ -557,7 +566,9 @@ mod tests {
     fn variables_are_wrapped_in_magenta() {
         let kb = kb_with_english_templates("");
         let f = parse_kif_formula("(forall (?X) (instance ?X Animal))");
-        let r = kb.render_formula_colored(&f, "EnglishLanguage").rendered;
+        let r = kb
+            .render_formula(&f, "EnglishLanguage", RenderStyle::Colored)
+            .rendered;
         // `?X` appears twice (once in the quantifier list, once in the
         // body).  Each occurrence must be wrapped in a matched pair.
         let magenta_opens = r.matches(super::ANSI_VAR).count();
@@ -577,7 +588,9 @@ mod tests {
         let f = parse_kif_formula(
             "(and (instance Fido Dog) (=> (instance Fido Dog) (instance Fido Animal)))",
         );
-        let r = kb.render_formula_colored(&f, "EnglishLanguage").rendered;
+        let r = kb
+            .render_formula(&f, "EnglishLanguage", RenderStyle::Colored)
+            .rendered;
         // `and`, `if`, `then` should all be coloured.
         assert!(
             r.contains(&format!("{}and{}", super::ANSI_OP, super::ANSI_RESET)),
@@ -600,7 +613,9 @@ mod tests {
     fn negation_n_marker_is_wrapped_in_red() {
         let kb = kb_with_english_templates("");
         let f = parse_kif_formula("(not (instance Fido Dog))");
-        let r = kb.render_formula_colored(&f, "EnglishLanguage").rendered;
+        let r = kb
+            .render_formula(&f, "EnglishLanguage", RenderStyle::Colored)
+            .rendered;
         assert!(
             r.contains(&format!("{}not{}", super::ANSI_NEG, super::ANSI_RESET)),
             "missing red `not`: {:?}",
@@ -612,7 +627,9 @@ mod tests {
     fn custom_negation_phrase_is_wrapped_in_red() {
         let kb = kb_with_english_templates("");
         let f = parse_kif_formula("(not (likes Fido Juno))");
-        let r = kb.render_formula_colored(&f, "EnglishLanguage").rendered;
+        let r = kb
+            .render_formula(&f, "EnglishLanguage", RenderStyle::Colored)
+            .rendered;
         assert!(
             r.contains(&format!("{}does not{}", super::ANSI_NEG, super::ANSI_RESET)),
             "missing red `does not`: {:?}",
@@ -627,7 +644,9 @@ mod tests {
                (termFormat EnglishLanguage hasAttr "has attribute")"#,
         );
         let f = parse_kif_formula("(hasAttr Fido Friendly)");
-        let r = kb.render_formula_colored(&f, "EnglishLanguage").rendered;
+        let r = kb
+            .render_formula(&f, "EnglishLanguage", RenderStyle::Colored)
+            .rendered;
         assert!(
             r.contains(&format!(
                 "{}attribute{}",
@@ -648,7 +667,9 @@ mod tests {
                (termFormat EnglishLanguage bareRel "bare rel")"#,
         );
         let f = parse_kif_formula("(not (bareRel Fido Dog))");
-        let r = kb.render_formula_colored(&f, "EnglishLanguage").rendered;
+        let r = kb
+            .render_formula(&f, "EnglishLanguage", RenderStyle::Colored)
+            .rendered;
         assert!(
             r.contains(&format!(
                 "{}it is not the case that{}",
@@ -664,7 +685,7 @@ mod tests {
     fn missing_language_reports_everything() {
         let kb = kb_with_english_templates("");
         let f = parse_kif_formula("(instance Fido Dog)");
-        let r = kb.render_formula(&f, "KlingonLanguage");
+        let r = kb.render_formula(&f, "KlingonLanguage", RenderStyle::Plain);
         // Every symbol should be missing in Klingon.
         assert!(r.missing.iter().any(|m| m == "format:instance"));
         assert!(r.missing.iter().any(|m| m == "termFormat:Fido"));
@@ -675,7 +696,7 @@ mod tests {
     fn paraphrase_uses_generic_noun_with_article_then_definite() {
         let kb = kb_with_english_templates("");
         let f = parse_kif_formula("(and (instance ?X Dog) (instance ?X Animal))");
-        let r = kb.render_formula_paraphrase(&f, "EnglishLanguage");
+        let r = kb.render_formula(&f, "EnglishLanguage", RenderStyle::Paraphrase);
         assert_eq!(
             r.rendered,
             "a dog is an instance of dog and the dog is an instance of animal"
@@ -686,7 +707,7 @@ mod tests {
     fn paraphrase_falls_back_to_entity_without_a_sort_conjunct() {
         let kb = kb_with_english_templates("");
         let f = parse_kif_formula("(likes ?X Fido)");
-        let r = kb.render_formula_paraphrase(&f, "EnglishLanguage");
+        let r = kb.render_formula(&f, "EnglishLanguage", RenderStyle::Paraphrase);
         assert_eq!(r.rendered, "an entity likes fido");
     }
 
@@ -694,7 +715,7 @@ mod tests {
     fn paraphrase_quantifier_binding_uses_bare_sort_noun() {
         let kb = kb_with_english_templates("");
         let f = parse_kif_formula("(forall (?X) (instance ?X Animal))");
-        let r = kb.render_formula_paraphrase(&f, "EnglishLanguage");
+        let r = kb.render_formula(&f, "EnglishLanguage", RenderStyle::Paraphrase);
         assert_eq!(
             r.rendered,
             "for every animal , the animal is an instance of animal"
@@ -705,7 +726,25 @@ mod tests {
     fn paraphrase_off_by_default_leaves_variables_literal() {
         let kb = kb_with_english_templates("");
         let f = parse_kif_formula("(instance ?X Dog)");
-        let r = kb.render_formula(&f, "EnglishLanguage");
+        let r = kb.render_formula(&f, "EnglishLanguage", RenderStyle::Plain);
         assert_eq!(r.rendered, "?X is an instance of dog");
+    }
+
+    #[test]
+    fn paraphrase_style_replaces_variables_with_noun_phrases() {
+        let kb = kb_with_english_templates("");
+        let f = parse_kif_formula("(instance ?X Dog)");
+        let plain = kb.render_formula(&f, "EnglishLanguage", RenderStyle::Plain);
+        let para = kb.render_formula(&f, "EnglishLanguage", RenderStyle::Paraphrase);
+        assert!(
+            plain.rendered.contains("?X"),
+            "plain keeps the variable: {}",
+            plain.rendered
+        );
+        assert!(
+            !para.rendered.contains("?X"),
+            "paraphrase hides it: {}",
+            para.rendered
+        );
     }
 }

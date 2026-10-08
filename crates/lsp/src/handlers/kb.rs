@@ -108,11 +108,7 @@ pub fn handle_set_active_files<L: TopLayer>(
             continue;
         };
 
-        let result = session.kb_mut().load(src, &tag);
-        // Promote so man-page introspection (Base scope) sees the file.
-        if result.ok {
-            let _ = session.kb_mut().make_session_axiomatic(&tag);
-        }
+        let result = session.kb_mut().load_and_promote(src, &tag);
         let warnings = result
             .diagnostics
             .iter()

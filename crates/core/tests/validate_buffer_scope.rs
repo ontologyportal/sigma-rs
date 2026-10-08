@@ -26,11 +26,14 @@ fn scope_of_buffer_added_sentences() {
     );
     kb.commit("base.kif");
 
-    let base_scope = kb.validate_file("base.kif");
+    let base_scope = kb.validate(sigmakee_rs_core::ValidationTarget::File("base.kif"), None);
     assert!(base_scope.iter().any(|d| d.code == "no-entity-ancestor" && d.message.contains("NewThing")),
         "Base scope can't see the unpromoted session overlay (documents WHY the session-scoped variant exists)");
 
-    let session_scope = kb.validate_file_in_session("base.kif", "base.kif");
+    let session_scope = kb.validate(
+        sigmakee_rs_core::ValidationTarget::File("base.kif"),
+        Some("base.kif"),
+    );
     assert!(
         !session_scope
             .iter()

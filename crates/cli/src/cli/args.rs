@@ -123,9 +123,9 @@ pub struct Cli {
     pub declare: bool,
 
     /// Path to the LMDB database directory.
-    /// Defaults to `./sumo.lmdb` in the current working directory.
-    #[arg(long, value_name = "DIR", default_value = "./sumo.lmdb", global = true)]
-    pub db: PathBuf,
+    /// Defaults to `<editDir>/<kb>.lmdb` from the resolved configuration.
+    #[arg(long, value_name = "DIR", global = true)]
+    pub db: Option<PathBuf>,
 
     /// Session key for --tell assertions and TPTP hypothesis filtering.
     #[arg(long, value_name = "KEY", default_value = None)]
@@ -142,10 +142,10 @@ pub struct Cli {
 
 /// Shared arguments for database and KIF-source selection.
 ///
-/// The universal source flags (`-f`, `-d`, `--db`, `--no-db`) live on the
-/// top-level [`Cli`] with `global = true`; this struct's equivalent fields
-/// carry `#[arg(skip)]` and are populated from the top-level parse by
-/// `main.rs` before the struct is handed to a `run_*` handler.
+/// The universal source flags (`-f`, `-d`) live on the top-level [`Cli`] with
+/// `global = true`; this struct's equivalent fields carry `#[arg(skip)]` and
+/// are populated from the top-level parse by `main.rs` before the struct is
+/// handed to a `run_*` handler.
 #[derive(clap::Args, Clone, Debug, Default)]
 pub struct KbArgs {
     /// KIF file to load into the knowledge base (repeatable).
@@ -157,15 +157,6 @@ pub struct KbArgs {
     /// Populated from `Cli::dirs`.
     #[arg(skip)]
     pub dirs: Vec<PathBuf>,
-
-    /// Path to the LMDB database directory.  Populated from `Cli::db`;
-    /// the `./sumo.lmdb` default is defined on the top-level flag.
-    #[arg(skip)]
-    pub db: PathBuf,
-
-    /// Skip the LMDB database entirely.  Populated from `Cli::no_db`.
-    #[arg(skip)]
-    pub no_db: bool,
 }
 
 #[derive(Subcommand)]

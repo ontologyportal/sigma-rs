@@ -12,9 +12,13 @@ use super::traits::{
 };
 
 pub(crate) mod arity;
+pub(crate) mod attitude_conflict;
 pub(crate) mod camel_case;
 pub(crate) mod common;
+pub(crate) mod disjoint_classes;
+pub(crate) mod documentation;
 pub(crate) mod domain;
+pub(crate) mod duplicate_axioms;
 pub(crate) mod entity_ancestor;
 pub(crate) mod free_var_in_consequent;
 pub(crate) mod head_is_relation;
@@ -22,8 +26,10 @@ pub(crate) mod iff_shape;
 pub(crate) mod implies_shape;
 pub(crate) mod non_logical_arg;
 pub(crate) mod only_rel;
+pub(crate) mod partition;
 pub(crate) mod quantifier_vacuous;
 pub(crate) mod relation_metadata;
+pub(crate) mod root_formula;
 pub(crate) mod single_arity;
 pub(crate) mod single_use_variable;
 pub(crate) mod symbol_case;
@@ -32,6 +38,12 @@ pub(crate) mod symbol_case;
 pub(super) const FORMULA: &[&dyn FormulaValidatorDyn] = &[
     &single_use_variable::SingleUseVariableCheck,
     &free_var_in_consequent::FreeVarInConsequentCheck,
+    &duplicate_axioms::DuplicateAxiomCheck,
+    &root_formula::RootFormula,
+    &disjoint_classes::DisjointClasses,
+    &partition::PartitionCheck,
+    &attitude_conflict::AttitudeConflictCheck,
+    &documentation::DocumentationCompleteness,
 ];
 
 /// Run on every relation-headed sentence.

@@ -51,10 +51,10 @@ pub trait ProverRunner: Send + Sync {
         conjecture_name: &str,
         opts: &ProverOpts,
     ) -> ProverResult {
-        let tptp = crate::kb::assemble::assemble_tptp_indexed(
+        let tptp = crate::trans::assemble::assemble_tptp_indexed(
             problem,
             sid_map,
-            &crate::kb::assemble::AssemblyOpts {
+            &crate::trans::assemble::AssemblyOpts {
                 conjecture_name,
                 ..Default::default()
             },

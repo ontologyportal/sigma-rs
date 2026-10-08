@@ -10,9 +10,11 @@ use std::sync::RwLock;
 
 // Modules
 pub mod arith;
+pub(crate) mod assemble;
 pub mod builtins;
 pub mod caches;
 pub mod errors;
+pub(crate) mod file;
 pub(crate) mod formulas;
 pub mod ir;
 pub mod literal;
@@ -41,6 +43,7 @@ use crate::cache::{Cache, CacheConfig, EagerMap, WholeCache};
 use crate::layer::{Layer, NoLayer, TopLayer};
 #[allow(unused_imports)]
 use crate::semantics::SemanticLayer;
+// pub(crate) use crate::trans::ir::problem;
 use crate::types::{SentenceId, SymbolId};
 use caches::formulas_fof::FormulasFof;
 use caches::formulas_tff::FormulasTff;

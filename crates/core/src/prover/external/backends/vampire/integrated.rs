@@ -71,18 +71,18 @@ impl ProverRunner for IntegratedVampireRunner {
     }
 
     /// Direct-IR entry: lower either representation straight into the FFI
-    /// solver -- no TPTP serialisation, no re-parse.  (`sid_map` /
-    /// `conjecture_name` are text-path concerns: the embedded proof steps map
-    /// back by formula content, not by axiom name.)
+    /// solver -- no TPTP serialisation, no re-parse. `sid_map` (parallel to
+    /// the problem's axioms) gives first-order proof steps their
+    /// `source_sid`; `conjecture_name` is a text-path concern.
     fn prove_ir(
         &self,
         problem: &crate::trans::ir::ProblemIr,
-        _sid_map: &[crate::types::SentenceId],
+        sid_map: &[crate::types::SentenceId],
         _conjecture_name: &str,
         opts: &ProverOpts,
     ) -> ProverResult {
         match problem {
-            crate::trans::ir::ProblemIr::Fo(p) => self.prove_fo(p, opts),
+            crate::trans::ir::ProblemIr::Fo(p) => self.prove_fo(p, sid_map, opts),
             crate::trans::ir::ProblemIr::Ho(p) => self.prove_ho(p, opts),
         }
     }
@@ -133,7 +133,12 @@ impl IntegratedVampireRunner {
 
     /// Lower the first-order [`ir::Problem`](crate::trans::ir::Problem) into
     /// the solver's native structures (`lower.rs`).
-    fn prove_fo(&self, ir_problem: &crate::trans::ir::Problem, opts: &ProverOpts) -> ProverResult {
+    fn prove_fo(
+        &self,
+        ir_problem: &crate::trans::ir::Problem,
+        sid_map: &[crate::types::SentenceId],
+        opts: &ProverOpts,
+    ) -> ProverResult {
         use std::time::Instant;
 
         let input_gen = std::time::Duration::ZERO;
@@ -194,8 +199,8 @@ impl IntegratedVampireRunner {
 
         let t_output = Instant::now();
         let (proof_kif, ir_proof) = if let Some(proof) = proof_opt.as_ref() {
-            let kif = super::native_proof::native_proof_to_kif_steps(proof);
-            let ir = super::native_proof::native_proof_to_ir_steps(proof);
+            let kif = super::native_proof::native_proof_to_kif_steps(proof, sid_map);
+            let ir = super::native_proof::native_proof_to_ir_steps(proof, sid_map);
             (kif, ir)
         } else {
             (vec![], vec![])
@@ -271,6 +276,48 @@ impl IntegratedVampireRunner {
                 output_parse,
             },
             ..Default::default()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::IntegratedVampireRunner;
+    use crate::prover::external::Prover;
+    use crate::prover::ProverStatus;
+    use crate::{parse_document, ExternalOpts, KnowledgeBase, Parser, TestCase};
+
+    #[test]
+    fn embedded_proof_steps_cite_their_source_sentences() {
+        let mut kb =
+            KnowledgeBase::new_external(Prover::VampireIntegrated(IntegratedVampireRunner));
+        let r = kb.reload_kif(
+            "(=> (instance ?X Dog) (instance ?X Animal))\n(instance Rex Dog)\n",
+            &std::path::PathBuf::from("test.kif"),
+            "test.kif",
+        );
+        assert!(r.ok, "load failed: {:?}", r.diagnostics);
+        kb.make_session_axiomatic("test.kif").expect("promote");
+
+        let doc = parse_document(
+            "query",
+            "(instance Rex Animal)".to_string(),
+            Parser::Kif { options: None },
+        );
+        let ast = doc
+            .ast
+            .iter()
+            .find_map(|d| d.as_stmt().cloned())
+            .expect("query");
+        let res = kb.ask(TestCase::conjecture("query", ast), &ExternalOpts::default());
+        assert_eq!(res.status, ProverStatus::Proved, "{}", res.raw_output);
+
+        let roots: std::collections::HashSet<_> = kb.syntactic().root_sids().into_iter().collect();
+        let axiom_steps: Vec<_> = res.proof_kif.iter().filter(|s| s.rule == "axiom").collect();
+        assert!(!axiom_steps.is_empty(), "the proof uses KB axioms");
+        for step in axiom_steps {
+            let sid = step.source_sid.expect("every axiom step cites its source");
+            assert!(roots.contains(&sid), "cited sid {sid} is a KB sentence");
         }
     }
 }

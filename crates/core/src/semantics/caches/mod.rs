@@ -11,6 +11,7 @@ pub(crate) mod tax_edges;
 pub(crate) mod validate;
 
 // IS-A queries
+pub(crate) mod disjoint;
 pub(crate) mod has_ancestor;
 pub(crate) mod is_class;
 pub(crate) mod is_function;
@@ -26,6 +27,8 @@ pub(crate) mod subrel_lattice;
 pub(crate) mod trans_reach;
 
 // Documentation
+pub(crate) mod defining_sentences;
+pub(crate) mod doc_coverage;
 pub(crate) mod documentation;
 
 // Type inference

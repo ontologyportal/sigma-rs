@@ -31,6 +31,11 @@ pub(crate) enum Event {
     /// the new session membership, and surfaces `SessionReferenced` so
     /// scope-bearing indices learn the new scope.
     FormulaReferenced { node: u64, session: Arc<String> },
+    /// Source occurrence membership changed for a formula fingerprint.
+    ///
+    /// Consumers that inspect source provenance rather than normalized
+    /// sentence content use this to invalidate derived views.
+    SourceReferencesChanged,
     /// Formulas a file reconcile carried over **unchanged** (their fingerprint was
     /// present in both the prior and the new parse).  Informational: the router
     /// collects it into `emitted` so `reload_kif` can report the retained count.
@@ -161,6 +166,8 @@ pub(crate) enum EventKind {
     FormulaRemoved,
     /// A session newly references an already-present formula (cross-session dedup).
     FormulaReferenced,
+    /// Source occurrence membership changed for a formula fingerprint.
+    SourceReferencesChanged,
     /// Formulas carried over unchanged by a file reconcile (informational tally).
     FormulasUnchanged,
     /// Formulas whose removal was deferred into the recycle bin by a staged reconcile.
@@ -216,6 +223,7 @@ impl Event {
             Event::SourceAdded { .. } => EventKind::SourceAdded,
             Event::FormulaAdded { .. } => EventKind::FormulaAdded,
             Event::FormulaReferenced { .. } => EventKind::FormulaReferenced,
+            Event::SourceReferencesChanged => EventKind::SourceReferencesChanged,
             Event::FormulasUnchanged { .. } => EventKind::FormulasUnchanged,
             Event::FormulasRecycled { .. } => EventKind::FormulasRecycled,
             Event::FormulaRemoved { .. } => EventKind::FormulaRemoved,

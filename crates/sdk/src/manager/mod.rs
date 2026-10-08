@@ -12,7 +12,7 @@ mod write;
 // Clap-agnostic option metadata — projects KBManager into a CLI parser.
 pub mod meta;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use log::LevelFilter;
@@ -1526,7 +1526,6 @@ impl From<KBManager> for TptpOptions {
                 "cnf" => TptpLang::Cnf,
                 _ => TptpLang::Auto,
             },
-            excluded: HashSet::new(),
             show_kif_comment: val.show_kif,
             ..TptpOptions::default()
         }
@@ -1586,6 +1585,16 @@ mod tests {
         // `eprover` is absent from the XML → its `Default` (empty path).
         assert_eq!(m.eprover, PathBuf::default());
         assert_eq!(m.leo_executable, PathBuf::default());
+    }
+
+    #[test]
+    fn tptp_options_from_manager_keeps_default_exclusions() {
+        let m = KBManager::from_config_xml(SAMPLE).unwrap();
+        let opts: TptpOptions = m.into();
+        assert_eq!(opts.excluded, TptpOptions::default().excluded);
+        for head in ["termFormat", "documentation", "format", "domain"] {
+            assert!(opts.excluded.contains(head), "{head} should be excluded");
+        }
     }
 
     /// `KB`/`Constituent` compare shallow (see `impl PartialEq for KB` —
@@ -2220,7 +2229,6 @@ mod tests {
     }
 
     #[cfg(feature = "external-prover")]
-    #[cfg(feature = "external-prover")]
     #[test]
     fn external_config_thf_selects_the_higher_order_dialect() {
         for lang in ["thf", "THF"] {
@@ -2235,6 +2243,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "external-prover")]
     fn external_config_builds_prover_opts() {
         let m = KBManager::from_config_xml(WITH_PROVERS).unwrap();
         let opts = m.external_prover().to_prover_opts();

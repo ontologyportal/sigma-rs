@@ -37,7 +37,7 @@ where
                 for e in errs {
                     match e {
                         SdkError::Kb(e) => {
-                            session.kb().pretty_print_error(&e, log::Level::Error);
+                            session.kb().pretty_print_error(&e);
                         }
                         _ => log::error!("{}", e),
                     }
@@ -66,7 +66,7 @@ where
             }
             Err(e) => {
                 match e {
-                    SdkError::Kb(diag) => session.kb().pretty_print_error(&diag, log::Level::Error),
+                    SdkError::Kb(diag) => session.kb().pretty_print_error(&diag),
                     _ => log::error!("{}", e),
                 }
                 false
@@ -79,7 +79,7 @@ where
             }
             Err(e) => {
                 match e {
-                    SdkError::Kb(diag) => session.kb().pretty_print_error(&diag, log::Level::Error),
+                    SdkError::Kb(diag) => session.kb().pretty_print_error(&diag),
                     _ => log::error!("{}", e),
                 }
                 false

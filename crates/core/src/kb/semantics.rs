@@ -1,55 +1,26 @@
 //! Public re-exports of semantic operations.
-use std::collections::{HashMap, HashSet};
-
-use thiserror::Error;
+use std::collections::HashSet;
 
 use crate::layer::{Layer, TopLayer};
 use crate::semantics::consts::{CLASS_SYMBOL, FORMULA_SYMBOL, HIGHER_ORDER_CATEGORIES};
-use crate::semantics::errors::semantic_error;
-use crate::semantics::errors::SemanticError;
 use crate::types::{Element, RelationDomain, RelationRange};
 use crate::{Diagnostic, OpKind, SentenceId, SymbolId, ToDiagnostic};
 
 use super::KnowledgeBase;
 
-/// A relation has no `format` axiom.
-#[derive(Debug, Clone, Error)]
-#[error("relation '{sym}' has no format axiom")]
-pub struct MissingFormatString {
-    pub sym: String,
+/// What [`KnowledgeBase::validate`] checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValidationTarget<'a> {
+    /// Every root sentence in the KB.
+    All,
+    /// One sentence.
+    Sentence(SentenceId),
+    /// The sentences loaded from one source file, by the tag it was loaded
+    /// under (e.g. `/tmp/x.kif`). An unknown tag validates nothing.
+    File(&'a str),
+    /// The sentences belonging to one session.
+    Session(&'a str),
 }
-semantic_error!(MissingFormatString, "H004", "missing-format-string", Hint);
-
-/// A term has no `termFormat` axiom.
-#[derive(Debug, Clone, Error)]
-#[error("term '{sym}' has no termFormat axiom")]
-pub struct MissingTermFormat {
-    pub sym: String,
-}
-semantic_error!(MissingTermFormat, "H003", "missing-term-format", Hint);
-
-/// A term has several `documentation` axioms in one language.
-#[derive(Debug, Clone, Error)]
-#[error("term '{sym}' has {count} documentation axioms in {language} (expected 1)")]
-pub struct MultipleDocumentation {
-    pub sym: String,
-    pub language: String,
-    pub count: usize,
-}
-semantic_error!(
-    MultipleDocumentation,
-    "H002",
-    "multiple-documentation",
-    Hint
-);
-
-/// A term has no `documentation` axiom.
-#[derive(Debug, Clone, Error)]
-#[error("term '{sym}' has no documentation axiom")]
-pub struct MissingDocumentation {
-    pub sym: String,
-}
-semantic_error!(MissingDocumentation, "H001", "missing-documentation", Hint);
 
 /// Aggregate vocabulary + documentation-coverage counts — see
 /// [`KnowledgeBase::vocab_stats`].
@@ -255,8 +226,7 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
 
     /// Every interned symbol that counts as real KB vocabulary: KIF
     /// variables (`?x`/`@row`), scope-qualified variable interning keys, and
-    /// CNF skolem constants are excluded. Shared by [`Self::vocab_stats`] and
-    /// [`Self::completeness_findings`] so both agree on what a "symbol" is.
+    /// CNF skolem constants are excluded.
     fn real_symbol_ids(&self) -> Vec<SymbolId> {
         let syn = &self.layer.semantic().syntactic;
         let mut ids: Vec<SymbolId> = Vec::new();
@@ -268,185 +238,12 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
             if syn.is_skolem(sym_id) {
                 return;
             }
-            if crate::kb::search::is_scoped_variable_name(&name) {
+            if crate::syntactic::sentence::is_scoped_variable_name(&name) {
                 return;
             }
             ids.push(sym_id);
         });
         ids
-    }
-
-    /// The set of symbols bound to `subject_slot` across every sentence
-    /// matching `pattern_kif` (head-indexed via `head`, same O(1)
-    /// pre-filter [`Self::vocab_stats`]'s hand-written scan uses). Empty when
-    /// `pattern_kif`'s head relation isn't interned in this KB at all — never
-    /// panics (unlike the public [`Self::lookup`], where an unknown symbol in
-    /// a developer-typed pattern is a genuine usage error worth aborting on).
-    fn symbols_matching(
-        &self,
-        pattern_kif: &str,
-        head: &str,
-        subject_slot: usize,
-    ) -> HashSet<SymbolId> {
-        let syn = &self.layer.semantic().syntactic;
-        let Ok(pat) = syn.patterns().pattern_from_kif(pattern_kif) else {
-            return HashSet::new();
-        };
-        syn.patterns()
-            .find_by_pattern(&pat, Some(head), None)
-            .into_iter()
-            .filter_map(|(_, b)| match b.elements.get(&subject_slot) {
-                Some(Element::Symbol(s)) => Some(s.id()),
-                _ => None,
-            })
-            .collect()
-    }
-
-    /// Per-`(subject, language)` occurrence counts for `(documentation
-    /// SUBJECT LANGUAGE "...")` sentences — the finer key
-    /// [`Self::symbols_matching`] can't give, needed to tell "documented in
-    /// three languages" (fine) apart from "documented three times in
-    /// English" (a real duplicate — [`MultipleDocumentation`]
-    /// fires per-language, never across languages).
-    fn documentation_occurrences(&self) -> HashMap<(SymbolId, String), usize> {
-        let syn = &self.layer.semantic().syntactic;
-        let Ok(pat) = syn
-            .patterns()
-            .pattern_from_kif("(documentation ?Subj ?Lang ?Text)")
-        else {
-            return HashMap::new();
-        };
-        let mut counts: HashMap<(SymbolId, String), usize> = HashMap::new();
-        for (_, b) in syn
-            .patterns()
-            .find_by_pattern(&pat, Some("documentation"), None)
-        {
-            let (Some(Element::Symbol(subj)), Some(Element::Symbol(lang))) =
-                (b.elements.get(&0), b.elements.get(&1))
-            else {
-                continue;
-            };
-            *counts.entry((subj.id(), lang.to_string())).or_insert(0) += 1;
-        }
-        counts
-    }
-
-    /// The whole-KB documentation-completeness pass folded into
-    /// [`Self::validate_all`] as a second pass alongside the per-sentence
-    /// structural checks: every real symbol ([`Self::real_symbol_ids`])
-    /// missing a `documentation` or `termFormat` entry, every relation
-    /// symbol missing a `format` string, and every `(symbol, language)` pair
-    /// documented more than once. All findings are [`crate::Severity::Hint`]
-    /// (advisory, additive — never a substitute for the structural checks).
-    ///
-    /// Uses the syntactic layer's pattern matcher
-    /// ([`crate::syntactic::pattern`], reached the same way
-    /// [`Self::lookup`] does) rather than hand-indexed element positions, so
-    /// each check states the formula shape it looks for directly instead of
-    /// through bare argument-index numbers.
-    fn completeness_findings(&self) -> Vec<Diagnostic> {
-        let syn = &self.layer.semantic().syntactic;
-        let doc_occurrences = self.documentation_occurrences();
-        let documented: HashSet<SymbolId> = doc_occurrences.keys().map(|(id, _)| *id).collect();
-        let has_term_format =
-            self.symbols_matching("(termFormat ?Lang ?Subj ?Text)", "termFormat", 1);
-        let has_format = self.symbols_matching("(format ?Lang ?Rel ?Text)", "format", 1);
-
-        // Bulk anchor map replacing per-diagnostic `defining_sentence` calls:
-        // each of those scanned EVERY declaration sentence (plus a full
-        // forward-map span scan per candidate), and at thousands of
-        // completeness findings that quadratic pass dominated validate_all.
-        // One walk over the declaration head lists in the same priority order,
-        // first hit per symbol wins, span-less (synthetic) candidates skipped —
-        // per-symbol results identical to `defining_sentence`'s declaration
-        // pass.  Its by-head fallback stays per-symbol below (an O(1) list
-        // lookup, not a scan).
-        let spans = syn.source_span_index();
-        let mut defining: std::collections::HashMap<SymbolId, (SentenceId, crate::Span)> =
-            std::collections::HashMap::new();
-        const DECLARATIONS: &[&str] = &[
-            "subclass",
-            "instance",
-            "subrelation",
-            "subAttribute",
-            "documentation",
-        ];
-        for &head in DECLARATIONS {
-            for sid in syn.by_head(head).iter().copied() {
-                let Some(sent) = syn.sentence(sid) else {
-                    continue;
-                };
-                let Some(crate::types::Element::Symbol(sym)) = sent.elements.get(1) else {
-                    continue;
-                };
-                let Some(span) = spans.get(&sid) else {
-                    continue;
-                };
-                defining
-                    .entry(sym.id())
-                    .or_insert_with(|| (sid, span.clone()));
-            }
-        }
-        let anchor = |err: &dyn SemanticError, id: SymbolId, name: &str| -> Diagnostic {
-            let mut d = err.diagnostic();
-            let found = defining.get(&id).cloned().or_else(|| {
-                // `defining_sentence`'s fallback: any root headed by the symbol.
-                syn.by_head(name)
-                    .iter()
-                    .copied()
-                    .find_map(|sid| spans.get(&sid).map(|sp| (sid, sp.clone())))
-            });
-            if let Some((sid, span)) = found {
-                d.sids = vec![sid];
-                d.range = span;
-            }
-            d
-        };
-
-        let mut out = Vec::new();
-        for id in self.real_symbol_ids() {
-            let Some(name) = syn.sym_name(id).map(|s| s.name().to_string()) else {
-                continue;
-            };
-
-            if !documented.contains(&id) {
-                out.push(anchor(
-                    &MissingDocumentation { sym: name.clone() },
-                    id,
-                    &name,
-                ));
-            }
-            if !has_term_format.contains(&id) {
-                out.push(anchor(&MissingTermFormat { sym: name.clone() }, id, &name));
-            }
-            if (self.is_relation(id) || self.is_predicate(id) || self.is_function(id))
-                && !has_format.contains(&id)
-            {
-                out.push(anchor(
-                    &MissingFormatString { sym: name.clone() },
-                    id,
-                    &name,
-                ));
-            }
-        }
-
-        for ((id, language), count) in &doc_occurrences {
-            if *count <= 1 {
-                continue;
-            }
-            if let Some(name) = syn.sym_name(*id).map(|s| s.name().to_string()) {
-                out.push(anchor(
-                    &MultipleDocumentation {
-                        sym: name.clone(),
-                        language: language.clone(),
-                        count: *count,
-                    },
-                    *id,
-                    &name,
-                ));
-            }
-        }
-        out
     }
 
     /// True if `sym` has `ancestor` (by name) somewhere in its taxonomy.
@@ -466,40 +263,9 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
     /// symbol has no declarations anywhere.
     pub fn defining_sentence(&self, symbol: &str) -> Option<(SentenceId, crate::Span)> {
         let sym_id = self.symbol_id(symbol)?;
-        let store = &self.layer.semantic().syntactic;
-
-        // Canonical declarations with this symbol as arg 1.
-        const DECLARATIONS: &[&str] = &[
-            "subclass",
-            "instance",
-            "subrelation",
-            "subAttribute",
-            "documentation",
-        ];
-        for &head in DECLARATIONS {
-            for sid in store.by_head(head).iter().copied() {
-                let Some(sent) = store.sentence(sid) else {
-                    continue;
-                };
-                if matches!(
-                    sent.elements.get(1),
-                    Some(crate::types::Element::Symbol(sym)) if sym.id() == sym_id
-                ) {
-                    // Source location comes from the source AST; `None` ⇒ synthetic.
-                    if let Some(span) = store.source_span_of(sid) {
-                        return Some((sid, span));
-                    }
-                }
-            }
-        }
-
-        // Fall back to any root where symbol is the head.
-        for sid in store.by_head(symbol).iter().copied() {
-            if let Some(span) = store.source_span_of(sid) {
-                return Some((sid, span));
-            }
-        }
-        None
+        let sem = self.layer.semantic();
+        let sid = sem.defining_sentence(sym_id)?;
+        Some((sid, sem.syntactic.source_span_of(sid)?))
     }
 
     /// Expected domain class for argument `arg_idx` (1-based) of
@@ -554,102 +320,31 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
     }
 
     // -- Validation ------------------------------------------------------------
-    //
-    // Every public validation entrypoint returns a flat `Vec<Diagnostic>`:
-    // warnings AND hard errors together — tell them apart by
-    // `Diagnostic.severity` — each tagged with the implicated sentence(s) in
-    // `Diagnostic.sids`.  An EMPTY vector means the target validated cleanly.
-    // The entrypoints differ only in *what* is validated (one sentence / the
-    // whole KB / a session / a file / several files) and the scope they reason
-    // in; all funnel through the private `validate_sids`.
 
-    /// Validate one sentence in the global (`Base`) scope.
-    pub fn validate_sentence(&self, sid: SentenceId) -> Vec<Diagnostic> {
-        crate::with_guard!(self);
-        self.validate_sids(&[sid], crate::semantics::types::Scope::Base)
-    }
-
-    /// Validate one sentence in the context of `session` (`Base` ∪ that
-    /// session's transient overlay) — the single-sentence analogue of
-    /// [`Self::validate_session`].  Use this to re-check just-edited input
-    /// against the declarations the session itself introduced (a transient
-    /// `domain`/`subclass`/… that the global `Base` view can't see).
-    pub fn validate_sentence_in_session(&self, sid: SentenceId, session: &str) -> Vec<Diagnostic> {
-        crate::with_guard!(self);
-        use crate::semantics::types::Scope;
-        use crate::syntactic::caches::session::session_id;
-        self.validate_sids(&[sid], Scope::Session(session_id(session)))
-    }
-
-    /// Validate every root sentence in the KB, reasoning globally (`Base`),
-    /// PLUS a second, whole-KB pass of documentation-completeness hints
-    /// ([`Self::completeness_findings`]) — a distinct axis from the
-    /// per-sentence structural checks above (a symbol's documentation
-    /// coverage isn't a property of any one sentence), folded into this same
-    /// entry point rather than exposed separately so `validate_all` remains
-    /// the one "check everything" call.
-    pub fn validate_all(&self) -> Vec<Diagnostic> {
-        crate::with_guard!(self);
-        let roots: Vec<SentenceId> = self.layer.semantic().syntactic.root_sids();
-        let mut diags = self.validate_sids(&roots, crate::semantics::types::Scope::Base);
-        diags.extend(self.completeness_findings());
-        diags
-    }
-
-    /// Validate only the sentences belonging to `session`, reasoning in that
-    /// session's [`Scope`](crate::semantics::types::Scope) (`Base` ∪ the
-    /// session's transient overlay) so its own taxonomy/type declarations are
-    /// visible — unlike [`Self::validate_all`], which is global.
+    /// Validate `target`, returning every finding as a [`Diagnostic`] --
+    /// warnings and hard errors together (tell them apart by
+    /// `Diagnostic.severity`), each tagged with the implicated sentence(s) in
+    /// `Diagnostic.sids`. An empty vector means the target validated cleanly.
     ///
-    /// Use this after `load_kif` to validate just the new input.  Reads session
-    /// membership from the session cache (the live source of truth).
-    pub fn validate_session(&self, session: &str) -> Vec<Diagnostic> {
-        crate::with_guard!(self);
+    /// `session` picks the scope the checks reason in: `None` is the global
+    /// (`Base`) view; `Some(s)` adds session `s`'s transient overlay, so
+    /// declarations staged there but not yet promoted are visible (e.g. a
+    /// just-typed, correctly-parented class in an editor buffer is not flagged
+    /// as underived). A [`ValidationTarget::Session`] reasons in its own
+    /// session's scope unless `session` names another.
+    pub fn validate(&self, target: ValidationTarget<'_>, session: Option<&str>) -> Vec<Diagnostic> {
         use crate::semantics::types::Scope;
         use crate::syntactic::caches::session::session_id;
-        let sids = self.session_sids(session);
-        self.validate_sids(&sids, Scope::Session(session_id(session)))
-    }
-
-    /// Validate only the sentences whose source file tag is `file_tag` (global
-    /// scope).  Surfaces diagnostics about *that* input rather than re-emitting
-    /// every pre-existing warning in the wider KB.  Unknown / unloaded tags
-    /// yield an empty vector.  Tags match `SyntacticLayer::file_roots` keys
-    /// exactly (the path a file was loaded under, e.g. `/tmp/x.kif`).
-    pub fn validate_file(&self, file_tag: &str) -> Vec<Diagnostic> {
         crate::with_guard!(self);
-        let sids = self.layer.semantic().syntactic.file_root_sids(file_tag);
-        self.validate_sids(&sids, crate::semantics::types::Scope::Base)
-    }
-
-    /// [`Self::validate_file`] in the context of `session` (`Base` ∪ that
-    /// session's transient overlay).  For live editor buffers staged into a
-    /// file's own session but not yet promoted: their declarations are
-    /// session-scoped, so Base-scope validation would falsely flag symbols
-    /// they connect (e.g. E001 on a just-typed, correctly-parented class).
-    pub fn validate_file_in_session(&self, file_tag: &str, session: &str) -> Vec<Diagnostic> {
-        crate::with_guard!(self);
-        use crate::semantics::types::Scope;
-        use crate::syntactic::caches::session::session_id;
-        let sids = self.layer.semantic().syntactic.file_root_sids(file_tag);
-        self.validate_sids(&sids, Scope::Session(session_id(session)))
-    }
-
-    /// Validate every sentence whose file tag is in `file_tags` (global scope),
-    /// merged and deduped.  Convenience for CLI handlers passed several `-f`/`-d`.
-    pub fn validate_files<I, S>(&self, file_tags: I) -> Vec<Diagnostic>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        crate::with_guard!(self);
-        let mut sids: Vec<SentenceId> = Vec::new();
-        for tag in file_tags {
-            sids.extend(self.layer.semantic().syntactic.file_root_sids(tag.as_ref()));
-        }
-        sids.sort_unstable();
-        sids.dedup();
-        self.validate_sids(&sids, crate::semantics::types::Scope::Base)
+        let syntactic = &self.layer.semantic().syntactic;
+        let (sids, session) = match target {
+            ValidationTarget::All => (syntactic.root_sids(), session),
+            ValidationTarget::Sentence(sid) => (vec![sid], session),
+            ValidationTarget::File(tag) => (syntactic.file_root_sids(tag), session),
+            ValidationTarget::Session(name) => (self.session_sids(name), session.or(Some(name))),
+        };
+        let scope = session.map_or(Scope::Base, |s| Scope::Session(session_id(s)));
+        self.validate_sids(&sids, scope)
     }
 
     /// The single implementation behind every public validate entrypoint:
@@ -664,30 +359,36 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
         sids: &[SentenceId],
         scope: crate::semantics::types::Scope,
     ) -> Vec<Diagnostic> {
-        // Span anchoring uses the bulk index, not per-sid `source_span`:
-        // that call is a full forward-map scan, and at thousands of
-        // diagnostics the per-call scans dominated validate_all (and their
-        // shard locking serialised the parallel fan-out below).
-        let spans = self.layer.semantic().syntactic.source_span_index();
+        let syntactic = &self.layer.semantic().syntactic;
+        let spans = syntactic.source_span_index();
         let one = |sid: SentenceId| -> Vec<Diagnostic> {
+            let source_spans = syntactic.source_spans(sid);
             self.layer
                 .semantic()
                 .validation_scoped(sid, scope)
                 .iter()
-                .map(|e| {
+                .flat_map(|e| {
                     let mut d = e.to_diagnostic();
                     if d.sids.is_empty() {
                         d.sids = vec![sid];
                     }
-                    // Anchor the diagnostic at the *root* formula's source span,
-                    // so findings on nested sub-sentences (which carry no span of
-                    // their own) still report the enclosing formula's file:line.
-                    if d.range.file.is_empty() {
-                        if let Some(span) = spans.get(&sid) {
-                            d.range = span.clone();
+                    if !d.range.file.is_empty() || source_spans.is_empty() {
+                        if d.range.file.is_empty() {
+                            if let Some(span) = spans.get(&sid) {
+                                d.range = span.clone();
+                            }
                         }
+                        return vec![d];
                     }
-                    d
+                    source_spans
+                        .iter()
+                        .cloned()
+                        .map(|range| {
+                            let mut occurrence = d.clone();
+                            occurrence.range = range;
+                            occurrence
+                        })
+                        .collect()
                 })
                 .collect()
         };
@@ -705,7 +406,37 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
 
 #[cfg(test)]
 mod tests {
-    use crate::KnowledgeBase;
+    use std::path::PathBuf;
+
+    use crate::{KnowledgeBase, SourceFile};
+
+    #[test]
+    fn validation_fans_out_a_finding_to_all_source_occurrences() {
+        let mut kb = KnowledgeBase::new();
+        let formula = "(UnknownRelation Dog)".to_string();
+        assert!(
+            kb.load(
+                SourceFile::kif(PathBuf::from("one.kif"), formula.clone()),
+                "one"
+            )
+            .ok
+        );
+        assert!(
+            kb.load(SourceFile::kif(PathBuf::from("two.kif"), formula), "two")
+                .ok
+        );
+
+        let mut findings: Vec<_> = kb
+            .validate(crate::ValidationTarget::All, None)
+            .into_iter()
+            .filter(|d| d.code == "head-not-relation")
+            .collect();
+        findings.sort_by(|a, b| a.range.file.cmp(&b.range.file));
+
+        assert_eq!(findings.len(), 2);
+        assert_eq!(findings[0].range.file, "one.kif");
+        assert_eq!(findings[1].range.file, "two.kif");
+    }
 
     #[test]
     fn is_class_type_matches_only_the_class_symbol() {
@@ -795,8 +526,13 @@ mod tests {
         // The contract: an empty diagnostic vector means "validated cleanly".
         // A session with no sentences has nothing to flag.
         let kb = KnowledgeBase::new();
-        assert!(kb.validate_session("nonexistent").is_empty());
-        assert!(kb.validate_all().is_empty(), "an empty KB validates clean");
+        assert!(kb
+            .validate(crate::ValidationTarget::Session("nonexistent"), None)
+            .is_empty());
+        assert!(
+            kb.validate(crate::ValidationTarget::All, None).is_empty(),
+            "an empty KB validates clean"
+        );
     }
 
     #[test]
@@ -820,14 +556,14 @@ mod tests {
             .first()
             .expect("a (likes ...) root");
 
-        let base = kb.validate_sentence(sid);
+        let base = kb.validate(crate::ValidationTarget::Sentence(sid), None);
         assert!(
             base.iter().any(|d| d.code == "head-not-relation"),
             "Base never saw the declaration → HeadNotRelation; got {:?}",
             base.iter().map(|d| d.code).collect::<Vec<_>>()
         );
 
-        let scoped = kb.validate_sentence_in_session(sid, "s");
+        let scoped = kb.validate(crate::ValidationTarget::Sentence(sid), Some("s"));
         assert!(
             !scoped.iter().any(|d| d.code == "head-not-relation"),
             "session scope sees `likes` as a relation → no HeadNotRelation; got {:?}",
@@ -846,7 +582,7 @@ mod tests {
         let r = kb.tell("(Foo Bar Baz)", "s");
         assert!(r.ok, "ingest failed: {:?}", r.diagnostics);
 
-        let diags = kb.validate_session("s");
+        let diags = kb.validate(crate::ValidationTarget::Session("s"), None);
         assert!(
             !diags.is_empty(),
             "an ill-formed sentence must yield diagnostics"
@@ -913,7 +649,7 @@ mod session_validate_probe {
         kb.make_session_axiomatic("load").expect("promote");
 
         assert!(kb.tell("(orientation A B Right)", "case").ok);
-        let diags = kb.validate_session("case");
+        let diags = kb.validate(crate::ValidationTarget::Session("case"), None);
         let messages: Vec<&str> = diags.iter().map(|d| d.message.as_str()).collect();
         assert!(
             !messages
@@ -950,7 +686,7 @@ mod completeness_tests {
     #[test]
     fn missing_documentation_hint_fires_and_is_a_hint() {
         let kb = promoted("(subclass Foo Entity)");
-        let diags = kb.validate_all();
+        let diags = kb.validate(crate::ValidationTarget::All, None);
         let d = find(&diags, "missing-documentation", "Foo")
             .expect("Foo has no documentation axiom — should be flagged");
         assert_eq!(d.severity, Severity::Hint);
@@ -959,7 +695,7 @@ mod completeness_tests {
     #[test]
     fn missing_documentation_hint_absent_when_documented() {
         let kb = promoted("(subclass Foo Entity)\n(documentation Foo EnglishLanguage \"A foo.\")");
-        let diags = kb.validate_all();
+        let diags = kb.validate(crate::ValidationTarget::All, None);
         assert!(
             find(&diags, "missing-documentation", "Foo").is_none(),
             "Foo is documented — must not be flagged"
@@ -969,10 +705,20 @@ mod completeness_tests {
     #[test]
     fn missing_term_format_hint_fires_and_absent_when_present() {
         let undocumented = promoted("(subclass Foo Entity)");
-        assert!(find(&undocumented.validate_all(), "missing-term-format", "Foo").is_some());
+        assert!(find(
+            &undocumented.validate(crate::ValidationTarget::All, None),
+            "missing-term-format",
+            "Foo"
+        )
+        .is_some());
 
         let labeled = promoted("(subclass Foo Entity)\n(termFormat EnglishLanguage Foo \"foo\")");
-        assert!(find(&labeled.validate_all(), "missing-term-format", "Foo").is_none());
+        assert!(find(
+            &labeled.validate(crate::ValidationTarget::All, None),
+            "missing-term-format",
+            "Foo"
+        )
+        .is_none());
     }
 
     #[test]
@@ -982,7 +728,7 @@ mod completeness_tests {
              (instance likes BinaryRelation)\n\
              (subclass Foo Entity)",
         );
-        let diags = kb.validate_all();
+        let diags = kb.validate(crate::ValidationTarget::All, None);
         assert!(
             find(&diags, "missing-format-string", "likes").is_some(),
             "a relation with no format string should be flagged"
@@ -1000,7 +746,12 @@ mod completeness_tests {
              (instance likes BinaryRelation)\n\
              (format EnglishLanguage likes \"%1 likes %2\")",
         );
-        assert!(find(&kb.validate_all(), "missing-format-string", "likes").is_none());
+        assert!(find(
+            &kb.validate(crate::ValidationTarget::All, None),
+            "missing-format-string",
+            "likes"
+        )
+        .is_none());
     }
 
     #[test]
@@ -1010,7 +761,7 @@ mod completeness_tests {
              (documentation Foo EnglishLanguage \"A foo.\")\n\
              (documentation Foo EnglishLanguage \"Another foo description.\")",
         );
-        let diags = kb.validate_all();
+        let diags = kb.validate(crate::ValidationTarget::All, None);
         let d = find(&diags, "multiple-documentation", "Foo")
             .expect("two English documentation axioms for Foo should be flagged");
         assert_eq!(d.severity, Severity::Hint);
@@ -1030,15 +781,39 @@ mod completeness_tests {
              (documentation Foo EnglishLanguage \"A foo.\")\n\
              (documentation Foo FrenchLanguage \"Un foo.\")",
         );
-        assert!(find(&kb.validate_all(), "multiple-documentation", "Foo").is_none());
+        assert!(find(
+            &kb.validate(crate::ValidationTarget::All, None),
+            "multiple-documentation",
+            "Foo"
+        )
+        .is_none());
     }
 
     #[test]
     fn empty_kb_has_no_completeness_findings() {
         let kb = KnowledgeBase::new();
         assert!(
-            kb.validate_all().is_empty(),
+            kb.validate(crate::ValidationTarget::All, None).is_empty(),
             "an empty KB has no symbols to flag"
         );
+    }
+
+    #[test]
+    fn file_and_session_validation_report_their_own_gaps() {
+        let mut kb = KnowledgeBase::new();
+        for (file, kif) in [
+            ("a.kif", "(subclass Foo Entity)"),
+            ("b.kif", "(subclass Bar Entity)"),
+        ] {
+            assert!(kb.reload_kif(kif, &std::path::PathBuf::from(file), file).ok);
+        }
+        assert!(kb.make_session_axiomatic("a.kif").is_ok());
+        let a = kb.validate(crate::ValidationTarget::File("a.kif"), None);
+        assert!(find(&a, "missing-documentation", "Foo").is_some());
+        assert!(find(&a, "missing-documentation", "Bar").is_none());
+        // `b.kif` is still a transient session: its own scope reports it.
+        let b = kb.validate(crate::ValidationTarget::Session("b.kif"), None);
+        assert!(find(&b, "missing-documentation", "Bar").is_some());
+        assert!(find(&b, "missing-documentation", "Foo").is_none());
     }
 }

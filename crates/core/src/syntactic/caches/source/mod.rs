@@ -31,7 +31,7 @@ pub(crate) use side::{SourceSide, SourceSideSnapshot};
 /// Warning event for a formula that appears more than once in a single file.
 fn duplicate_warning(dup: &Span, first: &Span) -> Event {
     Event::Diagnostic(Diagnostic {
-        kind: "ingest",
+        kind: "parse",
         range: dup.clone(),
         severity: Severity::Warning,
         code: "duplicate-formula",
@@ -101,6 +101,7 @@ fn apply_source(
     protect: &HashSet<u64>,
 ) -> Vec<Event> {
     let mut evs = Vec::new();
+    let mut references_changed = false;
     // Fingerprints carried over unchanged (present in both prev and new parse),
     // surfaced as a single batched `FormulasUnchanged`.
     let mut retained: Vec<u64> = Vec::new();
@@ -127,6 +128,7 @@ fn apply_source(
         } else {
             let was_empty = refs.is_empty();
             refs.insert(span.clone());
+            references_changed = true;
             if was_empty {
                 // First occurrence anywhere. `nodes` are keyed by content
                 // fingerprint, so the canonical AST is immutable; insert once.
@@ -164,6 +166,7 @@ fn apply_source(
         let now_empty = match side.references.get_mut(&hash) {
             Some(mut refs) => {
                 refs.retain(|sp| sp.file.as_str() != file_key);
+                references_changed = true;
                 refs.is_empty()
             }
             None => false,
@@ -193,6 +196,9 @@ fn apply_source(
     if !deferred.is_empty() {
         evs.push(Event::FormulasRecycled { nodes: deferred });
     }
+    if references_changed {
+        evs.push(Event::SourceReferencesChanged);
+    }
     evs
 }
 
@@ -218,6 +224,7 @@ impl EagerMapBehavior for SourceCache {
             EventKind::FormulaAdded,
             EventKind::FormulaRemoved,
             EventKind::FormulaReferenced,
+            EventKind::SourceReferencesChanged,
         ]
     }
 
@@ -276,16 +283,7 @@ impl EagerMapBehavior for SourceCache {
                         // re-ingests) carry an empty path but the same `session`, so
                         // inline content is keyed by session to keep distinct sessions
                         // isolated.
-                        let file_key = {
-                            let path = file.path.to_str().unwrap_or("");
-                            if !path.is_empty() {
-                                path.to_string()
-                            } else if !file.name.is_empty() {
-                                file.name.clone()
-                            } else {
-                                "inline".to_string()
-                            }
-                        };
+                        let file_key = file.key();
                         if matches!(file.origin, crate::types::FileOrigin::Inline) {
                             side.mark_inline(&file_key);
                         }
@@ -416,9 +414,13 @@ impl SyntacticLayer {
         false
     }
 
-    /// A fresh, unique inline-source key (`__inline(N)__`) for a `tell`.
-    pub(crate) fn next_inline_source_key(&self) -> String {
-        self.source.side().next_inline_key()
+    /// A fresh, unique source key (`__{kind}(N)__`): `inline` for a `tell`,
+    /// or a per-call tag for a source staged and rolled back within one call
+    /// (an ask's hypotheses or conjecture), so concurrent calls never
+    /// reconcile against each other.  The leading `__` keeps it out of
+    /// user-visible source attribution.
+    pub(crate) fn unique_source_key(&self, kind: &str) -> String {
+        self.source.side().next_scratch_key(kind)
     }
 
     /// The fingerprints currently recycled (staged for removal) for `source_key`.
@@ -527,28 +529,32 @@ impl SyntacticLayer {
         self.source_node_of(sid).map(|n| n.span().clone())
     }
 
-    /// Source provenance for every root in one pass: walk the
-    /// `fingerprint -> roots` map once, resolve each fingerprint's source AST,
-    /// and credit it to each root the first time that root is seen.
-    ///
-    /// Bulk consumers (axiom-source index, man pages) must use this rather than
-    /// `source_node_of` per root: that lookup is itself a linear scan over the
-    /// forward map, so per-root calls go quadratic in KB size.
-    // Bulk consumers (axiom-source index / proof prose) are all ask-gated.
-    #[cfg(any(feature = "external-prover", feature = "native-prover"))]
-    pub(crate) fn root_source_nodes(&self) -> Vec<(crate::SentenceId, AstNode)> {
-        let mut seen = std::collections::HashSet::new();
-        let mut out = Vec::new();
-        for (fp, sids) in self.fingerprint_roots() {
-            let Some(node) = self.source_ast(fp) else {
-                continue;
-            };
-            for sid in sids {
-                if seen.insert(sid) {
-                    out.push((sid, node.clone()));
-                }
+    /// Every real source occurrence of root `sid`, ordered by file and source
+    /// position. Identical formulas in different sources share a fingerprint,
+    /// so this returns every source reference rather than only the canonical AST.
+    /// Synthetic spans and scratch sources (`__inline(N)__`, query staging)
+    /// are not occurrences.
+    pub(crate) fn source_spans(&self, sid: crate::SentenceId) -> Vec<Span> {
+        let mut spans = Vec::new();
+        for fp in self.fingerprints_producing(sid) {
+            if let Some(references) = self.source.side().references.get(&fp) {
+                spans.extend(
+                    references
+                        .iter()
+                        .filter(|span| {
+                            !span.is_synthetic() && !SourceSide::is_scratch_key(&span.file)
+                        })
+                        .cloned(),
+                );
             }
         }
-        out
+        spans.sort_by(|a, b| {
+            a.file
+                .cmp(&b.file)
+                .then(a.offset.cmp(&b.offset))
+                .then(a.end_offset.cmp(&b.end_offset))
+        });
+        spans.dedup();
+        spans
     }
 }

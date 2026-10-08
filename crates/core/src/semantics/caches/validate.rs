@@ -56,6 +56,7 @@ impl CacheBehavior for Validate {
             EventKind::DomainRangeChanged,
             EventKind::SessionReferenced,
             EventKind::SessionRetracted,
+            EventKind::SourceReferencesChanged,
         ]
     }
 
@@ -67,11 +68,15 @@ impl CacheBehavior for Validate {
             "semantic::is_predicate",
             "semantic::is_function",
             "semantic::has_ancestor",
+            "semantic::disjoint",
+            "semantic::defining_sentences",
+            "semantic::doc_coverage",
             "semantic::arity",
             "semantic::domain",
             "semantic::range",
             "syntactic::sentences",
             "syntactic::sessions",
+            "syntactic::source",
         ]
     }
 
@@ -91,6 +96,7 @@ impl CacheBehavior for Validate {
                     | Event::RootRemoved { .. }
                     | Event::TaxonomyChanged { .. }
                     | Event::DomainRangeChanged { .. }
+                    | Event::SourceReferencesChanged
             )
         }) {
             store.clear();

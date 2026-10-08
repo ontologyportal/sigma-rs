@@ -24,8 +24,12 @@ use crossterm::{
 use sigmakee_rs_sdk::manager::KBManager;
 use sigmakee_rs_sdk::Session;
 use sigmakee_rs_sdk::{
-    DocEntry, KnowledgeBase, ManPage, SentenceId, SortSig, TptpLang, TranslationLayer,
+    DocEntry, KnowledgeBase, ManPage, SentenceId, SortSig, TptpLang, TptpOptions, TranslationLayer,
 };
+
+/// Source location of each sentence, from
+/// [`sigmakee_rs_sdk::DiagnosticSource::sentence_locations`].
+type Locations = std::collections::HashMap<SentenceId, sigmakee_rs_sdk::Span>;
 
 /// How reference / antecedent formulas are rendered. Toggled with `t`
 /// in the interactive viewer.
@@ -39,13 +43,12 @@ enum FormulaMode {
 }
 
 pub fn run_man(
-    mut session: Session<TranslationLayer>,
+    session: Session<TranslationLayer>,
     _manager: KBManager,
     symbol: String,
     lang: Option<String>,
     no_pager: bool,
 ) -> bool {
-    session.kb_mut().ensure_introspection();
     let kb = session.kb();
 
     let Some(man) = kb.manpage(&symbol) else {
@@ -189,7 +192,7 @@ fn build_document(
     mode: FormulaMode,
 ) -> Document {
     let mut doc = Document::default();
-    let src_idx = kb.build_axiom_source_index();
+    let locations = sigmakee_rs_sdk::DiagnosticSource::sentence_locations(kb);
 
     // NAME
     doc.push_header("NAME");
@@ -363,9 +366,9 @@ fn build_document(
             man.antecedent_refs.len()
         ));
         let mut refs = man.antecedent_refs.clone();
-        sort_sids_by_source(&mut refs, &src_idx);
+        sort_sids_by_source(&mut refs, &locations);
         for sid in &refs {
-            push_sentence_block(&mut doc, kb, &src_idx, *sid, man, mode);
+            push_sentence_block(&mut doc, kb, &locations, *sid, man, mode);
         }
     }
 
@@ -385,7 +388,7 @@ fn build_document(
                 if pos.is_empty() {
                     continue;
                 }
-                sort_sids_by_source(pos, &src_idx);
+                sort_sids_by_source(pos, &locations);
                 let label = if i == 0 {
                     String::from("Appearance as head")
                 } else {
@@ -393,16 +396,16 @@ fn build_document(
                 };
                 doc.push_header(&label);
                 for sid in pos.iter() {
-                    push_sentence_block(&mut doc, kb, &src_idx, *sid, man, mode);
+                    push_sentence_block(&mut doc, kb, &locations, *sid, man, mode);
                 }
             }
         }
         if !man.ref_nested.is_empty() {
             let mut nested = man.ref_nested.clone();
-            sort_sids_by_source(&mut nested, &src_idx);
+            sort_sids_by_source(&mut nested, &locations);
             doc.push_header("Appearance nested inside other axioms");
             for sid in &nested {
-                push_sentence_block(&mut doc, kb, &src_idx, *sid, man, mode);
+                push_sentence_block(&mut doc, kb, &locations, *sid, man, mode);
             }
         }
     }
@@ -434,7 +437,7 @@ fn sig_line(label: &str, sig: &SortSig) -> Vec<Span> {
 fn push_sentence_block(
     doc: &mut Document,
     kb: &KnowledgeBase,
-    src_idx: &sigmakee_rs_sdk::AxiomSourceIndex,
+    locations: &Locations,
     sid: SentenceId,
     man: &ManPage,
     mode: FormulaMode,
@@ -442,8 +445,8 @@ fn push_sentence_block(
     if kb.sentence(sid).is_none() {
         return;
     }
-    let trace = src_idx
-        .lookup_by_sid(sid)
+    let trace = locations
+        .get(&sid)
         .map(|s| format!("{}:{}", s.file, s.line))
         .unwrap_or_else(|| format!("sid {:x}", sid));
     // Source trace, with a SInE-ownership marker when this symbol is the
@@ -461,7 +464,7 @@ fn push_sentence_block(
             // (logical equivalents collapse to one sid), flattened into the
             // listing as consecutive lines; falls back to the canonicalized
             // sentence when no source AST is recorded.
-            let pretty = kb.display_source_pretty(sid, 4);
+            let pretty = kb.render_sentence(sid, sigmakee_rs_sdk::SentenceForm::Source, true, 4);
             for line in pretty.lines() {
                 doc.push_line(vec![plain("    "), pre_styled(line.to_string())]);
             }
@@ -474,7 +477,11 @@ fn push_sentence_block(
 /// suppressed by the rewrite pass, show its synthetic replacement(s)
 /// instead, each tagged `(synthetic)`.
 fn push_tptp(doc: &mut Document, kb: &KnowledgeBase, sid: SentenceId) {
-    if let Some(tptp) = kb.sentence_tptp(sid, TptpLang::Tff) {
+    let tff = TptpOptions {
+        lang: TptpLang::Tff,
+        ..TptpOptions::default()
+    };
+    if let Some(tptp) = kb.sentence_tptp(sid, &tff) {
         doc.push_line(vec![plain("    "), yellow(tptp)]);
         return;
     }
@@ -482,7 +489,7 @@ fn push_tptp(doc: &mut Document, kb: &KnowledgeBase, sid: SentenceId) {
         let syns = kb.synthetic_replacements_of(sid);
         let mut shown = false;
         for s in syns {
-            if let Some(tptp) = kb.sentence_tptp(s, TptpLang::Tff) {
+            if let Some(tptp) = kb.sentence_tptp(s, &tff) {
                 doc.push_line(vec![
                     plain("    "),
                     yellow(tptp),
@@ -504,13 +511,11 @@ fn push_tptp(doc: &mut Document, kb: &KnowledgeBase, sid: SentenceId) {
 }
 
 /// Sort a list of sentence ids by (file, line) for stable output.
-fn sort_sids_by_source(sids: &mut [SentenceId], src_idx: &sigmakee_rs_sdk::AxiomSourceIndex) {
-    sids.sort_by(
-        |a, b| match (src_idx.lookup_by_sid(*a), src_idx.lookup_by_sid(*b)) {
-            (Some(x), Some(y)) => (x.file.as_str(), x.line).cmp(&(y.file.as_str(), y.line)),
-            _ => a.cmp(b),
-        },
-    );
+fn sort_sids_by_source(sids: &mut [SentenceId], locations: &Locations) {
+    sids.sort_by(|a, b| match (locations.get(a), locations.get(b)) {
+        (Some(x), Some(y)) => (x.file.as_str(), x.line).cmp(&(y.file.as_str(), y.line)),
+        _ => a.cmp(b),
+    });
 }
 
 /// Scan `text` for `&%Symbol` tokens. Each match becomes an underlined

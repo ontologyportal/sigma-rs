@@ -5,7 +5,7 @@
 // The server runs two diagnostic passes for each document:
 //   1. `ParsedDocument.diagnostics`  -- the parse / tokenize errors
 //      surfaced by `parse_document` (pure, per-document).
-//   2. `KnowledgeBase::validate_session` -- semantic errors that can
+//   2. `KnowledgeBase::validate` -- semantic errors that can
 //      only be detected once the sentences are interned (arity,
 //      head-not-relation, etc.) keyed on the per-file session that
 //      `didOpen` / `didChange` used.
@@ -76,9 +76,12 @@ fn publish_diagnostics_filtered<L: TopLayer>(
     let is_tq = crate::server::is_tq(&file_tag);
     // ONE bulk validation call for the whole file, not a per-sentence loop
     let findings = if is_tq {
-        kb.validate_file_in_session(&file_tag, &file_tag)
+        kb.validate(
+            sigmakee_rs_sdk::ValidationTarget::File(&file_tag),
+            Some(&file_tag),
+        )
     } else {
-        kb.validate_file(&file_tag)
+        kb.validate(sigmakee_rs_sdk::ValidationTarget::File(&file_tag), None)
     };
     for d in findings {
         if ignored.contains(d.code) || ignored.contains(d.kind) {

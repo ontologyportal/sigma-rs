@@ -4,49 +4,40 @@
 
 #[cfg(any(feature = "external-prover", feature = "native-prover"))]
 use sigmakee_rs_core::Parser;
-use sigmakee_rs_core::PromoteError;
 use sigmakee_rs_core::SourceFile;
 #[cfg(any(feature = "external-prover", feature = "native-prover"))]
 use sigmakee_rs_core::TestCase;
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 use sigmakee_rs_core::ToDiagnostic;
 use sigmakee_rs_core::TopLayer;
-
-use crate::SdkResult;
 
 use super::super::{SdkError, Source};
 use super::Session;
 
 impl<L: TopLayer> Session<L> {
-    /// Read a [`Source`], auto-detect its parser, ingest it, and promote it to
-    /// axioms.  Errors if the format can't be detected or the source fails to
-    /// parse.  Works on every backend (ingestion is layer-agnostic).
-    pub fn ingest(&mut self, src: Source, abort: bool) -> Vec<SdkError> {
-        self.ingest_counted(src, abort).1
+    /// Read a [`Source`], auto-detect its parser, and load and promote each
+    /// file it yields under its own source key
+    /// ([`KnowledgeBase::load_and_promote`](sigmakee_rs_core::KnowledgeBase::load_and_promote)).
+    /// Every file is promoted, whatever its diagnostics; a file whose
+    /// promotion is rejected stays loaded as unpromoted session content.
+    /// Returns every file's diagnostics.  Works on every backend.
+    pub fn ingest(&mut self, src: Source) -> Vec<SdkError> {
+        self.ingest_counted(src).1
     }
 
     /// Same as [`ingest`](Self::ingest), but also returns how many individual
     /// source files were actually read -- a single [`Source`] (e.g. a
     /// directory or a git-repo path list) can expand into many.
-    pub fn ingest_counted(&mut self, src: Source, abort: bool) -> (usize, Vec<SdkError>) {
+    pub fn ingest_counted(&mut self, src: Source) -> (usize, Vec<SdkError>) {
         let sources = match src.read(self.sink().as_ref()).map_err(|e| vec![e]) {
             Err(e) => return (0, e),
             Ok(sources) => sources,
         };
         let count = sources.len();
-        let mut errs = vec![];
-        // Load (reconcile) + promote.  `load` is layer-agnostic; promotion is
-        // per-layer (the prover layers take the 1-arg `make_session_axiomatic`,
-        // the translation layer the consistency-gated 4-arg form).
-        for src in sources {
-            errs.extend(self.ingest_inner(src));
-        }
-        if abort && errs.iter().any(|e| e.is_err()) {
-            return (count, errs);
-        }
-        let Err(e) = self.after_ingest() else {
-            return (count, errs);
-        };
-        errs.push(e);
+        let errs = sources
+            .into_iter()
+            .flat_map(|src| self.load_and_promote(src))
+            .collect();
         (count, errs)
     }
 
@@ -61,24 +52,18 @@ impl<L: TopLayer> Session<L> {
         todo!("I have to implement Session::rollback()")
     }
 
-    pub(super) fn ingest_inner(&mut self, src: SourceFile) -> Vec<SdkError> {
-        let r = self.kb.load(src, &self.name);
+    /// Load and promote one file under its own source key; its diagnostics.
+    fn load_and_promote(&mut self, src: SourceFile) -> Vec<SdkError> {
+        let session = src.key();
+        let r = self.kb.load_and_promote(src, &session);
         r.diagnostics.into_iter().map(SdkError::from).collect()
-    }
-
-    pub(super) fn after_ingest(&mut self) -> SdkResult<()> {
-        self.kb
-            .make_session_axiomatic(&self.name)
-            .map_err(|e: PromoteError| SdkError::from(e.to_diagnostic()))?;
-        Ok(())
     }
 
     /// Convert a test [`Source`] into a [`TestCase`], ingesting any background
     /// theory it carries into the KB as real, promoted axioms.
     ///
-    /// Two kinds of background get ingested + promoted (in one bulk
-    /// [`make_session_axiomatic`](Self::after_ingest) pass *after* everything is
-    /// loaded, so the prover SInE-selects them):
+    /// Two kinds of background get loaded and promoted, so the prover
+    /// SInE-selects them:
     ///   * linked axiom libraries (`.ax` / any non-test source the test pulls in);
     ///   * a TPTP problem's `axiom`-role statements — `from_tptp` hands these back
     ///     separately as `background`, distinct from the `Hypothesis`-role
@@ -95,14 +80,10 @@ impl<L: TopLayer> Session<L> {
         let sources = test_src.read(self.sink().as_ref()).map_err(|e| vec![e])?;
         let mut errs = vec![];
         let mut tcs = vec![];
-        // Did we ingest any background axioms (a linked library or TPTP
-        // `axiom`-role statements) that need promoting to selectable axioms?
-        let mut ingested_axioms = false;
         for sf in sources {
             if !sf.parser.is_test() {
-                // not a test → a linked axiom library: ingest it
-                errs.extend(self.ingest_inner(sf));
-                ingested_axioms = true;
+                // not a test -> a linked axiom library
+                errs.extend(self.load_and_promote(sf));
                 continue;
             }
             if matches!(sf.parser, Parser::Tptp { .. }) {
@@ -118,7 +99,7 @@ impl<L: TopLayer> Session<L> {
                 // Background theory is NOT the test obligation: ingest it as
                 // ordinary, promotable axioms — not as `tc.axioms` support.
                 if !background.is_empty() {
-                    errs.extend(self.ingest_inner(SourceFile {
+                    errs.extend(self.load_and_promote(SourceFile {
                         parser: Parser::Kif { options: None },
                         name: sf.name.clone(),
                         path: sf.path.clone(),
@@ -126,7 +107,6 @@ impl<L: TopLayer> Session<L> {
                         contents: String::new(),
                         prebuilt: Some(background),
                     }));
-                    ingested_axioms = true;
                 }
                 tcs.push(tc);
                 continue;
@@ -144,15 +124,6 @@ impl<L: TopLayer> Session<L> {
             }
             let (tc, _) = TestCase::from_doc_items(&docs, &sf.name);
             tcs.push(tc);
-        }
-
-        // Bulk-promote everything ingested above to axioms, once, before the
-        // test runs — so the linked libraries + TPTP background are SInE-
-        // selectable rather than transient session assertions.
-        if ingested_axioms {
-            if let Err(e) = self.after_ingest() {
-                errs.push(e);
-            }
         }
 
         if errs.iter().any(|err| err.is_err()) {
@@ -182,7 +153,7 @@ mod tests {
         fs::write(root.join("b.kif"), "(subclass C D)").unwrap();
 
         let mut s = Session::<TranslationLayer>::new("ingest-counted-test".into());
-        let (n, errs) = s.ingest_counted(Source::Local(vec![root.clone()]), false);
+        let (n, errs) = s.ingest_counted(Source::Local(vec![root.clone()]));
         assert_eq!(
             n, 2,
             "two files in the directory should count as two sources"
@@ -190,6 +161,40 @@ mod tests {
         assert!(
             errs.iter().all(|e| !e.is_err()),
             "unexpected ingest errors: {errs:?}"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn each_file_is_loaded_and_promoted_on_its_own_even_with_parse_errors() {
+        use std::fs;
+        let root = std::env::temp_dir().join("sdk-ingest-per-file");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("good.kif"), "(subclass A B)").unwrap();
+        fs::write(root.join("bad.kif"), "(subclass C D)\n(subclass E").unwrap();
+
+        let mut s = Session::<TranslationLayer>::new("per-file".into());
+        let errs = s.ingest(Source::Local(vec![root.clone()]));
+        assert!(
+            errs.iter().any(|e| e.is_err()),
+            "the parse error is reported"
+        );
+        for (file, sym) in [("good.kif", "A"), ("bad.kif", "C")] {
+            let key = root.join(file).to_string_lossy().into_owned();
+            assert!(
+                s.kb().session_sids(&key).is_empty(),
+                "{file} was promoted out of its session"
+            );
+            assert!(
+                s.kb().symbol_id(sym).is_some(),
+                "{file}'s formula is in the KB"
+            );
+        }
+        assert!(
+            s.kb().session_sids("per-file").is_empty(),
+            "no batch session"
         );
 
         let _ = fs::remove_dir_all(&root);

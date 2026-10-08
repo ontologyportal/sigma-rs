@@ -1,113 +1,17 @@
+// crates/core/src/trans/assemble.rs
+//
+// File-level TPTP assembly
+
 //! TPTP assembler: walks an `ir::Problem` and produces a TPTP string using
-//! SUMO-friendly conventions — SID-based axiom names (`kb_<sid>`), optional
+//! SUMO-friendly conventions -- SID-based axiom names (`kb_<sid>`), optional
 //! leading KIF comments, and a customisable conjecture label.
 
 use std::collections::HashSet;
 use std::fmt::Write as _;
 
-#[cfg(feature = "external-prover")]
-use crate::trans::ir::{HoProblem, ProblemIr};
-use crate::trans::ir::{LogicMode, Problem as IrProblem};
-
 use crate::semantics::SemanticLayer;
 use crate::syntactic::sentence_to_plain_kif;
 use crate::types::SentenceId;
-
-/// What the assembler needs from a problem representation: the language
-/// keyword, the declaration preamble, and each axiom / the conjecture as
-/// formula text.  The first-order [`IrProblem`] and the higher-order
-/// [`HoProblem`] both implement it, so `kb_<sid>` naming, line indexing,
-/// filtering, and KIF comments are one implementation for every dialect.
-pub trait TptpProblem {
-    /// `fof` / `tff` / `thf`.
-    fn keyword(&self) -> &'static str;
-    /// Declaration lines emitted ahead of the axioms, in order.
-    fn preamble_lines(&self) -> Vec<String>;
-    /// Each axiom's formula text, in `sid_map` order.
-    fn axiom_texts(&self) -> Box<dyn Iterator<Item = String> + '_>;
-    /// The conjecture's formula text, if the problem has one.
-    fn conjecture_text(&self) -> Option<String>;
-}
-
-impl TptpProblem for IrProblem {
-    fn keyword(&self) -> &'static str {
-        match self.mode() {
-            LogicMode::Tff => "tff",
-            LogicMode::Fof => "fof",
-        }
-    }
-
-    fn preamble_lines(&self) -> Vec<String> {
-        // Sort / function / predicate declarations in insertion order.
-        self.sort_decls()
-            .iter()
-            .filter_map(|s| s.tptp_decl())
-            .chain(self.fn_decls().iter().filter_map(|f| f.tptp_decl()))
-            .chain(self.pred_decls().iter().filter_map(|p| p.tptp_decl()))
-            .collect()
-    }
-
-    fn axiom_texts(&self) -> Box<dyn Iterator<Item = String> + '_> {
-        Box::new(self.axioms().iter().map(|ax| ax.to_tptp()))
-    }
-
-    fn conjecture_text(&self) -> Option<String> {
-        self.conjecture_ref().map(|c| c.to_tptp())
-    }
-}
-
-#[cfg(feature = "external-prover")]
-impl TptpProblem for HoProblem {
-    fn keyword(&self) -> &'static str {
-        "thf"
-    }
-
-    fn preamble_lines(&self) -> Vec<String> {
-        self.decls()
-            .iter()
-            .map(|d| format!("thf({}_tp, type, {}: {}).", d.name, d.name, d.sort.thf()))
-            .collect()
-    }
-
-    fn axiom_texts(&self) -> Box<dyn Iterator<Item = String> + '_> {
-        Box::new(self.axioms().iter().map(|ax| ax.thf()))
-    }
-
-    fn conjecture_text(&self) -> Option<String> {
-        self.conjecture_ref().map(|c| c.thf())
-    }
-}
-
-#[cfg(feature = "external-prover")]
-impl TptpProblem for ProblemIr {
-    fn keyword(&self) -> &'static str {
-        match self {
-            ProblemIr::Fo(p) => p.keyword(),
-            ProblemIr::Ho(p) => p.keyword(),
-        }
-    }
-
-    fn preamble_lines(&self) -> Vec<String> {
-        match self {
-            ProblemIr::Fo(p) => p.preamble_lines(),
-            ProblemIr::Ho(p) => p.preamble_lines(),
-        }
-    }
-
-    fn axiom_texts(&self) -> Box<dyn Iterator<Item = String> + '_> {
-        match self {
-            ProblemIr::Fo(p) => p.axiom_texts(),
-            ProblemIr::Ho(p) => p.axiom_texts(),
-        }
-    }
-
-    fn conjecture_text(&self) -> Option<String> {
-        match self {
-            ProblemIr::Fo(p) => p.conjecture_text(),
-            ProblemIr::Ho(p) => p.conjecture_text(),
-        }
-    }
-}
 
 /// Configuration for [`assemble_tptp_indexed`].
 pub struct AssemblyOpts<'a> {
@@ -141,7 +45,7 @@ pub struct AssemblyOpts<'a> {
     ///
     /// Axioms whose `sid_map` entry is missing (index beyond
     /// `sid_map.len()`, emitted as `<prefix>anon_<i>`) are always
-    /// emitted regardless of the filter — the filter can't decide
+    /// emitted regardless of the filter -- the filter can't decide
     /// relevance without a sid.
     ///
     /// [`sid_map`]: assemble_tptp_indexed
@@ -161,19 +65,20 @@ impl<'a> Default for AssemblyOpts<'a> {
     }
 }
 
-/// Serialise `problem` to TPTP. Axioms are named `<prefix><sid>` using the
-/// corresponding entry in `sid_map` (assumed to be parallel to
-/// `problem.axioms()`). If `sid_map` is shorter than the axiom list, the
-/// remainder fall back to `<prefix>anon_<index>`.
+/// Serialise `problem` to  a well formatted TPTP file. Axioms are
+/// named `<prefix><sid>` using the corresponding entry in `sid_map`
+/// (assumed to be parallel to `problem.axioms()`). If `sid_map` is
+/// shorter than the axiom list, the remainder fall back to
+/// `<prefix>anon_<index>`.
 ///
 /// When `axiom_lines` is `Some`, it's filled with each emitted axiom's
-/// starting 0-based line number in the output — e.g. for a "jump to this
+/// starting 0-based line number in the output -- e.g. for a "jump to this
 /// axiom" pane that needs to know where a given [`SentenceId`] landed in the
 /// assembled text, without re-scanning it afterward. An axiom repeated via
 /// `_v<n>` naming (a sid pairing with several axioms) keeps only its FIRST
 /// line. Tracking is an O(1)-per-axiom running counter, not a re-scan, so
 /// passing `None` costs nothing extra.
-pub fn assemble_tptp_indexed<P: TptpProblem + ?Sized>(
+pub fn assemble_tptp_indexed<P: super::file::TptpProblemFile + ?Sized>(
     problem: &P,
     sid_map: &[SentenceId],
     opts: &AssemblyOpts,
@@ -182,6 +87,7 @@ pub fn assemble_tptp_indexed<P: TptpProblem + ?Sized>(
     let kw = problem.keyword();
     let mut out = String::new();
 
+    // Write the preamble for a problem. Specific to the TPTP dialect
     for d in problem.preamble_lines() {
         let _ = writeln!(out, "{}", d);
     }
@@ -295,7 +201,7 @@ mod tests {
     #[test]
     fn axiom_filter_keeps_only_allow_listed_sids() {
         // Build a problem with three axioms (sids 10, 20, 30).
-        // Filter to {10, 30} — only those two should appear in the
+        // Filter to {10, 30} -- only those two should appear in the
         // emitted TPTP, sid 20 is dropped.
         let p = IrPd::new("P", 1);
         let a = IrT::constant(IrFn::new("a", 0));
@@ -343,7 +249,7 @@ mod tests {
         pb.with_axiom(IrF::atom(p.clone(), vec![]));
         pb.conjecture(IrF::atom(p, vec![]));
 
-        // Filter excludes every axiom — conjecture still rendered.
+        // Filter excludes every axiom -- conjecture still rendered.
         let empty: HashSet<SentenceId> = HashSet::new();
         let opts = AssemblyOpts {
             axiom_filter: Some(&empty),
@@ -367,14 +273,14 @@ mod tests {
     fn axiom_filter_keeps_anonymous_axioms() {
         // Axioms with no sid_map entry can't be classified by the
         // filter, so the assembler keeps them rather than silently
-        // dropping them — they fall through to the `kb_anon_<i>`
+        // dropping them -- they fall through to the `kb_anon_<i>`
         // name.  Regression guard for this escape hatch.
         let p = IrPd::new("P", 0);
         let mut pb = IrProblem::new();
         pb.with_axiom(IrF::atom(p.clone(), vec![]));
         pb.with_axiom(IrF::atom(p, vec![]));
 
-        // sid_map is shorter than axioms() — the second axiom is
+        // sid_map is shorter than axioms() -- the second axiom is
         // anonymous.  Filter excludes the first (sid 7).
         let empty: HashSet<SentenceId> = HashSet::new();
         let opts = AssemblyOpts {
@@ -427,7 +333,7 @@ mod tests {
 #[cfg(all(test, feature = "external-prover"))]
 mod thf_tests {
     use super::*;
-    use crate::trans::ir::{HoSort, ThfConst, ThfExpr};
+    use crate::trans::ir::{HoProblem, HoSort, ThfConst, ThfExpr};
     use std::collections::HashMap;
 
     fn problem() -> HoProblem {

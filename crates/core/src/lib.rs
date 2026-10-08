@@ -49,7 +49,8 @@ pub(crate) use prover::saturate;
 // stay `cfg(feature = "persist")`.
 pub(crate) mod persist;
 
-pub mod kb;
+pub(crate) mod kb;
+pub(crate) use kb::progress::{profile_span, with_guard};
 
 /// Offline WordNet 3.0 lexicon with SUMO anchors -- pure in-memory parsing,
 /// no filesystem access.  See [`lexicon`] for the module-level docs.
@@ -93,8 +94,8 @@ pub use crate::prover::saturate::strategy::Strategy;
 
 // -- Public re-exports --------------------------------------------------------
 
-#[cfg(feature = "external-prover")]
-pub use kb::natural_lang::RenderReport;
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
+pub use semantics::render::{RenderReport, RenderStyle};
 
 pub use diagnostic::{
     DiagResult, Diagnostic, DiagnosticSource, RelatedInfo, Severity, ToDiagnostic,
@@ -110,12 +111,14 @@ pub use semantics::types::DocEntry;
 pub use semantics::types::{TaxDirection, TaxRelation};
 
 pub use cache::CacheConfig;
+pub use kb::dis::SentenceForm;
 pub use kb::man::{ManKind, ManPage, ParentEdge, SentenceRef, SortSig};
 #[cfg(any(feature = "external-prover", feature = "native-prover"))]
 pub use kb::prove::{AuditBatch, AuditSample, SampledAudit};
 pub use kb::search::{
     RankComponent, SearchHit, SearchOpts, SearchSource, TaxConstraint, DEFAULT_CANDIDATE_LIMIT,
 };
+pub use kb::semantics::{ValidationTarget, VocabStats};
 pub use kb::KnowledgeBase;
 pub use parse::dialect::{tptp_highlight, ConvertedStmt, EmitResult, Emitter};
 pub use parse::doc::{DocItem, MetaNode};
@@ -152,8 +155,6 @@ pub use prover::vampire_proof::{result_from_transcript, vampire_cli_args};
 // live in the `ask`-only `external` module, absent on native/wasm builds.
 pub use parse::tq::{is_tq_directive, parse_test_content, TestCase};
 #[cfg(any(feature = "external-prover", feature = "native-prover"))]
-pub use prover::axiom_source::{AxiomSource, AxiomSourceIndex};
-#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 pub use prover::proof::{emit_proof, render_graphviz, IrProofStep, KifProofStep};
 #[cfg(any(feature = "external-prover", feature = "native-prover"))]
 pub use prover::CommonProverOpts;
@@ -168,96 +169,8 @@ pub use syntactic::sine::{SineIndex, SineParams};
 
 pub use progress::{DynSink, LogLevel, PhaseGuard, ProgressEvent, ProgressSink, ProveCtx};
 
-pub use kb::ingest::{IngestResult, PromoteError};
-pub type TellResult = IngestResult;
 pub use kb::export::TptpOptions;
-pub use kb::session_tags;
-pub use semantics::errors::{
-    ArityMismatch, BoxedError, DisjointInstance, DisjointSubclass, DomainMismatch, DoubleRange,
-    ExistentialInAntecedent, ExistentialInIff, FreeVarInConsequent, FunctionCase, HeadInvalid,
-    HeadNotRelation, InstanceSubclassConflict, MissingArity, MissingConstituentDep,
-    MissingDocumentation, MissingDomain, MissingFormatString, MissingRange, MissingTermFormat,
-    MultipleDocumentation, MutualConstituentDep, NoEntityAncestor, NonLogicalArg, Other,
-    PartitionNonMember, PartitionViolation, PredicateCase, QuantifierVacuous, SemanticError,
-    SingleArity, SingleUseVariable, TermCamelCase, TermCase, TermNoRule, TooGeneralRel,
-};
+pub use kb::ingest::{IngestResult, PromoteError};
+pub use semantics::errors::{BoxedError, SemanticError};
 
 pub use parse::tptp::syntax::TptpLang;
-
-/// Test-only inspection hooks for the formula rewrite pass.
-#[doc(hidden)]
-pub mod test {
-    use crate::kb::KnowledgeBase;
-    use crate::parse::ast::OpKind;
-    use crate::types::Element;
-
-    /// Snapshot of the synthetic-sentence state after KB load + rewrite.
-    ///
-    /// Returned by [`peek_synthetic_implications`].
-    #[derive(Debug)]
-    pub struct SyntheticReport {
-        /// Total number of synthetic sentences allocated.
-        pub synthetic_count: usize,
-        /// Number of root SIDs in `TranslationLayer::suppressed`.
-        pub suppressed_count: usize,
-        /// True when at least one non-suppressed synthetic implication
-        /// has `(greaterThan ?V ...)` as a conjunct in its antecedent.
-        pub has_greater_than_guard: bool,
-    }
-
-    /// Inspect the synthetic-sentence store and suppressed set produced by
-    /// the rewrite pass.  Walks each non-suppressed synthetic implication
-    /// (`(=> (and ...) ...)` shape) and scans the antecedent conjuncts
-    /// for any `(greaterThan ?V ...)` atom.
-    pub fn peek_synthetic_implications(kb: &KnowledgeBase) -> SyntheticReport {
-        let trans = kb.translation();
-        let syn = &trans.semantic.syntactic;
-        let greater_than_id = syn.sym_id("greaterThan");
-
-        let mut has_guard = false;
-        if let Some(gt_id) = greater_than_id {
-            for &sid in syn.synthetic_origin.keys() {
-                if trans.suppressed.read().unwrap().contains(&sid) {
-                    continue;
-                }
-                let Some(sent) = syn.sentence(sid) else {
-                    continue;
-                };
-                if !matches!(sent.elements.first(), Some(Element::Op(OpKind::Implies))) {
-                    continue;
-                }
-                let Some(Element::Sub(ant_sid)) = sent.elements.get(1) else {
-                    continue;
-                };
-                // If the antecedent is an `(and ...)`, scan its conjuncts;
-                // otherwise treat it as the single conjunct.
-                let ant = syn.sentence(*ant_sid).expect("ant exists");
-                let conjuncts: Vec<&Element> = match ant.elements.first() {
-                    Some(Element::Op(OpKind::And)) => ant.elements[1..].iter().collect(),
-                    _ => vec![sent.elements.get(1).unwrap()],
-                };
-                for c in conjuncts {
-                    let Element::Sub(csid) = c else { continue };
-                    let Some(cs) = syn.sentence(*csid) else {
-                        continue;
-                    };
-                    if matches!(cs.elements.first(),
-                        Some(Element::Symbol(sym)) if sym.id() == gt_id)
-                    {
-                        has_guard = true;
-                        break;
-                    }
-                }
-                if has_guard {
-                    break;
-                }
-            }
-        }
-
-        SyntheticReport {
-            synthetic_count: syn.synthetic_origin.len(),
-            suppressed_count: trans.suppressed.read().unwrap().len(),
-            has_greater_than_guard: has_guard,
-        }
-    }
-}

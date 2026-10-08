@@ -227,9 +227,7 @@ mod tests {
     fn unchanged_file_reports_unchanged() {
         let p = tmp_kif("unchanged", "(subclass Dog Animal)");
         let mut session = Session::<TranslationLayer>::new("s".into());
-        assert!(session
-            .ingest(Source::Local(vec![p.clone()]), false)
-            .is_empty());
+        assert!(session.ingest(Source::Local(vec![p.clone()])).is_empty());
 
         let reports = check_freshness(&session);
         let r = reports
@@ -245,9 +243,7 @@ mod tests {
     fn edited_file_reports_modified() {
         let p = tmp_kif("modified", "(subclass Dog Animal)");
         let mut session = Session::<TranslationLayer>::new("s".into());
-        assert!(session
-            .ingest(Source::Local(vec![p.clone()]), false)
-            .is_empty());
+        assert!(session.ingest(Source::Local(vec![p.clone()])).is_empty());
 
         // Backdate the recorded mtime so a same-second edit still trips the
         // mtime check (this filesystem's mtime resolution may be coarser
@@ -269,9 +265,7 @@ mod tests {
     fn deleted_file_reports_missing() {
         let p = tmp_kif("missing", "(subclass Dog Animal)");
         let mut session = Session::<TranslationLayer>::new("s".into());
-        assert!(session
-            .ingest(Source::Local(vec![p.clone()]), false)
-            .is_empty());
+        assert!(session.ingest(Source::Local(vec![p.clone()])).is_empty());
         std::fs::remove_file(&p).unwrap();
 
         let reports = check_freshness(&session);

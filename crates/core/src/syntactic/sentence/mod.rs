@@ -10,7 +10,7 @@ mod literal;
 pub(crate) use hash::ElementHasher;
 
 pub use element::Element;
-pub(crate) use element::{clear_thaw_pool, seed_thaw_pool};
+pub(crate) use element::{clear_thaw_pool, is_scoped_variable_name, seed_thaw_pool};
 pub use element::{InternedSym, Symbol, SymbolId};
 pub use literal::Literal;
 

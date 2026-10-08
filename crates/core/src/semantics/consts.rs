@@ -5,8 +5,9 @@ use once_cell::sync::Lazy;
 // a `static` can be referenced with the `'static` lifetime the iterable holds,
 // and it preserves the once-only `Lazy` init.
 macro_rules! define_symbols_from_env {
-    ($( $name:ident => $env_var:expr ),+ $(,)?) => {
+    ($( $(#[$meta:meta])* $name:ident => $env_var:expr ),+ $(,)?) => {
         $(
+            $(#[$meta])*
             pub(crate) static $name: Lazy<Symbol> =
                 Lazy::new(|| Symbol::from(env!($env_var)));
         )+
@@ -46,6 +47,11 @@ define_symbols_from_env! {
     DOC_RELATION          => "SUMO_DOC_RELATION",
     TERM_RELATION         => "SUMO_TERM_RELATION",
     FORMAT_RELATION       => "SUMO_FORMAT_RELATION",
+
+    // --- Propositional Attitudes ---
+    PROPOSITIONAL_ATTITUDE_CLASS => "SUMO_PROPOSITIONAL_ATTITUDE_CLASS",
+    #[cfg(feature = "native-prover")]
+    BELIEF_RELATION              => "SUMO_BELIEF_RELATION",
 
     // --- Root Symbol ---
     ROOT_SYMBOL           => "SUMO_ROOT_SYMBOL",
@@ -99,3 +105,37 @@ pub const HIGHER_ORDER_CATEGORIES: &[(&str, &str)] = &[
     ("deontic", HIGHER_DEONTIC),
     ("epistemic", HIGHER_EPISTEMIC),
 ];
+
+/// Canonical SUMO bookkeeping predicates that are noise for a theorem
+/// prover: filtered out of exported TPTP and out of SInE / prover axiom
+/// selection.
+///
+/// Both `TptpOptions::default` and the selection-layer excluded-head filter
+/// source their exclusion set from this list. Per-call overrides for
+/// non-default exclusion sets stay on `TptpOptions::excluded`.
+pub(crate) const DEFAULT_EXCLUDED_HEADS: &[&str] = &[
+    // Signature metadata -- redundant once translation has emitted a
+    // `tff(..., type, ...)` declaration for the head.
+    "domain",
+    "domainSubclass",
+    "range",
+    "rangeSubclass",
+    // Documentation / surface-form metadata.
+    "documentation",
+    "format",
+    "termFormat",
+    "externalImage",
+    "relatedExternalConcept",
+    "relatedInternalConcept",
+    "formerName",
+    "abbreviation",
+    "conventionalShortName",
+    "conventionalLongName",
+];
+
+/// Lazy `HashSet` view of [`DEFAULT_EXCLUDED_HEADS`] for fast lookup.
+pub(crate) fn excluded_heads_set() -> &'static std::collections::HashSet<&'static str> {
+    static SET: std::sync::OnceLock<std::collections::HashSet<&'static str>> =
+        std::sync::OnceLock::new();
+    SET.get_or_init(|| DEFAULT_EXCLUDED_HEADS.iter().copied().collect())
+}

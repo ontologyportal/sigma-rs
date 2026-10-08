@@ -206,14 +206,14 @@ impl HoProblem {
     }
 
     /// The full THF text with the standard `kb_<sid>` axiom naming: the
-    /// shared [`assemble_tptp_indexed`](crate::kb::assemble::assemble_tptp_indexed)
+    /// shared [`assemble_tptp_indexed`](crate::trans::assemble::assemble_tptp_indexed)
     /// with default options (repeats suffixed `_v<n>`, unmapped axioms
     /// `kb_anon_<i>`).
     pub fn to_thf(&self, sid_map: &[SentenceId], conjecture_name: &str) -> String {
-        crate::kb::assemble::assemble_tptp_indexed(
+        crate::trans::assemble::assemble_tptp_indexed(
             self,
             sid_map,
-            &crate::kb::assemble::AssemblyOpts {
+            &crate::trans::assemble::AssemblyOpts {
                 conjecture_name,
                 ..Default::default()
             },

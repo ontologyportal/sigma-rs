@@ -5,11 +5,21 @@ use crate::parse::kif::dis::AstKif;
 use crate::prover::{ProverStatus, TerminationReason};
 use crate::semantics::caches::test_support::kif_layer;
 use crate::types::{Element, SentenceId};
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
+use crate::ProvingLayer;
 use crate::SineParams;
 
 use super::clause::{PClause, PLit};
 use super::prover::NativeOpts;
 use super::ProverLayer;
+
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
+impl<L: ProvingLayer> KnowledgeBase<L> {
+    /// Read-only access to the proving top layer.
+    pub fn prover(&self) -> &L {
+        &self.layer
+    }
+}
 
 /// ProverLayer over a one-or-more-formula KIF string, plus the root
 /// sids in the file (tag `base`, document order not guaranteed —
@@ -4083,7 +4093,7 @@ fn to_tptp_selected_excludes_unrelated_axioms() {
         .syntactic()
         .file_root_sids("selected_base.kif")
         .iter()
-        .find(|&&sid| kb.sentence_to_string(sid).contains("Rex"))
+        .find(|&&sid| kb.sentence_kif_str(sid).contains("Rex"))
         .expect("the Rex fact is a root sentence");
 
     let opts = TptpOptions {
@@ -4135,7 +4145,7 @@ fn to_tptp_selected_budget_pct_scales_with_axiom_count() {
         .syntactic()
         .file_root_sids("budget_base.kif")
         .iter()
-        .find(|&&sid| kb.sentence_to_string(sid).contains("Rex"))
+        .find(|&&sid| kb.sentence_kif_str(sid).contains("Rex"))
         .expect("the Rex fact is a root sentence");
 
     // No selection API surfaces the resolved budget directly, so exercise

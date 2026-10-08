@@ -20,10 +20,9 @@ use sigmakee_rs_sdk::manager::{KBManager, ProverOptsFor};
 #[cfg(feature = "integrated-prover")]
 use sigmakee_rs_sdk::prover::external::backends::IntegratedVampireRunner;
 use sigmakee_rs_sdk::prover::external::backends::{EproverRunner, VampireRunner};
-use sigmakee_rs_sdk::{
-    DynSink, ExternalProverLayer, KnowledgeBase, ProverLayer, ProvingLayer, TopLayer,
-    TranslationLayer,
-};
+#[cfg(feature = "ask")]
+use sigmakee_rs_sdk::ProverLayer;
+use sigmakee_rs_sdk::{DynSink, KnowledgeBase, ProvingLayer, TopLayer, TranslationLayer};
 use sigmakee_rs_sdk::{Prover, Session};
 
 /// `alloc-mi`: mimalloc as the process-global allocator.  Post-de-alloc
@@ -207,6 +206,9 @@ fn main_worker() {
     // configured `sumokbname`, i.e. without ingesting the whole configured
     // ontology underneath every problem.  A mixed invocation (any `.kif.tq`
     // / directory path) still requires the base KB and validates as before.
+    #[cfg(not(feature = "ask"))]
+    let tptp_only_test = false;
+    #[cfg(feature = "ask")]
     let tptp_only_test = matches!(&cli.command, Cmd::Test { paths, .. }
     if !paths.is_empty() && paths.iter().all(|p| {
         // Extension check on the whole argument — works unchanged for a
@@ -221,8 +223,8 @@ fn main_worker() {
         }
     }
 
-    // Use the LMDB store at `<editDir>/<kb>.lmdb` when it exists and `--no-db`
-    // wasn't passed; otherwise build fresh in memory. `load` is the exception:
+    // Use the LMDB store at `--db` (else `<editDir>/<kb>.lmdb`) when it exists
+    // and `--no-db` wasn't passed; otherwise build fresh in memory. `load` is the exception:
     // its whole job is to create/refresh that store, so it always opens (and
     // thereby creates, via `LmdbEnv::open`'s create-if-missing) the path even
     // on a first run where nothing exists there yet. Without this, a
@@ -230,11 +232,11 @@ fn main_worker() {
     // would no-op (no attached `db` env to snapshot into), and the reported
     // "load succeeded" would be a lie — no store ever hits disk.
     let sink: Option<DynSink> = sigmakee::progress::global_sink();
-    let db = manager.db_path();
+    let db = cli.db.clone().or_else(|| manager.db_path());
     let use_db = !cli.no_db && db.is_some() && (is_load || db.as_ref().is_some_and(|p| p.exists()));
     // Flush before rebuild so the store can be recreated.
     if matches!(cli.command, Cmd::Load { flush } if flush && db.is_some()) {
-        run_flush(&manager);
+        run_flush(db.as_deref());
     }
 
     // `sumo check` is read-only and layer-agnostic (it only needs
@@ -322,10 +324,18 @@ fn main_worker() {
             cli.branch.as_deref(),
             &mut ingest_stats,
         );
-        for clause in session.clausify(formula.as_deref()) {
-            println!("{clause}");
+        match session.clausify(formula.as_deref()) {
+            Ok(clauses) => {
+                for clause in clauses {
+                    println!("{clause}");
+                }
+                process::exit(0);
+            }
+            Err(e) => {
+                log::error!("clausify: {e}");
+                process::exit(1);
+            }
         }
-        process::exit(0);
     }
 
     let ok = if matches!(cli.command, Cmd::Translate { .. } | Cmd::Man { .. }) {
@@ -354,6 +364,7 @@ fn main_worker() {
         )
     } else {
         match manager.default_backend.as_str() {
+            #[cfg(feature = "ask")]
             "native" => {
                 let kb = open_or_new(
                     use_db,
@@ -389,17 +400,12 @@ fn main_worker() {
                 let kb = open_or_new(
                     use_db,
                     || {
-                        KnowledgeBase::<ExternalProverLayer>::open(
-                            db.as_deref().unwrap(),
-                            sink.clone(),
-                        )
+                        KnowledgeBase::new_external(runner.clone())
+                            .open_like(db.as_deref().unwrap(), sink.clone())
                     },
                     || KnowledgeBase::new_external(runner.clone()),
                 );
                 let mut session = Session::from_kb(kb, session_name);
-                // `open()` installs the default runner; override it with the
-                // configured E/Vampire runner.
-                session.set_runner(runner);
                 // Reals-only TFF numerics: explicit `--real-numbers` wins;
                 // unset defaults ON for the E backend under TFF (E 3.2.5
                 // mistypes `$to_real` in equality position). Must be set before
@@ -456,7 +462,7 @@ fn main_worker() {
     }
 
     if is_load {
-        report_load(ok, db.as_deref(), &ingest_stats);
+        report_load(ok, db.as_deref().filter(|_| use_db), &ingest_stats);
     }
 
     process::exit(if ok { 0 } else { 1 });
@@ -538,13 +544,14 @@ struct DispatchCtx<'a> {
 
 fn dispatch<L: ProvingLayer>(
     mut session: Session<L>,
-    mut manager: KBManager,
+    #[cfg_attr(not(feature = "ask"), allow(unused_mut))] mut manager: KBManager,
     cmd: Cmd,
     ctx: DispatchCtx<'_>,
 ) -> bool
 where
     L::Opts: ProverOptsFor,
 {
+    #[cfg_attr(not(feature = "ask"), allow(unused_variables))]
     let DispatchCtx {
         arg_matches,
         sink,
@@ -739,7 +746,7 @@ fn ingest_constituents<L: TopLayer>(
     stats: &mut IngestStats,
 ) {
     for src in manager.resolve_sources(git, branch) {
-        let (n, errs) = session.ingest_counted(src, false);
+        let (n, errs) = session.ingest_counted(src);
         stats.sources += n;
         for e in errs {
             match e.severity() {
@@ -894,10 +901,14 @@ fn build_runner(manager: &KBManager, keep: Option<PathBuf>) -> Prover {
         }
         #[cfg(feature = "integrated-prover")]
         "embedded" => Prover::VampireIntegrated(IntegratedVampireRunner),
-        _ /* subprocess (or "embedded" without the integrated-prover feature) */ => {
+        _ /* subprocess (or "embedded" / "native" without their features) */ => {
             #[cfg(not(feature = "integrated-prover"))]
             if manager.default_backend == "embedded" {
                 log::warn!("'embedded' backend requires the integrated-prover feature; falling back to 'subprocess'");
+            }
+            #[cfg(not(feature = "ask"))]
+            if manager.default_backend == "native" {
+                log::warn!("'native' backend requires the ask feature; falling back to 'subprocess'");
             }
             let path = manager.resolve_vampire().unwrap_or_else(|e| {
                 log::warn!("{e}; falling back to 'vampire' on PATH");

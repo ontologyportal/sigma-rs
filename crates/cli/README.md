@@ -68,12 +68,11 @@ to an LMDB database file prior to running any of the CLI's commands.
 Running the `load` subcommand, you can pass any number of constituent files manually using
 the `-f` flag, whole directories of `.kif` files using the `-d` or use the files listed
 in your `config.xml` using the `-c` flag. By default, `load` will write the compiled
-cache to the current directory in a file called `sumo.lmdb`. You can change the DB location
-and name using the `--db` flag.
+cache to `<editDir>/<kb>.lmdb` (the `editDir` and knowledge base from your `config.xml`,
+e.g. `SUMO.lmdb`). An explicit `--db DIR` overrides that location.
 
-By default, all other commands will first look for a cached DB in the `editDir` directory (as specified in your `config.xml`)
-or at the location specified by the `--db` flag. If you do
-not have a `sumo.lmdb` and you do not specify one using `--db`, or if you use the
+All other commands open the same database: the one named by `--db`, else
+`<editDir>/<kb>.lmdb`. If that database does not exist, or if you use the
 `--no-db` flag, it will perform all operations in memory and will parse any files you
 manually pass to the command at runtime without writing it to disk. ONLY `load` write to disk.
 
@@ -134,7 +133,7 @@ These flags are available on every subcommand:
 |---|---|---|
 | `-f` / `--file FILE` | — | KIF file to load (repeatable) |
 | `-d` / `--dir DIR` | — | Directory of `*.kif` files to load (repeatable) |
-| `--db DIR` | `./sumo.lmdb` | Path to the LMDB database directory |
+| `--db DIR` | `<editDir>/<kb>.lmdb` | Path to the LMDB database directory; overrides the configured location |
 | `--no-db` | — | Skip the LMDB database entirely — do not open or warn about it. Useful when running without a pre-built database |
 | `--git URL` | — | Git repository URL to load the ontology from. With `load`: clones and commits to the LMDB database (cached). With other commands: clones on the fly into a temporary directory. `-f` / `-d` / `-c` paths are resolved relative to the repository root |
 

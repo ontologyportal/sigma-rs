@@ -51,6 +51,22 @@ pub struct RenderReport {
     pub missing: Vec<String>,
 }
 
+/// How a formula is styled when rendered to natural language.
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RenderStyle {
+    /// Plain text, no ANSI escapes -- safe for logs, files, and JSON.
+    #[default]
+    Plain,
+    /// ANSI colour escapes around variables, `&%Symbol` cross-references,
+    /// negations, and structural operators, for terminal output.
+    Colored,
+    /// Plain text with variables paraphrased as generic noun phrases ("an
+    /// entity" / "the entity", or the variable's asserted class when an
+    /// `instance` / `subclass` conjunct declares one) instead of `?Var`.
+    Paraphrase,
+}
+
 impl SemanticLayer {
     /// Every `(format <lang> <relation> "...")` entry for `relation`.
     pub(crate) fn format_string(&self, relation: &str, language: Option<&str>) -> Vec<DocEntry> {
@@ -75,38 +91,21 @@ impl SemanticLayer {
     }
 
     /// Render `formula` to natural language in `language` (e.g.
-    /// `"EnglishLanguage"`).  See module docs for the template DSL.  Plain (no
-    /// ANSI escapes) — safe for logs / files / JSON.
+    /// `"EnglishLanguage"`) in the given `style`.  See module docs for the
+    /// template DSL.
     #[cfg(any(feature = "external-prover", feature = "native-prover"))]
-    pub(crate) fn render_formula(&self, formula: &AstNode, language: &str) -> RenderReport {
-        self.render_formula_impl(
-            formula, language, /*coloured=*/ false, /*generic_vars=*/ false,
-        )
-    }
-
-    /// Same as [`render_formula`](SemanticLayer::render_formula) but wraps
-    /// variables, `&%Symbol` cross-references, negations, and structural
-    /// operators in ANSI colour escapes for terminal output.
-    #[cfg(any(feature = "external-prover", feature = "native-prover"))]
-    pub(crate) fn render_formula_colored(&self, formula: &AstNode, language: &str) -> RenderReport {
-        self.render_formula_impl(
-            formula, language, /*coloured=*/ true, /*generic_vars=*/ false,
-        )
-    }
-
-    /// Same as [`render_formula`](SemanticLayer::render_formula) but
-    /// paraphrases variables as generic noun phrases (e.g. "an entity" /
-    /// "the entity", or the variable's asserted class from an `instance` /
-    /// `subclass` conjunct when one is present) instead of showing `?Var`.
-    #[cfg(any(feature = "external-prover", feature = "native-prover"))]
-    pub(crate) fn render_formula_paraphrase(
+    pub(crate) fn render_formula(
         &self,
         formula: &AstNode,
         language: &str,
+        style: RenderStyle,
     ) -> RenderReport {
-        self.render_formula_impl(
-            formula, language, /*coloured=*/ false, /*generic_vars=*/ true,
-        )
+        let (coloured, generic_vars) = match style {
+            RenderStyle::Plain => (false, false),
+            RenderStyle::Colored => (true, false),
+            RenderStyle::Paraphrase => (false, true),
+        };
+        self.render_formula_impl(formula, language, coloured, generic_vars)
     }
 
     #[cfg(any(feature = "external-prover", feature = "native-prover"))]
@@ -590,7 +589,7 @@ fn indefinite_article(word: &str) -> &'static str {
 
 /// Extract bound variable names from `(forall (?V1 ?V2 …) body)` /
 /// `(exists …)` argument list.  Returns `(names, body_ast)`.
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 fn extract_quantifier_vars_and_body(args: &[AstNode]) -> (Vec<String>, Option<AstNode>) {
     let mut names = Vec::new();
     let body = if args.len() >= 2 {

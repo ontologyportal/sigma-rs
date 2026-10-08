@@ -182,7 +182,7 @@ where
             result.contradiction_proofs.len()
         );
         if format != "none" && !is_quiet_proof_format(format) {
-            let src_idx = session.kb().build_axiom_source_index();
+            let locations = sigmakee_rs_sdk::DiagnosticSource::sentence_locations(session.kb());
             for (n, steps) in result.contradiction_proofs.iter().enumerate() {
                 println!(
                     "\n{style_bold}Input contradiction #{} ({} steps):{style_reset}",
@@ -192,7 +192,7 @@ where
                 for s in steps {
                     let trace = s
                         .source_sid
-                        .and_then(|sid| src_idx.lookup_by_sid(sid))
+                        .and_then(|sid| locations.get(&sid))
                         .map(|a| {
                             format!(
                                 "   {color_bright_black}[{}:{}]{color_reset}",

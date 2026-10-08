@@ -83,15 +83,13 @@ pub fn handle_tptp_export<L: TopLayer + HasTranslation>(
         ..TptpOptions::default()
     };
     // Lock order (session, then tptp_lines) matches `handle_tptp_line`.
-    let mut session = state.session.write().expect("kb lock not poisoned");
+    let session = state.session.read().expect("kb lock not poisoned");
     let mut lines = state
         .tptp_lines
         .write()
         .expect("tptp_lines lock not poisoned");
     lines.clear();
-    let tptp = session
-        .kb_mut()
-        .to_tptp_indexed(&opts, None, Some(&mut lines));
+    let tptp = session.kb().to_tptp_indexed(&opts, None, Some(&mut lines));
     TptpExportResponse { tptp }
 }
 

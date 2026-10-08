@@ -13,23 +13,21 @@
 // carry over unchanged (native `ProofStep::premises` are already
 // indices into the `Proof::steps` slice).
 //
-// `source_sid` is left as `None`: unlike the subprocess path, the
-// embedded prover doesn't preserve our `kb_<sid>` names (Vampire's
-// `--output_axiom_names` only applies to TPTP parsing, not the
-// in-process API).  Downstream `print_step_source` falls back to the
-// canonical-fingerprint lookup in `AxiomSourceIndex`, which is
-// alpha-equivalence tolerant.  Future work could build a per-call
-// `tptp_string -> SentenceId` map from the filtered IR problem and
-// resolve axiom-role steps directly.
+// `source_sid`: the embedded prover never sees our `kb_<sid>` names
+// (Vampire's `--output_axiom_names` only applies to TPTP parsing), so an
+// input-axiom step is resolved instead through `ProofStep::axiom_index`
+// -- the position of the axiom in the lowered problem -- and the
+// `sid_map` that is parallel to the problem's axioms.
 //
 // Gated on `integrated-prover` because the native proof type only
 // exists when the embedded FFI backend is compiled in.
 
 #![cfg(feature = "integrated-prover")]
 
-use vampire_prover::{Proof, ProofRule};
+use vampire_prover::{Proof, ProofRule, ProofStep};
 
 use crate::prover::proof::{formula_to_ast, IrProofStep, KifProofStep};
+use crate::types::SentenceId;
 
 /// Convert a native Vampire `Proof` into the KIF proof-step shape
 /// used by the CLI's `--proof` rendering.
@@ -44,7 +42,14 @@ use crate::prover::proof::{formula_to_ast, IrProofStep, KifProofStep};
 /// `AstNode::Symbol` carrying the raw string prefixed with
 /// `; [unparseable]`, mirroring `proof_steps_to_kif`'s defensive
 /// behaviour on the subprocess path.
-pub(crate) fn native_proof_to_kif_steps(proof: &Proof) -> Vec<KifProofStep> {
+///
+/// `sid_map` is parallel to the solved problem's axioms (as for
+/// [`crate::trans::assemble::assemble_tptp_indexed`]); input-axiom steps
+/// with an entry there get it as their `source_sid`.
+pub(crate) fn native_proof_to_kif_steps(
+    proof: &Proof,
+    sid_map: &[SentenceId],
+) -> Vec<KifProofStep> {
     proof
         .steps()
         .iter()
@@ -61,14 +66,16 @@ pub(crate) fn native_proof_to_kif_steps(proof: &Proof) -> Vec<KifProofStep> {
                 rule: rule_name(step.rule()).to_string(),
                 premises: step.premises().to_vec(),
                 formula,
-                // Embedded path has no preserved `kb_<sid>` name — the
-                // CLI's print_step_source falls back to canonical-hash
-                // lookup, which is correct though slower than the sid
-                // direct path.
-                source_sid: None,
+                source_sid: source_sid(step, sid_map),
             }
         })
         .collect()
+}
+
+/// The source sentence of an input-axiom step: its axiom index looked up in
+/// `sid_map`. `None` for derived steps and for axioms with no sid entry.
+fn source_sid(step: &ProofStep, sid_map: &[SentenceId]) -> Option<SentenceId> {
+    step.axiom_index().and_then(|i| sid_map.get(i).copied())
 }
 
 /// Map a native `ProofRule` enum variant to the string role the CLI
@@ -112,8 +119,9 @@ fn rule_name(rule: ProofRule) -> &'static str {
 /// wrapped in a minimal `fof(anon, plain, ...).\n` envelope so our
 /// TPTP parser can handle a bare formula string.  Unparseable steps
 /// fall back to `ir::Formula::True` with the raw string preserved in
-/// the debug representation.
-pub(crate) fn native_proof_to_ir_steps(proof: &Proof) -> Vec<IrProofStep> {
+/// the debug representation. `sid_map` resolves `source_sid` as in
+/// [`native_proof_to_kif_steps`].
+pub(crate) fn native_proof_to_ir_steps(proof: &Proof, sid_map: &[SentenceId]) -> Vec<IrProofStep> {
     proof
         .steps()
         .iter()
@@ -130,7 +138,7 @@ pub(crate) fn native_proof_to_ir_steps(proof: &Proof) -> Vec<IrProofStep> {
                 rule: rule_name(step.rule()).to_string(),
                 premises: step.premises().to_vec(),
                 formula,
-                source_sid: None,
+                source_sid: source_sid(step, sid_map),
             }
         })
         .collect()

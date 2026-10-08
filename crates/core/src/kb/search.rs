@@ -35,6 +35,9 @@ pub enum SearchSource {
     Documentation,
     /// Hit was in the third arg of `(format …)`
     Format,
+    /// The symbol's own name matched the query and it has no documentation,
+    /// termFormat, or format axiom to cite.
+    Name,
     /// Hit came from the WordNet lexicon (see `SearchOpts::lexicon`, only
     /// ever produced with the `lexicon` feature)
     /// `SearchHit::sense` carries the sense tag; `SearchHit::text` carries
@@ -43,12 +46,14 @@ pub enum SearchSource {
 }
 
 impl SearchSource {
-    /// Short label for this source (`"term"`, `"doc"`, `"format"`, or `"wn"`).
+    /// Short label for this source (`"term"`, `"doc"`, `"format"`, `"name"`,
+    /// or `"wn"`).
     pub fn as_str(self) -> &'static str {
         match self {
             Self::TermFormat => "term",
             Self::Documentation => "doc",
             Self::Format => "format",
+            Self::Name => "name",
             Self::WordNet => "wn",
         }
     }
@@ -57,8 +62,8 @@ impl SearchSource {
 /// One match: either a documentation/termFormat/format axiom whose text
 /// contains the query, or (see [`KnowledgeBase::search`]) a symbol whose own
 /// *name* matches the query but which has no such axiom to cite -- the latter
-/// carries an empty `language`/`text` and `sid == SentenceId::MAX` as a
-/// "no backing axiom" sentinel.
+/// is a [`SearchSource::Name`] hit with no `sid` and an empty
+/// `language`/`text`.
 #[derive(Debug, Clone)]
 pub struct SearchHit {
     /// The SUMO symbol whose documentation/termFormat/format axiom matched,
@@ -69,8 +74,8 @@ pub struct SearchHit {
     /// symbol of the loaded KB -- the lexicon knows the word, the KB does
     /// not (yet) define the term.
     pub kinds: Vec<ManKind>,
-    /// Which predicate produced the hit (best-effort -- `Documentation` when
-    /// the hit came from the unsourced name-match pass).
+    /// Which predicate produced the hit, or [`SearchSource::Name`] /
+    /// [`SearchSource::WordNet`] for hits with no backing axiom.
     pub source: SearchSource,
     /// The language tag of the matching axiom (e.g. `"EnglishLanguage"`), or
     /// `""` for an unsourced name-match hit.
@@ -78,9 +83,9 @@ pub struct SearchHit {
     /// The full matching string, surrounding quotes stripped, or `""` for an
     /// unsourced name-match hit.
     pub text: String,
-    /// SentenceId of the matching axiom, or `SentenceId::MAX` for an
-    /// unsourced name-match hit (no backing axiom to cite).
-    pub sid: SentenceId,
+    /// SentenceId of the matching axiom; `None` for a name-only or WordNet hit
+    /// (no backing axiom to cite).
+    pub sid: Option<SentenceId>,
     /// For [`SearchSource::WordNet`] hits: the matched sense plus the
     /// mapping-kind suffix in the mappings files' own notation
     /// For example: `"dog#n#1+"` (`=` equivalent, `+` subsuming, `@` instance).
@@ -305,7 +310,7 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
                 .partial_cmp(&a.rank)
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then_with(|| a.symbol.cmp(&b.symbol))
-                .then_with(|| a.sid.cmp(&b.sid))
+                .then_with(|| (a.sid.is_none(), a.sid).cmp(&(b.sid.is_none(), b.sid)))
         });
 
         if let Some(n) = opts.limit {
@@ -421,7 +426,7 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
                             source,
                             language: lang,
                             text: strip_quotes(text),
-                            sid,
+                            sid: Some(sid),
                             sense: String::new(),
                             rank,
                             rank_breakdown,
@@ -437,7 +442,7 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
         for (id, h) in text_hits.iter_mut() {
             if let Some((sid, source, lang, text)) = backing.get(id) {
                 if !text.is_empty() {
-                    h.sid = *sid;
+                    h.sid = Some(*sid);
                     h.source = *source;
                     h.language = lang.clone();
                     h.text = text.clone();
@@ -519,7 +524,7 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
             // interning detail, not KB vocabulary, and must never surface as
             // a search result -- e.g. a KB axiom binding `?Human` would
             // otherwise show up as a hit named `Human__15551`.
-            if is_scoped_variable_name(name) {
+            if crate::syntactic::sentence::is_scoped_variable_name(name) {
                 return;
             }
             if already_hit.contains(name) {
@@ -534,13 +539,10 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
             }
 
             let (sid, source, language, text) = match backing.get(&sym_id) {
-                Some((sid, source, lang, text)) => (*sid, *source, lang.clone(), text.clone()),
-                None => (
-                    SentenceId::MAX,
-                    SearchSource::Documentation,
-                    String::new(),
-                    String::new(),
-                ),
+                Some((sid, source, lang, text)) => {
+                    (Some(*sid), *source, lang.clone(), text.clone())
+                }
+                None => (None, SearchSource::Name, String::new(), String::new()),
             };
 
             let occurrence = syn.sine_current(|idx| idx.generality(sym_id));
@@ -646,7 +648,7 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
                     source: SearchSource::WordNet,
                     language: String::new(),
                     text: sense.synset.gloss.clone(),
-                    sid: SentenceId::MAX,
+                    sid: None,
                     sense: format!("{}{}", sense.label(), anchor.kind.suffix()),
                     rank: sum_rank(&rank_breakdown),
                     rank_breakdown,
@@ -688,6 +690,9 @@ fn search_rank(
         SearchSource::TermFormat => ("termFormat source", 12.0),
         SearchSource::Documentation => ("documentation source", 6.0),
         SearchSource::Format => ("format source", 0.0),
+        // Scored like a documentation hit so name-only matches keep their
+        // place among sourced ones.
+        SearchSource::Name => ("name-only hit", 6.0),
         // WordNet hits are scored by `wordnet_rank`, never routed here; the
         // arm only exists for match correctness.
         SearchSource::WordNet => ("wordnet source", 0.0),
@@ -739,7 +744,7 @@ fn source_preview_rank(source: SearchSource) -> u8 {
         SearchSource::TermFormat => 1,
         SearchSource::Format => 2,
         // Exhaustiveness only.
-        SearchSource::WordNet => 3,
+        SearchSource::Name | SearchSource::WordNet => 3,
     }
 }
 
@@ -825,20 +830,6 @@ fn kind_matches(have: &[ManKind], want: ManKind) -> bool {
         })
     } else {
         have.contains(&want)
-    }
-}
-
-/// `true` if `name` is a quantifier/free-variable's scope-qualified interning
-/// key rather than real KB vocabulary -- i.e. matches `"<base>__<scope-id>"`
-/// where `<scope-id>` is the all-digit suffix `Element::from_node`'s
-/// `Variable` arm mints per binding scope (see `ScopeCtx::scope_for`).
-pub(crate) fn is_scoped_variable_name(name: &str) -> bool {
-    match name.rfind("__") {
-        Some(idx) if idx > 0 => {
-            let suffix = &name[idx + 2..];
-            !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit())
-        }
-        _ => false,
     }
 }
 
@@ -1086,14 +1077,27 @@ mod tests {
     }
 
     #[test]
-    fn scoped_variable_name_detection() {
-        assert!(is_scoped_variable_name("X__3"));
-        assert!(is_scoped_variable_name("Human__15551"));
-        assert!(!is_scoped_variable_name("HumanDoll"));
-        assert!(!is_scoped_variable_name("subordinateInOrganization"));
-        assert!(!is_scoped_variable_name("w__chase_12")); // skolem naming, non-digit suffix
-        assert!(!is_scoped_variable_name("__3")); // no base name before the scope
-        assert!(!is_scoped_variable_name("plain"));
+    fn name_only_hit_has_no_sid_and_reports_name_source() {
+        let kb = kb_from(
+            "(subclass Gryphon Entity)\n(subclass Wyvern Entity)\n\
+             (documentation Wyvern EnglishLanguage \"A two-legged dragon.\")\n",
+        );
+        let hits = kb.search("Gryphon", &SearchOpts::default());
+        let h = hits
+            .iter()
+            .find(|h| h.symbol == "Gryphon")
+            .expect("name match");
+        assert_eq!(h.source, SearchSource::Name);
+        assert_eq!(h.sid, None);
+        assert!(h.language.is_empty() && h.text.is_empty());
+
+        let hits = kb.search("Wyvern", &SearchOpts::default());
+        let h = hits
+            .iter()
+            .find(|h| h.symbol == "Wyvern")
+            .expect("documented symbol");
+        assert_eq!(h.source, SearchSource::Documentation);
+        assert!(h.sid.is_some(), "a documented hit cites its axiom");
     }
 
     /// The exact bug this exists to prevent: a KB axiom binding `?Human`
@@ -1145,7 +1149,8 @@ mod tests {
             hits.iter().map(|h| &h.symbol).collect::<Vec<_>>()
         );
         assert!(
-            hits.iter().all(|h| !is_scoped_variable_name(&h.symbol)),
+            hits.iter()
+                .all(|h| !crate::syntactic::sentence::is_scoped_variable_name(&h.symbol)),
             "a scope-qualified variable name leaked into results: {:?}",
             hits.iter().map(|h| &h.symbol).collect::<Vec<_>>()
         );
@@ -1342,7 +1347,7 @@ mod tests {
         assert_eq!(h.source, SearchSource::WordNet);
         assert_eq!(h.sense, "dog#n#1+");
         assert_eq!(h.text, "a domesticated canine");
-        assert_eq!(h.sid, SentenceId::MAX);
+        assert_eq!(h.sid, None);
     }
 
     /// An anchor term the loaded KB does not define is still reported (the

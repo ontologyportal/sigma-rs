@@ -48,12 +48,18 @@ pub(crate) struct SourceSide {
 }
 
 impl SourceSide {
-    /// Allocate the next unique inline source key (`__inline(N)__`).
-    pub(crate) fn next_inline_key(&self) -> String {
+    /// Allocate the next unique scratch source key (`__{kind}(N)__`).
+    pub(crate) fn next_scratch_key(&self, kind: &str) -> String {
         let n = self
             .inline_counter
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        format!("__inline({n})__")
+        format!("__{kind}({n})__")
+    }
+
+    /// True if `key` is a scratch source key (`__{kind}(N)__`: inline tells,
+    /// ask/query staging) rather than a real file.
+    pub(crate) fn is_scratch_key(key: &str) -> bool {
+        key.starts_with("__") && key.ends_with(")__")
     }
 
     /// The source keys ingested under `session` (empty if unknown).

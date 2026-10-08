@@ -57,6 +57,21 @@ impl<L: crate::layer::TopLayer + crate::layer::Layer> KnowledgeBase<L> {
         IngestResult::from_outcome(outcome, session)
     }
 
+    /// Load `source` into `session` and promote the session to axioms -- the
+    /// one load-then-promote policy every frontend uses.  Promotion always
+    /// runs, whatever the load reported: a file with parse errors still
+    /// promotes the formulas that parsed, and its diagnostics are reported
+    /// alongside.  A rejected promotion adds its diagnostic and clears `ok`,
+    /// leaving the source loaded as unpromoted session content.
+    pub fn load_and_promote(&mut self, source: SourceFile, session: &str) -> IngestResult {
+        let mut result = self.load(source, session);
+        if let Err(e) = self.make_session_axiomatic(session) {
+            result.diagnostics.push(e.to_diagnostic());
+            result.ok = false;
+        }
+        result
+    }
+
     /// Assert an inline KIF string into a named session.
     ///
     /// Shorthand for `stage(SourceFile::inline_kif("", kif), session)`.
@@ -112,8 +127,8 @@ impl<L: crate::layer::TopLayer + crate::layer::Layer> KnowledgeBase<L> {
     /// un-promoted from Base if it was the sole promoter) and removed when no
     /// reference remains (cascading `RootRemoved`). Clears the session's
     /// tombstones. `path` doubles as the review session. No-op if nothing
-    /// pending.
-    pub fn commit(&mut self, path: &str) {
+    /// pending. The result lists the removed sentences.
+    pub fn commit(&mut self, path: &str) -> IngestResult {
         with_guard!(self);
         let recycled = self
             .layer
@@ -143,9 +158,13 @@ impl<L: crate::layer::TopLayer + crate::layer::Layer> KnowledgeBase<L> {
             .syntactic
             .sessions
             .take_tombstones(crate::syntactic::caches::session::session_id(path));
-        if !events.is_empty() {
-            let _ = self.layer.cascade(events);
+        if events.is_empty() {
+            return IngestResult {
+                session: path.to_string(),
+                ..IngestResult::default()
+            };
         }
+        IngestResult::from_outcome(self.layer.cascade(events), path)
     }
 
     /// Veto a staged file update's deferred removals.
@@ -191,7 +210,7 @@ impl<L: crate::layer::TopLayer + crate::layer::Layer> KnowledgeBase<L> {
     ) -> RouteOutcome {
         profile_span!(self, "ingest.source_cascade");
         if matches!(source.origin, crate::types::FileOrigin::Inline) && source.name.is_empty() {
-            source.name = self.layer.semantic().syntactic.next_inline_source_key();
+            source.name = self.layer.semantic().syntactic.unique_source_key("inline");
         }
         self.layer.cascade(vec![Event::SourceAdded {
             session: Arc::new(session.to_owned()),
@@ -206,7 +225,7 @@ impl<L: crate::layer::TopLayer + crate::layer::Layer> KnowledgeBase<L> {
     ///
     /// "Promoted" means committed KB content — not an open-session assertion and
     /// not an in-flight ephemeral sentence (e.g. a conjecture parsed under a
-    /// `__query__` / `__sine_query__` tag).
+    /// `__query(N)__` / `__sine_query__` tag).
     pub(super) fn axiom_ids_set(&self) -> HashSet<SentenceId> {
         self.layer.semantic().syntactic.axiom_ids_set()
     }
@@ -216,16 +235,21 @@ impl<L: crate::layer::TopLayer + crate::layer::Layer> KnowledgeBase<L> {
     /// A sentence is removed only if it is not already an axiom and not still
     /// referenced by another session. The session key is then dropped from the
     /// caches. A source that contributed a promoted axiom is left intact so
-    /// committed knowledge survives the flush.
-    pub fn flush_session(&mut self, session: &str) {
+    /// committed knowledge survives the flush. The result lists the removed
+    /// sentences.
+    pub fn flush_session(&mut self, session: &str) -> IngestResult {
         with_guard!(self);
+        let mut result = IngestResult {
+            session: session.to_string(),
+            ..IngestResult::default()
+        };
         let sids = self.session_sids(session);
         if sids.is_empty() {
             self.layer
                 .semantic()
                 .syntactic
                 .forget_source_session(session);
-            return;
+            return result;
         }
 
         // Reconcile the session's sources to empty, except one that produced a
@@ -235,7 +259,7 @@ impl<L: crate::layer::TopLayer + crate::layer::Layer> KnowledgeBase<L> {
             if self.layer.semantic().syntactic.source_produces_axiom(&src) {
                 continue;
             }
-            let _ = self.ingest_source(
+            let outcome = self.ingest_source(
                 SourceFile {
                     parser: crate::Parser::Kif { options: None },
                     name: src,
@@ -247,31 +271,22 @@ impl<L: crate::layer::TopLayer + crate::layer::Layer> KnowledgeBase<L> {
                 session,
                 false,
             );
+            result.absorb(IngestResult::from_outcome(outcome, session));
         }
         self.layer
             .semantic()
             .syntactic
             .forget_source_session(session);
 
-        // Fingerprint cleanup for the transient (non-axiom) sids only; a
-        // promoted sid remains an axiom and must survive.
-        {
-            let removable: std::collections::HashSet<SentenceId> = sids
-                .iter()
-                .copied()
-                .filter(|sid| !self.layer.semantic().syntactic.sessions.is_axiom(*sid))
-                .collect();
-            self.syntax_fingerprints
-                .retain(|_, sid| !removable.contains(sid));
-        }
-
         // Cascade from the top layer so `SessionRetracted` reaches the semantic
         // `tax_edges` (a syntactic-only cascade stops at the session cache).
-        let _ = self.layer.cascade(vec![Event::SessionRetracted {
+        let outcome = self.layer.cascade(vec![Event::SessionRetracted {
             session: session.to_string(),
         }]);
+        result.absorb(IngestResult::from_outcome(outcome, session));
 
         self.info(format!("flush_session: flushed session '{}'", session));
+        result
     }
 
     /// Return the SentenceIds for a session (empty if it doesn't exist).
@@ -289,12 +304,12 @@ impl<L: crate::layer::TopLayer + crate::layer::Layer> KnowledgeBase<L> {
     /// cascade (refcounting keeps any still referenced by another file/session).
     /// A persistent store (if attached) is untouched; call
     /// `KnowledgeBase::persist` to flush.
-    pub fn remove_file(&mut self, file: &str) {
-        let _ = self.load(SourceFile::truncate(PathBuf::from(file)), file);
+    pub fn remove_file(&mut self, file: &str) -> IngestResult {
+        self.load(SourceFile::truncate(PathBuf::from(file)), file)
     }
 
     /// Promote `session`'s assertions to axioms.
-    pub fn make_session_axiomatic(&mut self, session: &str) -> Result<PromoteReport, PromoteError> {
+    pub fn make_session_axiomatic(&mut self, session: &str) -> Result<(), PromoteError> {
         with_guard!(self);
 
         self.info(format!("promote: session='{}'", session));
@@ -314,11 +329,9 @@ impl<L: crate::layer::TopLayer + crate::layer::Layer> KnowledgeBase<L> {
 
         let sids: Vec<SentenceId> = self.session_sids(session);
 
-        let mut report = PromoteReport::default();
-
         if sids.is_empty() {
             self.info(format!("promote: session '{}' empty", session));
-            return Ok(report);
+            return Ok(());
         }
 
         // Cascade from the top layer so `SessionAxiomatized` reaches both the
@@ -336,9 +349,7 @@ impl<L: crate::layer::TopLayer + crate::layer::Layer> KnowledgeBase<L> {
             sids.len(),
             session
         ));
-        report.promoted = sids.to_vec();
-
-        Ok(report)
+        Ok(())
     }
 }
 
@@ -360,10 +371,7 @@ impl IngestResult {
     fn from_outcome(outcome: RouteOutcome, session: &str) -> Self {
         let (added, removed) = roots_from_outcome(&outcome);
 
-        // `ok` gates only on a parse failure (`kind == "parse"`), not on
-        // semantic findings — those are advisory and may be escalated to
-        // `Error` by `-Wall` without meaning the file failed to load.
-        let ok = !outcome.errors.iter().any(|d| d.kind == "parse");
+        let ok = !outcome.errors.iter().any(is_failure);
 
         // Retained: formulas a file reconcile carried over unchanged, batched as
         // one `FormulasUnchanged` per source (a fresh load has none).
@@ -387,6 +395,11 @@ impl IngestResult {
     }
 }
 
+/// Whether `d` means an ingest-style call failed (see [`IngestResult::ok`]).
+fn is_failure(d: &Diagnostic) -> bool {
+    d.severity == crate::Severity::Error && d.kind != "semantic"
+}
+
 // -- Ingest result types -------------------------------------------------------
 
 /// Result of an ingest call ([`KnowledgeBase::tell`], [`KnowledgeBase::load`],
@@ -400,8 +413,11 @@ impl IngestResult {
 pub struct IngestResult {
     /// The name of the session/file being ingested to.
     pub session: String,
-    /// True if the source parsed and ingested — i.e. no parse-level error.
-    /// Semantic findings are advisory and do NOT clear this flag.
+    /// True unless the call failed: some diagnostic is an error that is not a
+    /// semantic finding (a parse error, an internal cascade failure).
+    /// Warnings (e.g. a duplicate formula) and semantic findings -- advisory,
+    /// and escalatable to errors by `-W` without meaning the load failed --
+    /// never clear it.
     pub ok: bool,
     /// All diagnostics raised by this call — parse errors and semantic
     /// findings alike, each carrying its own [`Severity`].
@@ -440,9 +456,13 @@ impl IngestResult {
             .iter()
             .filter(|d| d.severity == crate::Severity::Warning)
     }
-    /// True if any diagnostic is an error.
-    pub fn has_errors(&self) -> bool {
-        self.errors().next().is_some()
+    /// Fold `other` (a later step of the same operation) into this result.
+    fn absorb(&mut self, other: IngestResult) {
+        self.ok &= other.ok;
+        self.diagnostics.extend(other.diagnostics);
+        self.sids.extend(other.sids);
+        self.retained += other.retained;
+        self.removed_sids.extend(other.removed_sids);
     }
     /// True when nothing changed — no adds, removes, or diagnostics.
     #[inline]
@@ -466,32 +486,9 @@ impl Default for IngestResult {
 
 // -- Promotion result types ----------------------------------------------------
 
-/// Successful result from a promotion: the SentenceIds lifted to axioms.
-#[allow(dead_code)]
-#[derive(Debug, Default)]
-pub struct PromoteReport {
-    /// SentenceIds successfully promoted to axioms.
-    pub promoted: Vec<SentenceId>,
-}
-
-/// Error returned by the consistency-checked promotion path.
+/// Error returned when a session cannot be promoted to axioms.
 #[derive(Debug, Error)]
 pub enum PromoteError {
-    /// The prover showed the session assertions make the KB inconsistent.
-    #[error("promotion rejected: session '{session}' makes the KB inconsistent")]
-    Inconsistent {
-        session: String,
-        /// Raw prover output explaining the inconsistency.
-        explanation: String,
-        /// Assertion SentenceIds implicated (best-effort extraction).
-        conflicting: Vec<SentenceId>,
-    },
-
-    /// The prover could not determine consistency (timeout or unknown result).
-    /// Promotion is conservatively rejected.
-    #[error("promotion rejected: prover could not determine consistency ({reason})")]
-    ProverUncertain { reason: String },
-
     /// The session holds inline (`tell`) assertions, which are transient
     /// "super-hypotheses" and can never be lifted to axioms.  To commit them,
     /// re-ingest the content as a source file.
@@ -506,16 +503,11 @@ impl ToDiagnostic for PromoteError {
             range: crate::Span::synthetic(),
             severity: crate::Severity::Error,
             code: match &self {
-                PromoteError::Inconsistent { .. } => "inconsistent",
-                PromoteError::ProverUncertain { .. } => "uncertain",
                 PromoteError::ContainsInline { .. } => "inline",
             },
             message: self.to_string(),
             related: vec![],
-            sids: match self {
-                PromoteError::Inconsistent { conflicting, .. } => conflicting.clone(),
-                _ => vec![],
-            },
+            sids: vec![],
             highlight_arg: i32::MAX,
             highlight_var: None,
         }
@@ -1659,7 +1651,7 @@ mod tests {
         let mut kb = KnowledgeBase::new();
         let r = kb.tell("(subclass Dog Mammal", "s");
         assert!(!r.ok);
-        assert!(r.has_errors());
+        assert!(!r.ok);
     }
 
     // Duplicate formulas are de-duplicated silently by content addressing —
@@ -1669,7 +1661,7 @@ mod tests {
         let mut kb = KnowledgeBase::new();
         load_file(&mut kb, "f.kif", "(subclass Dog Mammal)");
         let r = kb.tell("(subclass Dog Mammal)", "s2");
-        assert!(r.ok && !r.has_errors(), "duplicate is non-fatal");
+        assert!(r.ok, "duplicate is non-fatal");
     }
 
     #[test]
@@ -1978,7 +1970,7 @@ mod tests {
             .sine
             .with_ref(|idx| idx.axiom_count());
         let r = kb.reload_kif("(subclass Dog Mammal", &TEST_PATH, "test");
-        assert!(r.has_errors());
+        assert!(!r.ok);
         assert_eq!(r.retained, 0);
         assert_eq!(r.added(), 0);
         assert_eq!(r.removed(), 0);
@@ -2138,7 +2130,7 @@ mod tests {
         // Semantic checks resolve against the whole KB here, which is the point.
         let mut diags = Vec::new();
         for sid in &staged.sids {
-            diags.extend(kb.validate_sentence(*sid));
+            diags.extend(kb.validate(crate::ValidationTarget::Sentence(*sid), None));
         }
 
         let back = kb.reload_kif(orig, &PathBuf::from("t.kif"), "t.kif");
@@ -2345,5 +2337,80 @@ mod tests {
         assert_eq!(results[0].added(), 1);
         assert_eq!(results[1].added(), 1);
         assert_eq!(results[2].added(), 1);
+    }
+
+    #[test]
+    fn warnings_never_fail_an_ingest_but_parse_errors_do() {
+        let mut kb = KnowledgeBase::new();
+        let r = kb.reload_kif(
+            "(subclass Dog Mammal)\n(subclass Cat Mammal)\n(subclass Dog Mammal)\n",
+            &PathBuf::from("dup.kif"),
+            "dup.kif",
+        );
+        assert!(
+            r.diagnostics.iter().any(|d| d.code == "duplicate-formula"),
+            "the duplicate is still reported: {:?}",
+            r.diagnostics
+        );
+        assert!(r.ok, "a duplicate-formula warning is not a failure");
+
+        let r = kb.reload_kif("(subclass Dog", &PathBuf::from("bad.kif"), "bad.kif");
+        assert!(!r.ok, "a parse error is a failure");
+    }
+
+    #[test]
+    fn flush_and_remove_report_what_they_removed() {
+        let mut kb = KnowledgeBase::new();
+        let r = kb.tell("(subclass Dog Mammal)", "scratch");
+        assert!(r.ok);
+        let flushed = kb.flush_session("scratch");
+        assert!(flushed.ok);
+        assert_eq!(flushed.removed(), 1, "{flushed:?}");
+
+        assert!(
+            kb.reload_kif("(subclass Cat Mammal)", &PathBuf::from("f.kif"), "f.kif")
+                .ok
+        );
+        let removed = kb.remove_file("f.kif");
+        assert!(removed.ok);
+        assert_eq!(removed.removed(), 1, "{removed:?}");
+    }
+
+    #[test]
+    fn load_and_promote_promotes_what_parsed_despite_errors() {
+        let mut kb = KnowledgeBase::new();
+        let r = kb.load_and_promote(
+            SourceFile::kif(
+                PathBuf::from("part.kif"),
+                "(subclass Dog Mammal)\n(subclass Cat".into(),
+            ),
+            "part.kif",
+        );
+        assert!(!r.ok, "the parse error is still reported");
+        assert!(r.diagnostics.iter().any(|d| d.kind == "parse"), "{r:?}");
+        assert_eq!(
+            kb.axiom_ids_set().len(),
+            1,
+            "the formula that parsed is promoted"
+        );
+        assert!(kb.session_sids("part.kif").is_empty());
+    }
+
+    #[test]
+    fn a_rejected_promotion_leaves_the_file_loaded_as_session_content() {
+        let mut kb = KnowledgeBase::new();
+        assert!(kb.tell("(subclass Fish Animal)", "mixed").ok);
+        let r = kb.load_and_promote(
+            SourceFile::kif(PathBuf::from("mixed.kif"), "(subclass Dog Mammal)".into()),
+            "mixed",
+        );
+        assert!(!r.ok);
+        assert!(r.diagnostics.iter().any(|d| d.kind == "promotion"), "{r:?}");
+        assert!(kb.axiom_ids_set().is_empty());
+        assert_eq!(
+            kb.session_sids("mixed").len(),
+            2,
+            "still loaded, unpromoted"
+        );
     }
 }

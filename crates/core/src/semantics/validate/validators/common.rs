@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 
 use crate::semantics::validate::cx::Cx;
-use crate::{Element, OpKind, SentenceId};
+use crate::{Element, OpKind, SentenceId, SymbolId, TaxRelation};
 
 /// Call `f` for every non-row variable occurrence reachable from `sid`,
 /// including those inside quantifier var-lists. Callers needing a
@@ -107,4 +107,37 @@ pub(super) fn subtree_has_existential(cx: &Cx<'_>, sid: SentenceId) -> bool {
         Element::Sub(sub) => subtree_has_existential(cx, *sub),
         _ => false,
     })
+}
+
+/// Whether `sid` denotes a truth-valued sentence rather than a term.
+pub(super) fn is_logical_sentence(cx: &Cx<'_>, sid: SentenceId) -> bool {
+    let Some(sentence) = cx.sentence(sid) else {
+        return false;
+    };
+    if sentence.is_operator() {
+        return true;
+    }
+    let head_id = match sentence.elements.first() {
+        Some(Element::Symbol(sym)) => sym.id(),
+        Some(Element::Variable { .. }) => return true,
+        _ => return false,
+    };
+    !cx.is_function(head_id)
+}
+
+/// `class` and every class above it along `subclass` edges, in discovery
+/// order.
+pub(super) fn superclasses(cx: &Cx<'_>, class: SymbolId) -> Vec<SymbolId> {
+    let mut seen = HashSet::from([class]);
+    let mut order = vec![class];
+    let mut i = 0;
+    while let Some(&c) = order.get(i) {
+        i += 1;
+        for (parent, rel) in cx.parents(c) {
+            if matches!(rel, TaxRelation::Subclass) && seen.insert(parent) {
+                order.push(parent);
+            }
+        }
+    }
+    order
 }

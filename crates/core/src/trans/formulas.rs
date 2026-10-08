@@ -10,6 +10,15 @@
 
 use std::collections::HashSet;
 
+#[cfg(feature = "external-prover")]
+use crate::clock::Instant;
+#[cfg(feature = "external-prover")]
+use crate::semantics::types::Scope;
+#[cfg(feature = "external-prover")]
+use crate::trans::ir::ProblemIr;
+#[cfg(feature = "external-prover")]
+use crate::{profile_span, ProveCtx, SineParams, SymbolId};
+
 use crate::parse::tptp::syntax::TptpLang;
 #[cfg(feature = "external-prover")]
 use crate::trans::lower::QueryVarMap;
@@ -408,6 +417,146 @@ impl TranslationLayer {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[cfg(feature = "external-prover")]
+impl TranslationLayer {
+    /// Select and translate the problem an external prover is handed for the
+    /// store-interned conjecture `query_sids` at `params`: the conjecture,
+    /// `session`'s assertions as hypotheses, and the SInE-selected axioms
+    /// plus their taxonomy closure, in dialect `mode`.
+    pub(crate) fn query_problem(
+        &self,
+        query_sids: &[SentenceId],
+        params: SineParams,
+        session: Option<&str>,
+        mode: TptpLang,
+        ctx: &ProveCtx,
+    ) -> QueryProblem {
+        // Session assertions are force-included as hypotheses *and* seed SInE
+        // alongside the conjecture, so axioms connecting an asserted fact to
+        // the goal are reachable.
+        let assertion_ids: HashSet<SentenceId> = session
+            .map(|s| {
+                self.semantic
+                    .syntactic
+                    .sessions
+                    .session_sentences(s)
+                    .into_iter()
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Symbol seed = conjecture + session assertions.  The external path now
+        // seeds by SYMBOL (not sid) so it runs the same relevance pass as the
+        // native engine -- including the Liu & Xu structural rescue it had been
+        // skipping.
+        let mut seed: HashSet<SymbolId> = HashSet::new();
+        for &sid in query_sids.iter().chain(assertion_ids.iter()) {
+            seed.extend(self.semantic.syntactic.sentence_symbols(sid));
+        }
+
+        // Shared relevance pass: SInE -> head-filter -> Liu rescue.  The external
+        // backend always strips bookkeeping heads and (unlike before) takes the
+        // rescue; `ProverOpts` carries no Liu knobs, so use the canonical
+        // defaults.
+        let sel = crate::syntactic::SelectionParams {
+            head_filter: true,
+            liu_rescue: true,
+            liu_rounds: 1,
+            liu_top_k: 32,
+        };
+        let (selected, _frontier) = self
+            .semantic
+            .syntactic
+            .select_relevant(&seed, params, &sel, ctx);
+        let raw_selected = selected.len();
+
+        let mut axiom_sids: Vec<SentenceId> = selected.into_iter().collect();
+        axiom_sids.extend(assertion_ids.iter().copied());
+        axiom_sids.sort_unstable();
+        axiom_sids.dedup();
+        // (Synthetic replacements + predicate-variable instantiation now happen
+        // inside `assemble_problem` -- the translation layer scans the selected
+        // axiom set for synthetic eligibility on demand.)
+        // Taxonomy-closure injection: pull in the subclass/instance chain facts
+        // connecting the conjecture's (and assertions') class symbols -- the
+        // same conjecture + assertions symbol union already built as `seed`.
+        let tax = self
+            .semantic
+            .taxonomy_closure_facts_scoped(&seed, 4000, query_scope(session));
+        if !tax.is_empty() {
+            axiom_sids.extend(tax);
+            axiom_sids.sort_unstable();
+            axiom_sids.dedup();
+        }
+
+        let t_input = Instant::now();
+
+        // Assemble in the dialect `mode` selects.  `Thf` goes through the
+        // translation layer's higher-order pipeline; otherwise `Auto` resolves
+        // against exactly the axioms this run selected (plus the query) --
+        // never the whole KB -- so a numeral anywhere in the actual problem
+        // upgrades it to TFF (`assertion_ids` is already folded into
+        // `axiom_sids`, so it is covered by that scan).  Either way the
+        // selection is first scanned for synthetics (rewrite replacements +
+        // predicate-variable instantiation), the axioms come from the formula
+        // caches, and the conjecture installs as one existentially wrapped
+        // conjunction with numbers hidden exactly as the axioms.
+        let seeds: Vec<SentenceId> = assertion_ids.iter().copied().collect();
+        let scope = Some(query_scope(session));
+        let (problem, sid_map, mode) = {
+            profile_span!(ctx, "ask.build_problem");
+            if mode == TptpLang::Thf {
+                let (p, m) = self.assemble_problem_thf(&axiom_sids, &seeds, query_sids, scope);
+                (ProblemIr::Ho(Box::new(p)), m, mode)
+            } else {
+                let mode = self
+                    .semantic
+                    .syntactic
+                    .resolve_tptp_lang(mode, axiom_sids.iter().chain(query_sids.iter()));
+                let (p, m, _qvm) =
+                    self.assemble_problem(&axiom_sids, &seeds, query_sids, mode, scope);
+                (ProblemIr::Fo(Box::new(p)), m, mode)
+            }
+        };
+        let input_gen = t_input.elapsed();
+        ctx.debug(format!(
+            "ask({:?}): {} selected + {} assertions, {} axiom rows",
+            mode,
+            raw_selected,
+            assertion_ids.len(),
+            problem.axiom_count()
+        ));
+        QueryProblem {
+            problem,
+            sid_map,
+            raw_selected,
+            input_gen,
+        }
+    }
+}
+
+/// A query's assembled problem (see [`TranslationLayer::query_problem`]).
+#[cfg(feature = "external-prover")]
+pub(crate) struct QueryProblem {
+    pub(crate) problem: ProblemIr,
+    /// `sid_map[i]` is the sentence behind the problem's `i`th axiom.
+    pub(crate) sid_map: Vec<SentenceId>,
+    /// The raw SInE selection size, before hypotheses and taxonomy closure.
+    pub(crate) raw_selected: usize,
+    /// Time spent translating and assembling, selection excluded.
+    pub(crate) input_gen: std::time::Duration,
+}
+
+/// The semantic [`Scope`] a query reasons in: `Base` for a global ask, or the
+/// named session's overlay.
+#[cfg(feature = "external-prover")]
+fn query_scope(session: Option<&str>) -> Scope {
+    match session {
+        Some(s) => Scope::Session(crate::syntactic::caches::session::session_id(s)),
+        None => Scope::Base,
+    }
+}
 
 #[cfg(test)]
 mod tests {

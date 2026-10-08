@@ -28,9 +28,8 @@ impl<L: crate::layer::TopLayer> KnowledgeBase<L> {
         let syntactic = &self.layer.semantic().syntactic;
         let pat = match syntactic.patterns().pattern_from_kif(pattern) {
             Ok(p) => p,
-            Err(PatternFromKifError::NoRootSentence) => return Vec::new(),
-            Err(PatternFromKifError::UnknownSymbol(sym)) => {
-                panic!("KnowledgeBase::lookup: unknown symbol '{sym}' in pattern \"{pattern}\"")
+            Err(PatternFromKifError::NoRootSentence | PatternFromKifError::UnknownSymbol(_)) => {
+                return Vec::new()
             }
         };
         self.lookup_compiled(&pat)
@@ -85,9 +84,7 @@ impl<L: crate::layer::TopLayer> KnowledgeBase<L> {
     /// stats) should exclude them. No SUMO term ends in `__<digits>`, so the
     /// name shape is an exact discriminator.
     pub fn symbol_is_variable(&self, symbol: &str) -> bool {
-        symbol.rsplit_once("__").is_some_and(|(head, scope)| {
-            !head.is_empty() && !scope.is_empty() && scope.bytes().all(|b| b.is_ascii_digit())
-        })
+        crate::syntactic::sentence::is_scoped_variable_name(symbol)
     }
 
     /// Resolve a [`SymbolId`] to its interned name.
@@ -167,16 +164,6 @@ impl<L: crate::layer::TopLayer> KnowledgeBase<L> {
         Some((id, name))
     }
 
-    /// Every occurrence of `symbol` across every loaded file.
-    ///
-    /// Returns an empty `Vec` when the symbol is unknown or has no
-    /// non-synthetic occurrences.
-    pub fn occurrences(&self, symbol: &str) -> Vec<crate::types::Occurrence> {
-        self.symbol_id(symbol)
-            .map(|id| self.occurrences_of(id))
-            .unwrap_or_default()
-    }
-
     /// Occurrences by raw `SymbolId`.
     ///
     /// Returns a deterministic `Vec` ordered by file then source position.
@@ -219,17 +206,6 @@ impl<L: crate::layer::TopLayer> KnowledgeBase<L> {
     /// The file/session tags that contributed `sid`.
     pub fn files_of(&self, sid: SentenceId) -> Vec<String> {
         self.layer.semantic().syntactic.sessions.provenance_of(sid)
-    }
-
-    /// Every distinct head-predicate name currently indexed in the store
-    /// (the relations / predicates / functions that appear as sentence heads).
-    pub fn head_names(&self) -> Vec<String> {
-        let store = &self.layer.semantic().syntactic;
-        store
-            .residue_head_symbols()
-            .into_iter()
-            .filter_map(|id| store.sym_name(id).map(|s| s.name().to_string()))
-            .collect()
     }
 
     /// Every distinct head-predicate name currently indexed in the store
@@ -316,6 +292,22 @@ mod tests {
         let a: std::collections::HashSet<_> = via_str.into_iter().collect();
         let b: std::collections::HashSet<_> = via_compiled.into_iter().collect();
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn lookup_with_unknown_symbol_is_empty_not_a_panic() {
+        let mut kb = KnowledgeBase::new();
+        let r = kb.reload_kif(
+            "(instance Dog Animal)",
+            &std::path::PathBuf::from("t.kif"),
+            "t.kif",
+        );
+        assert!(r.ok);
+        assert!(kb.make_session_axiomatic("t.kif").is_ok());
+
+        assert!(kb.lookup("(instance ?X Unicorn)").is_empty());
+        assert!(kb.lookup("(noSuchRelation ?X ?Y)").is_empty());
+        assert_eq!(kb.lookup("(instance ?X Animal)").len(), 1);
     }
 
     #[test]

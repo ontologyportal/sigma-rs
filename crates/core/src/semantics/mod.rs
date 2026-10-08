@@ -15,13 +15,16 @@ pub mod validate;
 #[cfg_attr(not(feature = "native-prover"), allow(dead_code))]
 pub(crate) mod roles;
 
-use crate::cache::{Cache, CacheBehavior, CacheConfig, EagerMap};
+use crate::cache::{Cache, CacheBehavior, CacheConfig, EagerMap, WholeCache};
 use crate::layer::Layer;
 use crate::semantics::taxonomy::TaxRelation;
 use crate::syntactic::SyntacticLayer;
 use crate::types::{Element, Sentence, SentenceId, SymbolId};
 
 use caches::arity::Arity;
+use caches::defining_sentences::DefiningSentences;
+use caches::disjoint::Disjoint;
+use caches::doc_coverage::DocCoverageCache;
 use caches::documentation::Documentation;
 use caches::domain::Domain;
 use caches::has_ancestor::HasAncestor;
@@ -64,6 +67,8 @@ pub struct SemanticLayer {
     pub(crate) is_function: Cache<IsFunction>,
     /// Whether `ancestor` lies in `sym`'s taxonomy chain.  See [`caches::has_ancestor`].
     pub(crate) has_ancestor: Cache<HasAncestor>,
+    /// Classes declared disjoint with a class.  See [`caches::disjoint`].
+    pub(crate) disjoint: Cache<Disjoint>,
     /// Relation arity.  See [`caches::arity`].
     pub(crate) arity: Cache<Arity>,
     /// Relation argument-domain sorts.  See [`caches::domain`].
@@ -72,6 +77,10 @@ pub struct SemanticLayer {
     pub(crate) range: Cache<Range>,
     /// `(documentation …)` entries.  See [`caches::documentation`].
     pub(crate) documentation: Cache<Documentation>,
+    /// Each symbol's defining sentence.  See [`caches::defining_sentences`].
+    pub(crate) defining_sentences: WholeCache<DefiningSentences>,
+    /// Whole-KB documentation coverage.  See [`caches::doc_coverage`].
+    pub(crate) doc_coverage: WholeCache<DocCoverageCache>,
     /// Memoized type inference.  See [`caches::inferred_class`].
     pub(crate) inferred_class: Cache<InferredClass>,
     /// Validation cache. See [`caches::validate`]. Disabled by default
@@ -111,12 +120,15 @@ impl SemanticLayer {
             is_predicate: Cache::new(cfg, IsPredicate),
             is_function: Cache::new(cfg, IsFunction),
             has_ancestor: Cache::new(cfg, HasAncestor),
+            disjoint: Cache::new(cfg, Disjoint),
             arity: Cache::new(cfg, Arity),
             domain: Cache::new(cfg, Domain),
             range: Cache::new(cfg, Range),
             validate: Cache::new(cfg, Validate),
 
             documentation: Cache::new(cfg, Documentation),
+            defining_sentences: WholeCache::new(cfg, DefiningSentences),
+            doc_coverage: WholeCache::new(cfg, DocCoverageCache),
             inferred_class: Cache::new(cfg, InferredClass),
             subrel_lattice: Cache::new(cfg, SubrelLattice),
             trans_reach: Cache::new(cfg, TransReach),
@@ -214,6 +226,22 @@ impl SemanticLayer {
         )
     }
 
+    /// The binary `disjoint` relation head id -- recognized or the default.
+    pub(crate) fn disjoint_role(&self) -> SymbolId {
+        self.tax_roles.get().map_or_else(
+            || crate::semantics::roles::TaxonomyRoles::default().disjoint,
+            |r| r.disjoint,
+        )
+    }
+
+    /// The `partition` relation head id -- recognized or the default.
+    pub(crate) fn partition_role(&self) -> SymbolId {
+        self.tax_roles.get().map_or_else(
+            || crate::semantics::roles::TaxonomyRoles::default().partition,
+            |r| r.partition,
+        )
+    }
+
     /// Re-prime the taxonomy adjacency (and drop the lazy caches derived
     /// from it) so a newly-installed role vocabulary takes effect.
     #[cfg(feature = "native-prover")]
@@ -226,6 +254,7 @@ impl SemanticLayer {
         self.is_predicate.clear();
         self.is_function.clear();
         self.has_ancestor.clear();
+        self.disjoint.clear();
         self.domain.clear();
         self.range.clear();
         self.documentation.clear();
@@ -266,10 +295,13 @@ impl Layer for SemanticLayer {
             bind(&self.is_predicate, self),
             bind(&self.is_function, self),
             bind(&self.has_ancestor, self),
+            bind(&self.disjoint, self),
             bind(&self.arity, self),
             bind(&self.domain, self),
             bind(&self.range, self),
             bind(&self.documentation, self),
+            bind(&self.defining_sentences, self),
+            bind(&self.doc_coverage, self),
             bind(&self.inferred_class, self),
             bind(&self.subrel_lattice, self),
             bind(&self.trans_reach, self),

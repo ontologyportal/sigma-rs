@@ -182,7 +182,7 @@
             "enum": [
               "no-entity-ancestor",
               "head-not-relation",
-              "head-invalid",
+              "root-not-formula",
               "non-logical-arg",
               "arity-mismatch",
               "domain-mismatch",
@@ -195,12 +195,19 @@
               "instance-subclass-conflict",
               "disjoint-instance",
               "disjoint-subclass",
+              "partition-non-member",
+              "duplicate-axiom",
+              "attitude-conflict",
+              "missing-documentation",
+              "multiple-documentation",
+              "missing-term-format",
+              "missing-format-string",
               "other"
             ],
             "enumDescriptions": [
               "E001 — Symbol has no derivation to Entity",
               "E002 — Sentence head is not a declared relation",
-              "E003 — Sentence head is not a symbol",
+              "E003 - Top-level sentence is a function term, not a formula",
               "E004 — Operator argument is not a logical sentence",
               "E005 — Relation applied with wrong number of arguments",
               "E006 — Argument does not satisfy the relation's domain",
@@ -211,9 +218,16 @@
               "W011 — Function name should start with an uppercase letter",
               "W012 — Predicate name should start with a lowercase letter",
               "E013 — Symbol is declared as both an instance and a class",
-              "disjoint-instance — Instance of two disjoint classes",
-              "disjoint-subclass — Subclass of two disjoint classes",
-              "E015 — Other / miscellaneous semantic error"
+              "E014 - Instance of two disjoint classes",
+              "E015 - Subclass of two disjoint classes",
+              "W035 - Instance of a partitioned class falls under no partition member",
+              "W033 - One axiom occurs in several source locations",
+              "W034 - Conflicting propositional attitudes about one proposition",
+              "H001 - Term has no documentation",
+              "H002 - Term has several documentation strings in one language",
+              "H003 - Term has no termFormat",
+              "H004 - Relation has no format string",
+              "E016 - Other / miscellaneous semantic error"
             ]
           }
         }

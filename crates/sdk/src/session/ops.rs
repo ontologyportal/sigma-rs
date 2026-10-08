@@ -21,7 +21,8 @@ impl<L: TopLayer> Session<L> {
     /// Available on every backend (validation is layer-agnostic).  An empty
     /// vec means clean.
     pub fn validate(&self) -> Vec<Diagnostic> {
-        self.kb.validate_all()
+        self.kb
+            .validate(sigmakee_rs_core::ValidationTarget::All, None)
     }
 
     /// Validate one inline KIF formula: parse it into a scratch session, run the
@@ -40,7 +41,10 @@ impl<L: TopLayer> Session<L> {
         for sid in sids {
             // Session scope: symbols the scratch input itself declares are
             // only visible in the session overlay.
-            diags.extend(self.kb.validate_sentence_in_session(sid, TAG));
+            diags.extend(
+                self.kb
+                    .validate(sigmakee_rs_core::ValidationTarget::Sentence(sid), Some(TAG)),
+            );
         }
         self.kb.flush_session(TAG);
         Ok(diags)
@@ -70,7 +74,9 @@ impl<L: TopLayer> Session<L> {
             kb.session_sids(TAG)
                 .into_iter()
                 .filter(|sid| !before.contains(sid))
-                .flat_map(|sid| kb.validate_sentence_in_session(sid, TAG))
+                .flat_map(|sid| {
+                    kb.validate(sigmakee_rs_core::ValidationTarget::Sentence(sid), Some(TAG))
+                })
                 .collect()
         };
 
@@ -119,7 +125,8 @@ impl<L: TopLayer> Session<L> {
             return staged.diagnostics;
         }
 
-        self.kb.validate_file_in_session(file, file)
+        self.kb
+            .validate(sigmakee_rs_core::ValidationTarget::File(file), Some(file))
     }
 
     /// Cap the number of concurrent tasks the KB's reactive cache router may
@@ -144,15 +151,13 @@ impl<L: TopLayer> Session<L> {
     }
 
     /// Thaw a KB previously frozen by [`Session::snapshot_bytes`], replacing
-    /// this session's KB contents in place.  Replacing *inside* the session
-    /// (rather than swapping the session out) keeps any `Arc<RwLock<Session>>`
-    /// sharing intact: every other facade on the same session sees the
-    /// restored KB.
+    /// this session's KB contents in place and keeping its settings (cache
+    /// config, prover backend).  Replacing *inside* the session (rather than
+    /// swapping the session out) keeps any `Arc<RwLock<Session>>` sharing
+    /// intact: every other facade on the same session sees the restored KB.
     #[cfg(feature = "snapshot")]
     pub fn restore_bytes(&mut self, bytes: &[u8]) -> SdkResult<()> {
-        self.kb =
-            sigmakee_rs_core::KnowledgeBase::restore_from_bytes(bytes).map_err(SdkError::from)?;
-        Ok(())
+        self.kb.restore_bytes(bytes).map_err(SdkError::from)
     }
 
     /// Open an LMDB-backed KB from disk as a translation-only session.  Proving
@@ -191,7 +196,7 @@ impl<L: TopLayer> Session<L> {
 
 impl<L: HasTranslation> Session<L> {
     /// Emit the KB as a TPTP problem in `lang` (FOF / TFF / …)
-    pub fn translate(&mut self, opts: TptpOptions) -> SdkResult<String> {
+    pub fn translate(&self, opts: TptpOptions) -> SdkResult<String> {
         Ok(self.kb.to_tptp(&opts, None))
     }
 
@@ -215,7 +220,7 @@ impl<L: HasTranslation> Session<L> {
         };
         let mut out = String::new();
         for sid in self.kb.session_sids(TAG) {
-            out.push_str(&self.kb.format_sentence_tptp(sid, &opts));
+            out.push_str(&self.kb.sentence_tptp(sid, &opts).unwrap_or_default());
             out.push('\n');
         }
         self.kb.flush_session(TAG);
@@ -231,8 +236,12 @@ impl<L: HasTranslation> Session<L> {
         prover_opts: ExternalOpts,
     ) -> Result<String, Vec<SdkError>> {
         let tc = self.source_to_test_case(src)?;
+        let prover_opts = ExternalOpts {
+            session: prover_opts.session.or_else(|| Some(self.name.clone())),
+            ..prover_opts
+        };
         self.kb
-            .tc_to_tptp(tc, &opts, Some(&self.name), Some(prover_opts))
+            .tc_to_tptp(tc, &opts, &prover_opts)
             .map_err(|e| -> Vec<SdkError> { e.into_iter().map(SdkError::from).collect() })
     }
 }
@@ -254,7 +263,7 @@ mod tests {
     #[test]
     fn snapshot_bytes_roundtrips_through_restore() {
         let mut s = Session::<TranslationLayer>::new("ops-snap".into());
-        s.ingest(reader("t.kif", "(subclass Dog Mammal)"), true);
+        s.ingest(reader("t.kif", "(subclass Dog Mammal)"));
         assert!(s.kb().symbol_id("Dog").is_some(), "fixture loaded");
         let bytes = s.snapshot_bytes().unwrap();
 
@@ -293,10 +302,10 @@ mod tests {
         let mut s = Session::<TranslationLayer>::new("ops-validate".into());
         // Mammal must reach Entity: argument symbols are entity-checked too
         // (E001), so an unclosed chain would correctly flag Dog and Mammal.
-        s.ingest(
-            reader("t.kif", "(subclass Dog Mammal)\n(subclass Mammal Entity)"),
-            true,
-        );
+        s.ingest(reader(
+            "t.kif",
+            "(subclass Dog Mammal)\n(subclass Mammal Entity)",
+        ));
         let bad: Vec<_> = s
             .validate()
             .into_iter()
@@ -322,7 +331,7 @@ mod tests {
     #[test]
     fn translate_emits_tptp() {
         let mut s = Session::<TranslationLayer>::new("ops-translate".into());
-        s.ingest(reader("t.kif", "(subclass Dog Mammal)"), true);
+        s.ingest(reader("t.kif", "(subclass Dog Mammal)"));
         let tptp = s
             .translate(TptpOptions {
                 lang: TptpLang::Fof,
