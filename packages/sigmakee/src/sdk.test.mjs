@@ -12,7 +12,7 @@ const WASM_STUB =
   );
 registerHooks({
   resolve(specifier, context, next) {
-    if (specifier === "./sumo_parser_wasm.js")
+    if (specifier === "./engine.js")
       return { url: WASM_STUB, shortCircuit: true };
     return next(specifier, context);
   },

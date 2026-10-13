@@ -4,12 +4,12 @@
   "description": "Load SUO-KIF, translate to TPTP, and prove theorems in-browser with the pure-Rust native saturation prover (sigmakee-rs).",
   "license": "GPL-3.0",
   "type": "module",
-  "module": "./dist/sumo_parser_wasm.js",
-  "types": "./dist/sumo_parser_wasm.d.ts",
+  "module": "./dist/engine.js",
+  "types": "./dist/engine.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/sumo_parser_wasm.d.ts",
-      "default": "./dist/sumo_parser_wasm.js"
+      "types": "./dist/engine.d.ts",
+      "default": "./dist/engine.js"
     },
     "./sdk": {
       "types": "./dist/sdk.d.ts",
@@ -19,7 +19,8 @@
       "types": "./dist/node.d.ts",
       "default": "./dist/node.mjs"
     },
-    "./sumo_parser_wasm_bg.wasm": "./dist/sumo_parser_wasm_bg.wasm"
+    "./engine_bg.wasm": "./dist/engine_bg.wasm",
+    "./sumo_parser_wasm_bg.wasm": "./dist/engine_bg.wasm"
   },
   "scripts": {
     "build": "node scripts/build.mjs",
@@ -33,7 +34,7 @@
     "LICENSE"
   ],
   "sideEffects": [
-    "./dist/sumo_parser_wasm.js"
+    "./dist/engine.js"
   ],
   "keywords": [
     "sumo",

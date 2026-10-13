@@ -1,5 +1,5 @@
 /**
- * Runnable Node demo for sumo-parser-wasm — proves a theorem in-process with
+ * Runnable Node demo for the raw `sigmakee` bindings — proves a theorem in-process with
  * the native saturation prover, using a `web`-target build.
  *
  * Build the package first, then run:
@@ -16,14 +16,14 @@ import { dirname, join } from "node:path";
 const here = dirname(fileURLToPath(import.meta.url));
 const pkg = join(here, "..", "dist");
 
-const mod = await import(join(pkg, "sumo_parser_wasm.js"));
+const mod = await import(join(pkg, "engine.js"));
 const init = mod.default;
 const { Session, Config } = mod;
 
 // Instantiate from the .wasm bytes (browser code would just `await init()`,
 // letting it fetch the .wasm sitting next to the JS).
 await init({
-  module_or_path: await readFile(join(pkg, "sumo_parser_wasm_bg.wasm")),
+  module_or_path: await readFile(join(pkg, "engine_bg.wasm")),
 });
 
 // --- Prove in-browser-equivalent -------------------------------------------

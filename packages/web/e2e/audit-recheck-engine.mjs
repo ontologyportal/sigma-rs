@@ -22,7 +22,7 @@ function load(path, imports = {}) {
 }
 await sdk.init({
   module_or_path: readFileSync(
-    new URL("../../sigmakee/dist/sumo_parser_wasm_bg.wasm", import.meta.url),
+    new URL("../../sigmakee/dist/engine_bg.wasm", import.meta.url),
   ),
 });
 const utils = load("../src/utils/auditReplay.ts");

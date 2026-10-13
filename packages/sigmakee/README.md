@@ -1,22 +1,34 @@
-# sumo-parser-wasm
+# sigmakee
 
-WebAssembly bindings for [`sigmakee-rs-core`](../core) — load SUO-KIF, translate
-to TPTP, and **prove theorems entirely in the browser** with the pure-Rust
-native saturation prover. No server, no subprocess, no WASI required.
+The [sigmakee-rs](https://github.com/ontologyportal/sigma-rs) knowledge-base
+engine compiled to WebAssembly. Load SUO-KIF ontologies (SUMO and others),
+validate and search them, translate them to TPTP, and **prove theorems in the
+browser or in Node** with the pure-Rust native saturation prover. No server or
+WASI is required; external provers (Vampire, E) plug in through a JS bridge.
 
-Two layers are shipped:
+This package powers the [sigmakee.dev](https://sigmakee.dev) web IDE
+([`packages/web`](../web)).
 
-- **`sigmakee/sdk`** — an SDK-shaped facade (`Session`,
-  `Source`, `Backend`, `Config`) that mirrors the [`sigmakee-rs-sdk`](../sdk)
-  crate's surface. **Start here.**
-- **`sigmakee`** (package root) — the raw wasm-bindgen classes
-  (`Session`, `Config`) for direct, lower-level
-  control.
+```bash
+npm install sigmakee
+```
 
-> **What runs in-browser.** Native proving, KIF parsing, TPTP translation, and
-> lookup are pure Rust and run client-side. The subprocess prover, LMDB
-> persistence, rayon parallelism, and native git/http sources are **not**
-> available on `wasm32` — they're structurally impossible in a browser sandbox.
+## Entry points
+
+| Import | What it is |
+| --- | --- |
+| **`sigmakee/sdk`** | The SDK facade (`Session`, `Source`, `Backend`, `Config`), shaped like the [`sigmakee-rs-sdk`](../../crates/sdk) Rust crate. **Start here.** |
+| `sigmakee` | The `engine` module: the raw wasm-bindgen classes (`Session`, `Config`, `WasmLsp`) the facade wraps. Use it for lower-level control or the in-process language server. |
+| `sigmakee/node` | Node-only helper that runs a local `vampire` binary for the Vampire backend (see [External provers](#external-provers)). |
+| `sigmakee/engine_bg.wasm` | The compiled engine, for bundlers or hosts that load it themselves. (`sigmakee/sumo_parser_wasm_bg.wasm` is kept as an alias for older imports.) |
+
+All three JS modules ship TypeScript declarations.
+
+> **What runs on wasm.** Parsing, validation, search, man pages, TPTP
+> translation, native proving, consistency audits and KB snapshots all run
+> client-side. LMDB persistence, rayon parallelism, subprocess provers and
+> native git/HTTP sources are not available on `wasm32`. Use the
+> `sigmakee-rs-sdk` crate or the `sumo` CLI for those.
 
 ---
 
@@ -25,130 +37,151 @@ Two layers are shipped:
 ```ts
 import { init, Session, Source, Backend, Config } from "sigmakee/sdk";
 
-await init();                                  // instantiate the WASM module (once)
+await init(); // instantiate the WASM module (once; idempotent)
 
 const cfg = new Config();
 cfg.timeLimitSecs = 10;
 const session = new Session({ backend: Backend.Native, config: cfg });
 
-await session.ingest(Source.kif(`
+await session.ingest(
+  Source.kif(`
   (instance Socrates Man)
   (=> (instance ?X Man) (instance ?X Mortal))
-`));
+`),
+);
 
 const r = session.ask("(instance Socrates Mortal)");
-console.log(r.status);   // "Proved"
-console.log(r.proof);    // [{ index, rule, premises, kif }, ...]
+console.log(r.status); // "Proved"
+console.log(r.proof); // [{ index, rule, premises, kif }, ...]
 ```
 
-Typed example: [`examples/driver.ts`](examples/driver.ts). Raw-bindings example:
-[`examples/node-demo.mjs`](examples/node-demo.mjs).
+In the browser, `init()` fetches `engine_bg.wasm` from beside the JS. In Node,
+pass the bytes:
 
-## Demo site
+```js
+import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 
-**Live: <https://ontologyportal.github.io/sigma-rs/browse/>** (staged into the
-GitHub Pages site by the `regression-pages.yml` workflow, at `/browse`).
-
-A browser front-end lives in [`web/`](web/), built on the facade. It **autoloads
-SUMO's foundational ontology** (`Merge.kif`, ~630 KB) from
-`github.com/ontologyportal/sumo` on startup, then presents four tabs:
-
-- **Home** — search symbols and documentation; click a result to open its man
-  page (kinds, documentation, taxonomy, signature), with clickable parents/children.
-- **Knowledge base** — manage constituents: see what's loaded, add more SUMO
-  files (picked from the repo's `*.kif` list), or add from a URL / file upload,
-  and remove or reset. Diagnostics and search update as the KB changes.
-- **Diagnostics** — the validation findings for the loaded KB.
-- **Theorem prover** — a `tell` box (assertions) and an `ask` box (query);
-  proves in-browser against SUMO plus your assertions.
-
-To load more of SUMO by default, edit the `SUMO_FILES` constant in
-[`app.js`](../web/app.js) (only `Merge.kif` autoloads, to keep startup fast).
-
-Run it locally, from the repository root:
-
-```bash
-npm install
-npm run web                          # rebuilds this package, then serves the demo
-# → open http://localhost:8080/
+const wasm = createRequire(import.meta.url).resolve("sigmakee/engine_bg.wasm");
+await init({ module_or_path: await readFile(wasm) });
 ```
 
-`npm run web` builds this package, best-effort builds the optional Vampire
-backend (`@sigma/vampire`), and starts Vite's dev server for `@sigma/web`.
-Vite resolves the engine through the workspace dependency on `sigmakee`, so
-there is nothing to mirror by hand.
-
-> **Must be served over HTTP.** Opening `packages/web/index.html` directly
-> (`file://`) fails with *"Module source URI is not allowed"* — browsers block
-> ES modules and `fetch` (of the `.wasm`) on `file://`.
+Examples: [`examples/driver.ts`](examples/driver.ts) (typed, facade) and
+[`examples/node-demo.mjs`](examples/node-demo.mjs) (raw bindings, Node).
 
 ---
 
-## SDK-shaped API (`/sdk`)
+## The SDK facade (`sigmakee/sdk`)
 
-The facade maps the `sigmakee-rs-sdk` crate onto the browser:
+### Backends
 
-| SDK crate (Rust) | This facade (JS) | Notes |
+`new Session({ backend })` picks the engine that `ask` and `auditConsistency`
+use. Every backend shares the same KB, validation, search and translation.
+
+| `Backend` | Prover | Notes |
 | --- | --- | --- |
-| `Session::new` | `new Session({ backend, config })` | |
-| `Backend::{Native, External, TranslationOnly}` | `Backend.{Native, Vampire, TranslationOnly}` | `External` = Vampire behind a JS bridge (see below) |
-| `Source::{Http, Git, Local/Reader}` | `Source.{url, gitHub, file, kif}` | |
-| `Session::ingest(Source)` | `session.ingest(source)` | async (URL/GitHub fetch) |
-| `Session::tell` / `ask` | `session.tell` / `ask` | |
-| `Session::translate` | `session.translate` | TranslationOnly backend |
-| `Session::validate` / `validateFormula` | `session.validate` / `validateFormula` | |
-| `Session::search` / `manpage` | `session.search` / `manpage` | |
-| `KBManager` `NativeProverConfig` | `Config` | |
-| `Session::fork` / `persist` / `open` | — | LMDB-backed; no filesystem in the browser |
+| `Native` (default) | Pure-Rust saturation prover, in-process | Required for `promote`, `snapshot` and `restore` |
+| `Vampire` | Vampire through the engine's external prover layer | Needs a bridge (see below) |
+| `E` | E (eprover) through the same layer | Needs a bridge (see below) |
+| `TranslationOnly` | None | `translate` only; `ask` throws |
 
 ### `Session`
 
-```ts
-new Session(opts?: { backend?: Backend; config?: Config })   // default backend: Native
+| Area | Methods |
+| --- | --- |
+| Setup | `new Session({ backend?, config? })`, `configure(config)`, `backend`, `kb` (the raw `engine` session) |
+| Loading | `ingest(source, { promote? })` (async), `promote(tag)`, `snapshot()`, `restore(bytes)` |
+| Proving | `tell(text, session?, tptp?)`, `ask(query, { session?, tptp?, hook? })`, `flushSession(session)` |
+| Auditing | `auditConsistency(request?)` (sampled consistency sweep), `sentenceAt(file, offset)` |
+| Translation | `translate({ lang?: "fof" \| "tff", hideNumbers?, session? })` |
+| Validation | `validate()`, `validateFormula(kif)`, `validateScratch(assertions, query)` |
+| Browsing | `search(query, opts?)`, `manpage(symbol)`, `taxonomy(symbol)`, `lookup(pattern)` |
+| Natural language | `naturalLanguages()`, `renderNl(kif, language, genericVars?)` |
+| WordNet | `loadWordNet(files)`, `clearWordNet()`, `wordnetDiagnostics(limit?)` |
 
-session.configure(config: Config): this
-session.ingest(source: Source): Promise<{ loaded: number; files: string[]; errors: string[] }>
-session.tell(kif: string, session?: string): { ok: boolean; errors: string[] }
-session.ask(query: string, opts?: { session?: string; tptp?: boolean; hook?: VampireBridge }): AskResult
-session.translate(opts?: { lang?: "fof" | "tff"; hideNumbers?: boolean; session?: string }): string
-session.lookup(pattern: string): string[]
-session.validate(): Diagnostic[]                             // whole-KB diagnostics ([] = clean)
-session.validateFormula(kif: string): Diagnostic[]           // validate one formula, KB untouched
-session.search(query: string, opts?: { kind?: string; language?: string; limit?: number }): SearchHit[]
-session.manpage(symbol: string): ManPage | null              // structured symbol reference
-session.flushSession(session: string): void
-session.kb            // the underlying raw binding (escape hatch)
-```
+`ingest` with `{ promote: false }` only indexes the source (search and man
+pages work), and `promote(tag)` later adds it to the axiom base. `snapshot()`
+freezes the whole KB to bytes, and `restore(bytes)` thaws it in place. The web
+IDE uses this pair to cache a loaded SUMO between visits.
 
-`Diagnostic` is `{ severity, kind, code, message, file, line, col, end_line,
-end_col }`; `SearchHit` is `{ symbol, kinds, source, language, text, rank }`
-(hits come sorted by `rank` descending — a relevance score that boosts
-symbol-name matches over text-only matches); `ManPage`
-carries `{ name, kinds, documentation, term_format, format, parents, children,
-arity, domains, range, appears_in_count, consequent_count }` (see `sdk.d.ts`).
-These project out the KB's internal `u64` ids and run on either backend.
-
-`ask` returns an `AskResult` on a Native or Vampire session (TranslationOnly
-sessions throw):
+`ask` returns an `AskResult`:
 
 ```ts
 interface AskResult {
   status: "Proved" | "Disproved" | "Consistent" | "Inconsistent"
         | "Timeout" | "InputError" | "Unknown";
   proved: boolean;
-  given_steps: number | null;
-  raw_output: string;
   proof: Array<{ index: number; rule: string; premises: number[]; kif: string }>;
+  raw_output: string;
+  // ...plus step counts and, with Config.keepTptp, input_tptp
 }
 ```
 
-### Vampire backend
+The full shapes of `Diagnostic`, `SearchHit`, `ManPage`, `AuditResult`,
+`WordNetDiagnostics` and the other result types are in
+[`src/sdk.d.ts`](src/sdk.d.ts).
 
-A `Backend.Vampire` session runs the same engine path as the CLI's external
-prover -- axiom selection with autoscaling, hypothesis staging, transcript
-parsing -- and only delegates the prover run itself to a bridge you install:
-`(tptp, args, timeoutMs) => { stdout, stderr, code }`, called synchronously.
-The `sigmakee/node` module builds one over `spawnSync`:
+### `Source`
+
+```ts
+Source.kif(text, tag?)                               // inline KIF
+Source.url(url, tag?)                                // one document over HTTP
+Source.file(file)                                    // a browser File upload
+Source.gitHub({ owner, repo, ref?, dir?, match?, token? }) // every *.kif in a repo
+```
+
+`Source.url` and `Source.gitHub` use `fetch`, so they are subject to CORS.
+`raw.githubusercontent.com` and the GitHub REST API both allow it, so public
+repos work directly. The same fetch logic is exported for use with a raw
+session: `loadFromUrl(kb, url)`, `loadFromFile(kb, file)` and
+`loadFromGitHubRepo(kb, opts)`.
+
+### `Config`
+
+Mirrors the SDK's `NativeProverConfig` (the `<prover>` preference keys) as
+camelCase properties:
+
+```ts
+const cfg = new Config(); // native-prover defaults, wantProof on
+cfg.timeLimitSecs = 10;   // wall-clock budget (0 = unlimited)
+cfg.maxSteps = 4000;      // given-clause step cap
+cfg.maxLits = 8;          // max literals per retained clause
+cfg.forwardClose = true;  // forward closure before the loop
+cfg.wantProof = true;     // populate result.proof
+cfg.profile = false;      // phase timings into raw_output
+cfg.strategy = Config.strategyPresets()[0].strategy; // native strategy preset
+```
+
+The axiom selection used by the external backends is set with `selection`,
+`selectionBudget`, `selectionTolerancePct` and `selectionTimeLimitSecs`
+(defaults: `Config.selectionDefaults()`). `vampireArgs` appends raw Vampire
+CLI text, and `keepTptp` returns the exact problem as `result.input_tptp`.
+
+### Standalone helpers
+
+| Function | Purpose |
+| --- | --- |
+| `formatKif(text, { indentUnit? })` | Re-indent KIF by paren depth (pure JS) |
+| `parseTest(name, text)` / `parseTptpTest(name, text, remap?)` | Parse a `.kif.tq` or TPTP test file |
+| `formatTest(opts)` | Write an Ask/Tell pair as `.kif.tq` text |
+| `sumoSymbols()` | The SUMO symbol names this build was compiled with |
+
+---
+
+## External provers
+
+The `Vampire` and `E` backends run the same pipeline as the CLI's external
+prover: axiom selection, hypothesis staging and transcript parsing. Only the
+prover run itself is delegated, to a synchronous function on `globalThis`
+that you install:
+
+| Backend | Global | Signature |
+| --- | --- | --- |
+| `Vampire` | `__sigmaRunVampireSync` | `(tptp, args, timeoutMs) => { stdout, stderr, code }` |
+| `E` | `__sigmaRunEproverSync` | same; `args` is a JSON array of E flags |
+
+In Node, `sigmakee/node` provides the Vampire bridge, a `spawnSync` of a local
+binary:
 
 ```js
 import { init, Session, Backend } from "sigmakee/sdk";
@@ -158,114 +191,84 @@ installVampireBridge(vampireBridge({ vampirePath: "/usr/local/bin/vampire" }));
 const s = new Session({ backend: Backend.Vampire });
 ```
 
-In the browser the bridge parks the calling worker on `Atomics.wait` while a
-page-owned worker runs the Emscripten Vampire (`@sigma/web` ships that
-plumbing); it needs cross-origin isolation for `SharedArrayBuffer`. A per-call
-bridge can be passed as `ask(query, { hook })`. `Config.vampireArgs` appends
-raw CLI text; `Config.keepTptp` returns the exact problem text as
-`result.input_tptp`.
+`installVampireBridge` is also exported from `sigmakee/sdk`, and a per-call
+bridge can be passed as `ask(query, { hook })`.
 
-### `Source`
-
-```ts
-Source.kif(text: string, tag?: string)                       // inline KIF
-Source.url(url: string, tag?: string)                        // one document over HTTP (CORS)
-Source.file(file: File)                                       // a browser file upload
-Source.gitHub({ owner, repo, ref?, dir?, match?, token? })   // every *.kif in a public repo
-```
-
-`Source.url` and `Source.gitHub` are subject to the browser's CORS policy;
-`raw.githubusercontent.com` and the GitHub REST API both allow it, so public
-repos work directly. For server-side loading (native git clone, no CORS limits)
-use the `sigmakee-rs-sdk` crate's `Source` / `KBManager`.
-
-### `Config`
-
-Mirrors the SDK `KBManager`'s `NativeProverConfig` — camelCase properties
-matching the `<prover type="native">` preference keys.
-
-```ts
-const cfg = new Config();          // native-prover defaults, wantProof on
-cfg.timeLimitSecs = 10;            // wall-clock budget (0 = unlimited)
-cfg.maxSteps      = 4000;          // given-clause step cap
-cfg.maxLits       = 8;             // max literals per retained clause
-cfg.forwardClose  = true;          // forward-closure before the loop
-cfg.wantProof     = true;          // populate result.proof
-cfg.profile       = false;         // phase timings into raw_output
-```
+In the browser, the bridge blocks the engine's worker on `Atomics.wait` while
+a page-owned worker runs Vampire or E compiled to WASM. That needs
+cross-origin isolation (for `SharedArrayBuffer`). The web IDE ships this
+plumbing with the `@sigma/vampire` and `@sigma/eprover` workspace packages.
 
 ---
 
-## Low-level bindings (package root)
+## The `engine` module (package root)
 
-The facade wraps these; use them directly for finer control. Two classes:
+The facade wraps these classes; import them from `sigmakee` directly when you
+need finer control.
 
 | Class | Purpose |
 | --- | --- |
-| **`Session` (raw)** | The full in-browser KB. `configure(config)`, `loadKif(text, tag)`, `tell(kif, session?)`, `ask(query, session?)`, `lookup(pattern)`, `flushSession(session)`, plus TPTP export via `toTptpIndexed(lang?, hideNumbers?)`. `Config.backend` (`"native"` / `"vampire"`) selects the prover `ask`/`auditConsistency` run. |
+| `Session` | The whole in-browser KB. Beyond the facade's methods it exposes `loadKif(text, tag)` (fused ingest and promote), `ingest`, `toTptpIndexed(lang?, hideNumbers?)`, `clausify`, `stats()`, `fileStats`, the audit planners (`auditTargets`, `auditSources`, `auditDocument`) and `setMaxThreads`. Its `search` and `manpage` take positional arguments. |
+| `Config` | The prover configuration described above. `Config.backend` (`"native"`, `"vampire"` or `"e"`) picks the prover per call on a raw session. |
+| `WasmLsp` | The `sumo-lsp` language server, in-process. `new WasmLsp(session)` shares that session's KB. Feed JSON-RPC messages to `handleMessage(json)`, which returns the reply and notifications as JSON strings. Call `flushReloads(force)` after edits to get diagnostics, because the bridge has no idle loop of its own. |
 
-It also exposes the query methods `validate()`, `validateFormula(kif)`,
-`search(query, kind?, language?, limit?)`, and `manpage(symbol)` (the facade's
-`Session` wraps these; the raw `search`/`manpage` take positional args).
-
-The `/sdk` module also re-exports standalone loaders for use with these raw
-classes: `loadFromUrl(kb, url)`, `loadFromFile(kb, file)`,
-`loadFromGitHubRepo(kb, opts)` — same fetch logic as `Session.ingest`.
+The module's default export is the wasm-bindgen `init`, which the facade's
+`init` wraps. `initSync` is also available.
 
 ---
 
 ## Building
 
 ```bash
-npm run build --workspace sigmakee   # → packages/sigmakee/dist/ (web target)
+npm install                          # once, from the repository root
+npm run build --workspace sigmakee   # → packages/sigmakee/dist/
 ```
 
-[`scripts/build.mjs`](scripts/build.mjs) needs only `cargo` — no `wasm-pack`.
-It installs the `wasm-bindgen-cli` version the workspace `Cargo.lock` resolved
-(the generated glue and the crate's runtime must match) into a repo-local
-`target/wasm-bindgen/<version>/`, so it never disturbs a globally installed
-one; adds the `wasm32-unknown-unknown` target if missing; builds `--release`;
-runs `wasm-bindgen`; and stages the facade (`sdk.mjs`/`sdk.d.ts`) beside the
-generated bindings.
+[`scripts/build.mjs`](scripts/build.mjs) needs only `cargo` and `rustup`, not
+`wasm-pack`. It:
 
-The `.wasm` is then size-optimized with `wasm-opt` from the pinned `binaryen`
-devDependency, so run `npm install` first. A distro `binaryen` is generally too
-old for the opcodes this build emits and fails; that failure is non-fatal and
-just ships a roughly 25% larger `.wasm`.
+1. installs the `wasm-bindgen-cli` version the workspace `Cargo.lock` resolved
+   into a repo-local `target/wasm-bindgen/<version>/` (the generated glue and
+   the crate's runtime must match), leaving any global install alone;
+2. adds the `wasm32-unknown-unknown` target if missing;
+3. builds the `crates/wasm` crate in release mode;
+4. runs `wasm-bindgen --out-name engine`, so the generated files are
+   `engine.js`, `engine.d.ts` and `engine_bg.wasm`;
+5. size-optimizes the `.wasm` with `wasm-opt -Oz` from the pinned `binaryen`
+   devDependency (a distro `binaryen` is usually too old for the opcodes this
+   build emits; a failure here is non-fatal and ships a roughly 25% larger
+   `.wasm`);
+6. stages the facade (`sdk.*`, `node.*`) and a `build-info.json` engine
+   fingerprint beside the bindings.
 
-Pass a different wasm-bindgen target as the first argument — `web` (default,
-browser ESM), `bundler` (webpack/rollup), or `nodejs` (CommonJS). Give it its
-own output directory: `dist/` is what this package's `exports` point at, so
-writing CommonJS glue there would leave an ESM manifest over a CJS payload.
+The default wasm-bindgen target is `web` (browser ESM, which also works in
+Node as above). Pass `bundler` or `nodejs` as the first argument for other
+targets, and give each its own output directory. `dist/` is what `exports`
+point at, so CommonJS glue there would sit under an ESM manifest:
 
 ```bash
 node scripts/build.mjs nodejs dist-node
 ```
 
+Rust changes are not watched. Rebuild after editing anything under `crates/`.
+
 ---
 
 ## Publishing to npm
 
-`dist/` holds the built artifacts; this directory is the package.
+The `prepack` script rebuilds `dist/` on `npm pack` and `npm publish`, so a
+publish never ships a stale build. To publish exactly the bytes you
+inspected, build once and skip the scripts afterwards:
 
 ```bash
-npm ci                               # `prepare` builds dist/
+npm run build --workspace sigmakee
 cd packages/sigmakee
-npm publish --dry-run --ignore-scripts   # inspect the file list first
-npm publish --ignore-scripts             # unscoped `sigmakee` → public by default
+npm publish --dry-run --ignore-scripts   # inspect the file list
+npm publish --ignore-scripts             # unscoped `sigmakee`, public by default
 ```
 
-`prepare` builds `dist/` during `npm ci`/`npm install`, so a publish can never
-ship a stale build. `--ignore-scripts` on the publish keeps the tarball the dry
-run inspected: without it each command rebuilds, and the build starts by
-deleting `dist/`, so the bytes that ship are not the bytes you just reviewed.
-
-Before the first publish:
-
-- **Name.** [`package.json`](package.json) is the unscoped name `sigmakee` (no
-  `--access public` needed).
-- **Version.** Keep it in step with the crate.
-- **Auth.** `npm login` (or trusted publishing in CI) with publish rights.
+Without `--ignore-scripts`, each command rebuilds, and the build starts by
+deleting `dist/`. Keep the package version in step with the workspace crates.
 
 ---
 
