@@ -254,24 +254,6 @@ Rust changes are not watched. Rebuild after editing anything under `crates/`.
 
 ---
 
-## Publishing to npm
-
-The `prepack` script rebuilds `dist/` on `npm pack` and `npm publish`, so a
-publish never ships a stale build. To publish exactly the bytes you
-inspected, build once and skip the scripts afterwards:
-
-```bash
-npm run build --workspace sigmakee
-cd packages/sigmakee
-npm publish --dry-run --ignore-scripts   # inspect the file list
-npm publish --ignore-scripts             # unscoped `sigmakee`, public by default
-```
-
-Without `--ignore-scripts`, each command rebuilds, and the build starts by
-deleting `dist/`. Keep the package version in step with the workspace crates.
-
----
-
 ## License
 
 GPL-3.0, matching the workspace.

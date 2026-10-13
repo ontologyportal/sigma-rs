@@ -42,16 +42,8 @@ The build installs the `wasm-bindgen-cli` version pinned in the workspace
 `Cargo.lock` if it is missing — into a repo-local `target/wasm-bindgen/`, never
 over a globally installed one — adds the `wasm32-unknown-unknown` target,
 compiles `--release`, runs `wasm-bindgen`, size-optimizes with `wasm-opt -Oz`,
-and stages the SDK facade beside the generated bindings. `npm install` also
-runs it, via the package's `prepare` hook, so a fresh clone has a resolvable
-`sigmakee` without a separate build step.
-
-To inspect what would be published (`--ignore-scripts` so it reports the
-already-built `dist/` rather than rebuilding it):
-
-```bash
-npm publish --dry-run --ignore-scripts --workspace sigmakee
-```
+and stages the SDK facade beside the generated bindings. The package has no
+install hook, so build it once after cloning; `npm run web` does this for you.
 
 The Vampire backend builds separately, and needs the Emscripten SDK plus GNU
 awk (see `packages/vampire/build.sh` for the full list):
@@ -59,3 +51,20 @@ awk (see `packages/vampire/build.sh` for the full list):
 ```bash
 npm run build --workspace @sigma/vampire
 ```
+
+### Publish `sigmakee` to npm
+
+The package's `prepack` script rebuilds `dist/` on `npm pack` and
+`npm publish`, so a publish never ships a stale build. To publish exactly the
+bytes you inspected, build once and skip the scripts afterwards:
+
+```bash
+npm run build --workspace sigmakee
+npm publish --dry-run --ignore-scripts --workspace sigmakee   # inspect the file list
+npm publish --ignore-scripts --workspace sigmakee             # unscoped, public by default
+```
+
+Without `--ignore-scripts`, each command rebuilds, and the build starts by
+deleting `dist/`. Keep the package version in step with the workspace crates,
+and log in first (`npm login`, or trusted publishing in CI) with publish
+rights to `sigmakee`.
