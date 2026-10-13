@@ -13,6 +13,8 @@ This package powers the [sigmakee.dev](https://sigmakee.dev) web IDE
 npm install sigmakee
 ```
 
+**API reference:** <https://ontologyportal.github.io/sigma-rs/docs/js/>
+
 ## Entry points
 
 | Import | What it is |
@@ -118,7 +120,8 @@ interface AskResult {
 ```
 
 The full shapes of `Diagnostic`, `SearchHit`, `ManPage`, `AuditResult`,
-`WordNetDiagnostics` and the other result types are in
+`WordNetDiagnostics` and the other result types are in the
+[API reference](https://ontologyportal.github.io/sigma-rs/docs/js/), generated from
 [`src/sdk.d.ts`](src/sdk.d.ts).
 
 ### `Source`

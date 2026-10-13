@@ -68,3 +68,9 @@ Without `--ignore-scripts`, each command rebuilds, and the build starts by
 deleting `dist/`. Keep the package version in step with the workspace crates,
 and log in first (`npm login`, or trusted publishing in CI) with publish
 rights to `sigmakee`.
+
+The package's `homepage` (the link on its npm page) is the TypeDoc API
+reference at <https://ontologyportal.github.io/sigma-rs/docs/js/>. It is built from the
+`dist/*.d.ts` declarations and published with the GitHub Pages site, beside
+the Rust docs at `/docs/rust/`. The source README stays reachable through
+`repository`.

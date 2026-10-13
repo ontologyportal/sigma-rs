@@ -46,7 +46,7 @@
     "wasm",
     "webassembly"
   ],
-  "homepage": "https://github.com/ontologyportal/sigma-rs/tree/main/packages/sigmakee",
+  "homepage": "https://ontologyportal.github.io/sigma-rs/docs/js/",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/ontologyportal/sigma-rs.git",
