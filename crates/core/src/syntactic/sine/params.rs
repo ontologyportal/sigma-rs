@@ -230,6 +230,16 @@ pub fn scale_predvar_cap() -> usize {
         .unwrap_or(32)
 }
 
+/// Per-schema cap for signature-derived predicate-variable rules;
+/// `SINE_SIGNATURE_PREDVAR_CAP`, default `256`.
+#[cfg(feature = "external-prover")]
+pub fn scale_signature_predvar_cap() -> usize {
+    option_env!("SINE_SIGNATURE_PREDVAR_CAP")
+        .and_then(|s| s.parse().ok())
+        .filter(|&n| n >= 1)
+        .unwrap_or(256)
+}
+
 #[cfg(test)]
 mod auto_pct_tests {
     use super::SineParams;

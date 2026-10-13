@@ -224,7 +224,7 @@ mod tests {
 
         let syntactic = &trans.semantic.syntactic;
         let impls = syntactic.normal_implications();
-        let expect = detect_predvar_schemas(syntactic, &impls);
+        let expect = detect_predvar_schemas(&trans.semantic, &impls);
 
         assert_eq!(prog.predvar_schemas.len(), expect.len());
         assert_eq!(

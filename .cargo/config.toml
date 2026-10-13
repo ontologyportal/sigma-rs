@@ -62,6 +62,9 @@ SUMO_DOMAIN_RELATION   = "domain"
 SUMO_DOMAIN_SUBCLASS_RELATION   = "domainSubclass"
 SUMO_RANGE_RELATION    = "range"
 SUMO_RANGE_SUBCLASS_RELATION   = "rangeSubclass"
+SUMO_LIST_FN          = "ListFn"
+SUMO_LIST_ORDER_FN    = "ListOrderFn"
+SUMO_ASSIGNMENT_FN    = "AssignmentFn"
 
 # ----------------------------------------------------------------------------
 # SUMO Documentation helper relations

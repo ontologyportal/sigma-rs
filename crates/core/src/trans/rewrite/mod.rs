@@ -30,6 +30,7 @@ mod augment;
 mod extract;
 mod predvar;
 mod preprocess;
+mod subst;
 #[cfg(test)]
 mod tests;
 
@@ -37,7 +38,9 @@ mod tests;
 // (`trans::rewrite::X`): the rest stays private to its stage file.
 use augment::augment_fixed_point;
 pub(crate) use extract::{extract_case1_rules, extract_case2_rules, RewriteRule};
-pub(crate) use predvar::{detect_predvar_schemas, is_bare_positive_assertion, PredVarSchema};
+pub(crate) use predvar::{
+    detect_predvar_schemas, is_bare_positive_assertion, Bound, PredVarSchema,
+};
 use preprocess::inject_domain_guards;
 
 // `HashSet` / `SentenceId` are used by `build_rewrite_program` below (and the
@@ -112,7 +115,7 @@ impl TranslationLayer {
 
         let rules = self.extract_rules(&implications);
 
-        let predvar_schemas = detect_predvar_schemas(syntactic, &implications);
+        let predvar_schemas = detect_predvar_schemas(&self.semantic, &implications);
 
         // Derived suppression: each characterization implication that becomes a
         // rule (and each predvar schema) is replaced by its rewritten /

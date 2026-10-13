@@ -5,9 +5,10 @@ use std::collections::HashSet;
 use smallvec::smallvec;
 
 use super::extract::RewriteRule;
+use super::subst::{collect_conjuncts, substitute_var};
 use crate::parse::ast::OpKind;
 use crate::syntactic::SyntacticLayer;
-use crate::types::{Element, ElementVec, SentenceId, SymbolId};
+use crate::types::{Element, ElementVec, SentenceId};
 
 // ---------------------------------------------------------------------------
 // Stage 3 — Augmentation Fixed-Point
@@ -122,65 +123,4 @@ fn try_augment_conjunct(
     ];
     let new_root = syntactic.push_synthetic_sentence(impl_elems, sid);
     Some((new_root, matched_csid))
-}
-
-/// Recursively substitute all occurrences of `var_id` in the sentence tree
-/// rooted at `sid`, returning the `SentenceId` of a new synthetic sentence.
-///
-/// `Sub` children that contain the variable are recursively substituted;
-/// all other elements are copied as-is.  A fresh synthetic sentence is
-/// always allocated so the original tree is never modified.
-pub(super) fn substitute_var(
-    syntactic: &SyntacticLayer,
-    sid: SentenceId,
-    var_id: SymbolId,
-    replacement: &Element,
-    origin: SentenceId,
-) -> SentenceId {
-    // Clone the elements first to release the immutable borrow on `syntactic`
-    // before calling `push_synthetic_sentence` or recurring into Sub children.
-    let elements: Vec<Element> = syntactic
-        .sentence(sid)
-        .map(|s| s.elements.to_vec())
-        .unwrap_or_default();
-
-    let mut new_elems: ElementVec = ElementVec::with_capacity(elements.len());
-    for elem in elements {
-        let new_elem = match elem {
-            Element::Variable { id, .. } if id == var_id => replacement.clone(),
-            Element::Sub(child_sid) => {
-                let new_child = substitute_var(syntactic, child_sid, var_id, replacement, origin);
-                Element::Sub(new_child)
-            }
-            other => other,
-        };
-        new_elems.push(new_elem);
-    }
-    syntactic.push_synthetic_sentence(new_elems, origin)
-}
-
-/// Collect the sub-sentence ids that are direct conjuncts of `ant_sid`.
-///
-/// If `ant_sid` is an `(and …)` sentence, returns its children's Sub sids.
-/// Otherwise returns `[ant_sid]` (single conjunct).
-pub(super) fn collect_conjuncts(
-    syntactic: &SyntacticLayer,
-    ant_sid: SentenceId,
-) -> Vec<SentenceId> {
-    let Some(ant_s) = syntactic.sentence(ant_sid) else {
-        return vec![ant_sid];
-    };
-    if !matches!(ant_s.elements.first(), Some(Element::Op(OpKind::And))) {
-        return vec![ant_sid];
-    }
-    ant_s.elements[1..]
-        .iter()
-        .filter_map(|e| {
-            if let Element::Sub(sid) = e {
-                Some(*sid)
-            } else {
-                None
-            }
-        })
-        .collect()
 }
