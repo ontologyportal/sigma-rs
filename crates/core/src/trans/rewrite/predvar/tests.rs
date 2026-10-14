@@ -14,6 +14,13 @@ const RANGE_SCHEMA: &str =
     "(=> (and (range ?F ?C) (equal (AssignmentFn ?F ?X ?Y) ?V)) (instance ?V ?C))";
 const RANGE_SUBCLASS_SCHEMA: &str =
     "(=> (and (rangeSubclass ?F ?C) (equal (AssignmentFn ?F ?X ?Y) ?V)) (subclass ?V ?C))";
+const CASE_ROLE_SCHEMA: &str = "(=> (and (?ROLE ?EVENT ?OBJ) (instance ?ROLE CaseRole) \
+              (instance ?EVENT Process) (instance ?OBJ Object)) \
+         (playsRoleInEvent ?OBJ ?ROLE ?EVENT))";
+const DISJOINT_RELATION_SCHEMA: &str =
+    "(=> (and (instance ?REL1 Predicate) (instance ?REL2 Predicate) \
+              (disjointRelation ?REL1 ?REL2) (?REL1 ?ROW1 ?ROW2)) \
+         (not (?REL2 ?ROW1 ?ROW2)))";
 const TRANSITIVITY_SCHEMA: &str = "(=> (instance ?REL TransitiveRelation) \
      (forall (?I1 ?I2 ?I3) (=> (and (?REL ?I1 ?I2) (?REL ?I2 ?I3)) (?REL ?I1 ?I3))))";
 
@@ -49,22 +56,20 @@ fn joined(kif: &[&str]) -> String {
 }
 
 #[test]
-fn detects_all_four_signature_schemas_and_rejects_bad_shapes() {
+fn detects_all_four_signature_schemas_and_rejects_unbound_higher_order_vars() {
     let trans = make_trans(&joined(&[
         DOMAIN_SCHEMA,
         DOMAIN_SUBCLASS_SCHEMA,
         RANGE_SCHEMA,
         RANGE_SUBCLASS_SCHEMA,
-        // A signature atom with a constant argument is a body atom, not a guard.
-        "(=> (and (instance ?REL Predicate) (domain ?REL 1 ?C) (?REL ?X)) (instance ?X ?C))",
         // The applied function variable is not the guarded one.
         "(=> (and (range ?F List) (equal (AssignmentFn ?G ?X) ?V)) (instance ?V List))",
-        // A taxonomy guard over a variable the signature guard does not bind.
-        "(=> (and (domain ?REL ?N ?C) (instance ?OTHER OtherClass) \
-                  (instance ?REL Predicate) (?REL ?X)) \
-             (instance (ListOrderFn (ListFn ?X) ?N) ?C))",
-        // An `equal` atom that is not an assignment equality.
+        // No higher-order variable at all.
         "(=> (and (range ?F ?C) (equal ?X ?V)) (instance ?V ?C))",
+        // A predicate variable only inside a quoted formula: no guard binds it.
+        "(=> (and (holdsDuring ?T (?REL ?A ?B)) (instance ?A Physical)) (time ?A ?T))",
+        // An existentially bound variable in head position is never bound.
+        "(=> (instance ?C Car) (hasPurpose ?C (exists (?A ?X) (?A ?X ?C))))",
     ]));
     let found = schemas(&trans);
     assert_eq!(
@@ -78,15 +83,47 @@ fn detects_all_four_signature_schemas_and_rejects_bad_shapes() {
             .join("\n")
     );
     assert_eq!(found.iter().filter(|s| s.pred_vars.len() == 1).count(), 2);
-    assert_eq!(found.iter().filter(|s| s.pred_vars.is_empty()).count(), 2);
+    assert_eq!(
+        found.iter().filter(|s| s.function_vars.len() == 1).count(),
+        2
+    );
     for schema in &found {
-        assert_eq!(
-            schema.body_arity,
-            Some(2),
+        assert!(
+            !schema.call_arity.is_empty() && schema.call_arity.values().all(|&a| a == 2),
             "{}",
             rendered(&trans, schema.schema_sid)
         );
     }
+}
+
+#[test]
+fn body_atoms_and_fact_guards_no_longer_block_detection() {
+    let trans = make_trans(&joined(&[
+        // `instance` over an ordinary variable is a body atom.
+        "(=> (and (domain ?REL ?N ?C) (instance ?OTHER OtherClass) \
+                  (instance ?REL Predicate) (?REL ?X)) \
+             (instance (ListOrderFn (ListFn ?X) ?N) ?C))",
+        // A signature atom with a constant argument is a fact guard.
+        "(=> (and (instance ?REL Predicate) (domain ?REL 1 ?C) (?REL ?X)) (instance ?X ?C))",
+        CASE_ROLE_SCHEMA,
+        DISJOINT_RELATION_SCHEMA,
+    ]));
+    let found = schemas(&trans);
+    assert_eq!(found.len(), 4, "{}", found.len());
+    let fact_guarded = found
+        .iter()
+        .filter(|s| s.guards.iter().any(|g| matches!(g, PvGuard::Fact { .. })))
+        .count();
+    assert_eq!(fact_guarded, 2);
+    let case_role = found
+        .iter()
+        .find(|s| rendered(&trans, s.schema_sid).contains("playsRoleInEvent"))
+        .expect("CaseRole schema detected");
+    assert_eq!(
+        case_role.bound_vars.len(),
+        1,
+        "only the role variable is guard-bound"
+    );
 }
 
 #[test]
@@ -100,7 +137,7 @@ fn quantified_variables_do_not_count_as_predicate_variables() {
     );
     assert_eq!(found[0].pred_vars.len(), 1);
     assert_eq!(found[0].bound_vars, found[0].pred_vars);
-    assert_eq!(found[0].body_arity, Some(2));
+    assert_eq!(found[0].call_arity.get(&found[0].pred_vars[0]), Some(&2));
 }
 
 #[test]
@@ -262,5 +299,174 @@ fn reducer_rewrites_definitions_and_leaves_unchanged_roots_alone() {
     assert_eq!(
         unchanged, 2,
         "the two irreducible roots must come back as themselves"
+    );
+}
+
+#[test]
+fn group_a_instance_guard_keeps_body_atoms_and_substitutes_arguments() {
+    let trans = make_trans(&joined(&[
+        "(instance agent CaseRole)",
+        "(instance agent BinaryPredicate)",
+        "(instance located BinaryPredicate)",
+        CASE_ROLE_SCHEMA,
+        "(agent Walking1 Bob)",
+        "(located Bob Home)",
+    ]));
+    let rules = instantiated(&trans);
+    assert_eq!(
+        rules,
+        vec![
+            "(=> (and (agent ?EVENT ?OBJ) (instance ?EVENT Process) (instance ?OBJ Object)) \
+             (playsRoleInEvent ?OBJ agent ?EVENT))"
+                .to_string()
+        ],
+        "only `agent` is a CaseRole; the discharged guard is dropped"
+    );
+}
+
+#[test]
+fn group_b_fact_guard_binds_from_ground_facts() {
+    let trans = make_trans(&joined(&[
+        "(instance referee BinaryPredicate)",
+        "(instance plays BinaryPredicate)",
+        "(instance watches BinaryPredicate)",
+        "(subclass BinaryPredicate Predicate)",
+        "(disjointRelation referee plays)",
+        DISJOINT_RELATION_SCHEMA,
+        "(referee Ann Match1)",
+        "(plays Bob Match1)",
+        "(watches Cy Match1)",
+    ]));
+    let rules = instantiated(&trans);
+    assert_eq!(
+        rules,
+        vec!["(=> (referee ?ROW1 ?ROW2) (not (plays ?ROW1 ?ROW2)))".to_string()],
+        "only the asserted disjoint pair instantiates"
+    );
+}
+
+#[test]
+fn group_b_fact_guard_binds_ordinary_variables_and_matches_constants() {
+    let trans = make_trans(&joined(&[
+        "(instance patient CaseRole)",
+        "(instance patient BinaryPredicate)",
+        "(requiredRole Chewing patient Food)",
+        "(=> (and (requiredRole ?P ?C ?E) (instance ?PI ?P)) \
+             (exists (?EI) (and (instance ?EI ?E) (?C ?PI ?EI))))",
+        "(instance economyType BinaryPredicate)",
+        "(instance color BinaryPredicate)",
+        "(subrelation economyType attribute)",
+        "(=> (and (instance ?A1 Attribute) (subrelation ?PRED attribute)) \
+             (or (not (contraryAttribute ?A1)) (not (?PRED ?E ?A1))))",
+        "(patient Chew1 Apple)",
+        "(economyType Freedonia Market)",
+        "(color Apple Red)",
+    ]));
+    let rules = instantiated(&trans);
+    assert!(
+        rules.contains(
+            &"(=> (instance ?PI Chewing) (exists (?EI) (and (instance ?EI Food) (patient ?PI ?EI))))"
+                .to_string()
+        ),
+        "{rules:?}"
+    );
+    assert!(
+        rules.contains(
+            &"(=> (instance ?A1 Attribute) (or (not (contraryAttribute ?A1)) (not (economyType ?E ?A1))))"
+                .to_string()
+        ),
+        "{rules:?}"
+    );
+    assert!(
+        !rules.iter().any(|r| r.contains("(color ")),
+        "a relation without the constant-matching fact was bound: {rules:?}"
+    );
+}
+
+#[test]
+fn group_b_fact_guard_skips_relations_outside_the_problem() {
+    let trans = make_trans(&joined(&[
+        "(instance referee BinaryPredicate)",
+        "(instance plays BinaryPredicate)",
+        "(subclass BinaryPredicate Predicate)",
+        "(disjointRelation referee plays)",
+        DISJOINT_RELATION_SCHEMA,
+    ]));
+    let syn = &trans.semantic.syntactic;
+    let schema_only: Vec<SentenceId> = syn
+        .root_sids()
+        .into_iter()
+        .filter(|&sid| !rendered(&trans, sid).contains("referee"))
+        .collect();
+    let rules = trans.instantiate_predvars(&schema_only, &schema_only, Scope::Base);
+    assert!(
+        rules.is_empty(),
+        "a fact over relations absent from the problem instantiated: {:?}",
+        rules
+            .iter()
+            .map(|&sid| rendered(&trans, sid))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn group_c_direct_function_application_is_a_higher_order_variable() {
+    let trans = make_trans(&joined(&[
+        "(instance KiloFn UnitOfMeasureMultiplier)",
+        "(=> (and (instance ?FUNCTION UnitOfMeasureMultiplier) \
+                  (instance ?UNIT CompositeUnitOfMeasure)) \
+             (instance (?FUNCTION ?UNIT) CompositeUnitOfMeasure))",
+    ]));
+    assert_eq!(
+        instantiated(&trans),
+        vec!["(=> (instance ?UNIT CompositeUnitOfMeasure) \
+             (instance (KiloFn ?UNIT) CompositeUnitOfMeasure))"
+            .to_string()]
+    );
+}
+
+#[test]
+fn group_c_guard_in_a_universally_quantified_consequent_is_lifted() {
+    let trans = make_trans(&joined(&[
+        "(instance AdditionFn CommutativeFunction)",
+        "(domain AdditionFn 1 Quantity)",
+        "(domain AdditionFn 2 Quantity)",
+        "(=> (instance ?FUNCTION CommutativeFunction) \
+             (forall (?INST1 ?INST2 ?CLASS) \
+               (=> (and (domain ?FUNCTION 1 ?CLASS) (instance ?INST1 ?CLASS) (instance ?INST2 ?CLASS)) \
+                   (equal (AssignmentFn ?FUNCTION ?INST1 ?INST2) \
+                          (AssignmentFn ?FUNCTION ?INST2 ?INST1)))))",
+    ]));
+    assert_eq!(
+        instantiated(&trans),
+        vec![
+            "(=> (and (instance ?INST1 Quantity) (instance ?INST2 Quantity)) \
+             (equal (AdditionFn ?INST1 ?INST2) (AdditionFn ?INST2 ?INST1)))"
+                .to_string()
+        ],
+        "the inner `domain` guard is discharged and the rule flattened"
+    );
+}
+
+#[test]
+fn lifting_keeps_shadowed_variables_distinct() {
+    let trans = make_trans(&joined(&[
+        "(instance AdditionFn CommutativeFunction)",
+        "(domain AdditionFn 1 Quantity)",
+        "(=> (and (instance ?FUNCTION CommutativeFunction) (instance ?X Quantity)) \
+             (forall (?X ?CLASS) \
+               (=> (and (domain ?FUNCTION 1 ?CLASS) (instance ?X ?CLASS)) \
+                   (equal (AssignmentFn ?FUNCTION ?X ?X) ?X))))",
+    ]));
+    let roots = trans.semantic.syntactic.root_sids();
+    let rules = trans.instantiate_predvars(&roots, &roots, Scope::Base);
+    assert_eq!(rules.len(), 1, "{rules:?}");
+    let mut ids: HashMap<SymbolId, u32> = HashMap::new();
+    trans.semantic.syntactic.collect_vars(rules[0], &mut ids);
+    assert_eq!(
+        ids.len(),
+        2,
+        "the outer and the shadowing `?X` must stay two variables: {}",
+        rendered(&trans, rules[0])
     );
 }

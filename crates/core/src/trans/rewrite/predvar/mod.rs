@@ -5,9 +5,11 @@
 //! them per problem and emits concrete first-order rules (`instantiate`,
 //! with definitional term reduction in `reduce`).
 
+use std::collections::{HashMap, HashSet};
+
 use crate::parse::ast::OpKind;
 use crate::syntactic::SyntacticLayer;
-use crate::types::{Element, SentenceId, SymbolId};
+use crate::types::{Element, Literal, SentenceId, SymbolId};
 
 mod detect;
 #[cfg(feature = "external-prover")]
@@ -19,7 +21,10 @@ mod tests;
 
 pub(crate) use detect::detect_predvar_schemas;
 
-/// A taxonomy guard constraining a schema's predicate variables.
+/// An antecedent atom that constrains a schema's higher-order (predicate or
+/// function) variables. Every guard is discharged when a binding is chosen
+/// and dropped from the instantiated rule; the other antecedent atoms are
+/// substituted and kept.
 // Constructed by `detect_predvar_schemas` (live without `ask`); the fields are
 // only READ by the `ask`-gated instantiation path below.
 #[cfg_attr(not(feature = "external-prover"), allow(dead_code))]
@@ -27,14 +32,29 @@ pub(crate) use detect::detect_predvar_schemas;
 pub(crate) enum PvGuard {
     /// `(instance ?V class)` - `?V` must be an instance of `class`.
     Instance { var: SymbolId, class: SymbolId },
-    /// `(subrelation ?V1 ?V2)` - `?V1`,`?V2` bound by a subrelation fact.
+    /// `(subrelation ?V1 ?V2)` - `?V1`,`?V2` bound by a subrelation edge.
     Subrelation { v1: SymbolId, v2: SymbolId },
     /// A `domain*` or `range*` signature guard, bound from semantic caches.
     Signature {
         kind: SignatureKind,
-        head: SymbolId,
         vars: Vec<SymbolId>,
     },
+    /// Any other flat atom over a higher-order variable, e.g.
+    /// `(disjointRelation ?R1 ?R2)`: bound by the ground facts with that head
+    /// visible in the query scope.
+    Fact { head: SymbolId, args: Vec<GuardArg> },
+}
+
+/// One argument of a [`PvGuard::Fact`] atom.
+#[cfg_attr(not(feature = "external-prover"), allow(dead_code))]
+#[derive(Debug, Clone)]
+pub(crate) enum GuardArg {
+    /// Bound from the matching fact's symbol in this position.
+    Var(SymbolId),
+    /// The matching fact must hold exactly this symbol.
+    Sym(SymbolId),
+    /// The matching fact must hold exactly this literal.
+    Lit(Literal),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,19 +67,21 @@ pub(crate) enum SignatureKind {
 
 /// Concrete value for one guard-bound variable.
 #[cfg_attr(not(feature = "external-prover"), allow(dead_code))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum Bound {
     Sym(SymbolId),
     Pos(u32),
 }
 
-/// A schema template instantiated lazily per query from taxonomy or signature
-/// guards. Predicate variables and function variables are replaced with
-/// concrete symbols, and signature positions with numeric literals.
+/// A schema template instantiated lazily per query: an implication whose
+/// higher-order variables are all bound by [`PvGuard`]s. Each binding
+/// replaces predicate and function variables with concrete symbols (and
+/// signature positions with numeric literals).
 ///
 /// Examples (post-CAF, post-row-var-expansion):
 ///   - transitivity: `(=> (instance ?R TransitiveRelation) (forall ... (=> (and (?R ...)(?R ...)) (?R ...))))`
 ///   - subrelation propagation: `(=> (and (subrelation ?R1 ?R2)(instance ?R1 Predicate)(instance ?R2 Predicate)(?R1 ...)) (?R2 ...))`
+///   - fact-guarded: `(=> (and (disjointRelation ?R1 ?R2)(?R1 ...)) (not (?R2 ...)))`
 // Constructed by `detect_predvar_schemas` (live without `ask`); most fields are
 // only READ by the `ask`-gated instantiation path below.
 #[cfg_attr(not(feature = "external-prover"), allow(dead_code))]
@@ -67,26 +89,38 @@ pub(crate) enum Bound {
 pub(crate) struct PredVarSchema {
     /// The (CAF-normalized) implication carrying the schema.
     pub schema_sid: SentenceId,
-    /// The predicate variables (head-position), in a deterministic order.
+    /// Variables applied in head position (`(?REL ...)`, `(holds ?REL ...)`),
+    /// sorted.
     pub pred_vars: Vec<SymbolId>,
-    /// All variables bound by guards, in a deterministic order.
+    /// Variables applied as functions (`(AssignmentFn ?F ...)`), sorted.
+    pub function_vars: Vec<SymbolId>,
+    /// All variables bound by guards, sorted.
     pub bound_vars: Vec<SymbolId>,
-    /// The taxonomy guards constraining `pred_vars`.
+    /// The guards binding `pred_vars` and `function_vars`.
     guards: Vec<PvGuard>,
-    /// The arity at which the predicate variables are *applied* in the schema
-    /// body (row-var expansion stamps each variant at a fixed arity).  A
-    /// concrete relation is only eligible for this variant when its declared
-    /// arity matches; variadic / unknown arities accept any variant.
-    pub body_arity: Option<usize>,
+    /// The antecedent conjuncts that are guards, dropped on instantiation.
+    guard_sids: HashSet<SentenceId>,
+    /// `(antecedent, consequent)` of a `(forall (..) (=> A C))` consequent
+    /// whose antecedent holds a guard. `(=> G (forall (..) (=> A C)))` is
+    /// equivalent to `(=> (and G A) C)` when the quantified variables do not
+    /// occur in `G`, so instantiation emits that flat form.
+    inner: Option<(SentenceId, SentenceId)>,
+    /// The argument count at which each higher-order variable is applied
+    /// (row-var expansion stamps each variant at one fixed arity).  A concrete
+    /// symbol is only eligible when its declared arity matches; variadic /
+    /// unknown arities accept any variant.
+    pub call_arity: HashMap<SymbolId, usize>,
 }
 
-/// `true` iff the atom `elements` has exactly the variables `vars` as its
-/// arguments, in order.
-fn atom_is_variables(elements: &[Element], vars: &[SymbolId]) -> bool {
-    elements.len() == vars.len() + 1
-        && elements[1..].iter().zip(vars).all(
-            |(element, expected)| matches!(element, Element::Variable { id, .. } if id == expected),
-        )
+impl PredVarSchema {
+    /// Predicate and function variables, the ones every binding must cover.
+    #[cfg_attr(not(feature = "external-prover"), allow(dead_code))]
+    fn higher_order_vars(&self) -> impl Iterator<Item = SymbolId> + '_ {
+        self.pred_vars
+            .iter()
+            .chain(self.function_vars.iter())
+            .copied()
+    }
 }
 
 /// `true` iff `sid` is a **bare positive relation assertion** - a (possibly
@@ -94,7 +128,7 @@ fn atom_is_variables(elements: &[Element], vars: &[SymbolId]) -> bool {
 /// surrounding propositional structure (no `=>`, `not`, `and`, `or`).
 ///
 /// Used to reject unsound instantiations: when a schema's antecedent is *only*
-/// taxonomy guards, instantiation reduces the body to its consequent, and a
+/// guards, instantiation reduces the body to its consequent, and a
 /// bare atom asserted for *all* arguments would hold the relation universally.
 pub(crate) fn is_bare_positive_assertion(syntactic: &SyntacticLayer, sid: SentenceId) -> bool {
     let Some(s) = syntactic.sentence(sid) else {

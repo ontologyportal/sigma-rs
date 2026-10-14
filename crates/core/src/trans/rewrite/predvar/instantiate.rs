@@ -1,61 +1,21 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use smallvec::smallvec;
 
 use super::reduce::{contains_head, reduce_root, ReduceSymbols};
-use super::{
-    atom_is_variables, is_bare_positive_assertion, Bound, PredVarSchema, PvGuard, SignatureKind,
-};
+use super::{is_bare_positive_assertion, Bound, GuardArg, PredVarSchema, PvGuard, SignatureKind};
 use crate::parse::ast::OpKind;
-use crate::semantics::consts::{INSTANCE_RELATION, SUBRELATION_RELATION};
-use crate::semantics::types::{RelationDomain, RelationRange};
+use crate::semantics::types::{RelationDomain, RelationRange, Scope};
 use crate::syntactic::SyntacticLayer;
 use crate::trans::rewrite::subst::{collect_conjuncts, decompose_implication, substitute_var};
 use crate::trans::TranslationLayer;
 use crate::types::{Element, ElementVec, InternedSym, Literal, SentenceId, SymbolId, TaxRelation};
 
-/// `true` iff `csid` is a taxonomy guard atom (`instance`/`subrelation`
-/// headed) mentioning one of the predicate variables - i.e. a guard to drop
-/// during instantiation (as opposed to a body atom).
-fn is_taxonomy_guard_atom(
-    syntactic: &SyntacticLayer,
-    csid: SentenceId,
-    pv_set: &HashSet<SymbolId>,
-    tax_ids: &HashSet<SymbolId>,
-) -> bool {
-    let Some(s) = syntactic.sentence(csid) else {
-        return false;
-    };
-    if !matches!(s.elements.first(), Some(Element::Symbol(sym)) if tax_ids.contains(&sym.id())) {
-        return false;
-    }
-    s.elements[1..]
-        .iter()
-        .any(|e| matches!(e, Element::Variable { id, .. } if pv_set.contains(id)))
-}
+/// A (partial) assignment of values to a schema's guard-bound variables.
+type Binding = HashMap<SymbolId, Bound>;
 
-/// `true` iff `csid` is the schema's signature guard atom (same head, exactly
-/// the guard's variables), which the binding discharges.
-fn is_signature_guard_atom(
-    syntactic: &SyntacticLayer,
-    csid: SentenceId,
-    guards: &[PvGuard],
-) -> bool {
-    let Some(sentence) = syntactic.sentence(csid) else {
-        return false;
-    };
-    let Some(Element::Symbol(head)) = sentence.elements.first() else {
-        return false;
-    };
-    guards.iter().any(|guard| match guard {
-        PvGuard::Signature {
-            head: expected,
-            vars,
-            ..
-        } => head.id() == *expected && atom_is_variables(&sentence.elements, vars),
-        _ => false,
-    })
-}
+/// The variable values one guard contributes to a binding.
+type Row = Vec<(SymbolId, Bound)>;
 
 /// Instantiate `schema` for one binding of its guard-bound variables:
 /// substitute every bound variable, drop the guard conjuncts the binding
@@ -69,11 +29,14 @@ fn instantiate_schema(
     syntactic: &SyntacticLayer,
     schema: &PredVarSchema,
     binding: &[(SymbolId, Bound)],
-    tax_ids: &HashSet<SymbolId>,
     reduce: &ReduceSymbols,
 ) -> Option<SentenceId> {
-    let pv_set: HashSet<SymbolId> = schema.pred_vars.iter().copied().collect();
-    let (ant_sid, con_sid) = decompose_implication(syntactic, schema.schema_sid)?;
+    let (ant_sid, mut con_sid) = decompose_implication(syntactic, schema.schema_sid)?;
+    let mut conjuncts = collect_conjuncts(syntactic, ant_sid);
+    if let Some((inner_ant, inner_con)) = schema.inner {
+        conjuncts.extend(collect_conjuncts(syntactic, inner_ant));
+        con_sid = inner_con;
+    }
 
     // Substitute all guard-bound variables through a sentence, then reduce.
     let instantiate = |mut s: SentenceId| -> Option<SentenceId> {
@@ -90,10 +53,8 @@ fn instantiate_schema(
     };
 
     let mut new_conjuncts: Vec<SentenceId> = Vec::new();
-    for csid in collect_conjuncts(syntactic, ant_sid) {
-        if is_taxonomy_guard_atom(syntactic, csid, &pv_set, tax_ids)
-            || is_signature_guard_atom(syntactic, csid, &schema.guards)
-        {
+    for csid in conjuncts {
+        if schema.guard_sids.contains(&csid) {
             continue;
         }
         new_conjuncts.push(instantiate(csid)?);
@@ -154,7 +115,7 @@ impl TranslationLayer {
         &self,
         seed_sids: &[SentenceId],
         problem_sids: &[SentenceId],
-        scope: crate::semantics::types::Scope,
+        scope: Scope,
     ) -> Vec<SentenceId> {
         let prog = self.rewrite_program();
         if prog.predvar_schemas.is_empty() {
@@ -196,9 +157,6 @@ impl TranslationLayer {
         rest.sort_unstable();
         ordered_syms.extend(rest);
 
-        let tax_ids: HashSet<SymbolId> = [INSTANCE_RELATION.id(), SUBRELATION_RELATION.id()]
-            .into_iter()
-            .collect();
         let reduce = ReduceSymbols::from_consts();
         let mut out: Vec<SentenceId> = Vec::new();
 
@@ -234,7 +192,7 @@ impl TranslationLayer {
                     .zip(binding.iter().copied())
                     .collect();
                 if let Some(sid) =
-                    instantiate_schema(&self.semantic.syntactic, schema, &pairs, &tax_ids, &reduce)
+                    instantiate_schema(&self.semantic.syntactic, schema, &pairs, &reduce)
                 {
                     self.predvar_cache
                         .write()
@@ -258,16 +216,15 @@ impl TranslationLayer {
         out
     }
 
-    /// Enumerate predicate-variable bindings (values aligned to
-    /// `schema.pred_vars`) that satisfy every taxonomy guard, restricted to
-    /// relations occurring in `problem_syms`.
+    /// Enumerate bindings of `schema.bound_vars` (values aligned to it) that
+    /// satisfy every guard, restricted to higher-order values occurring in
+    /// `ordered_syms`.
     ///
-    /// - If the schema has a `(subrelation ?V1 ?V2)` guard, that fact is the
-    ///   driver: for each problem relation `R1` with a subrelation parent
-    ///   `R2`, bind `(?V1,?V2) = (R1,R2)`.
-    /// - Otherwise (instance guards only) each variable's domain is the
-    ///   problem relations that are instances of its guard class, and the
-    ///   bindings are the cross product.
+    /// Every guard except `instance` contributes the rows it can bind (the
+    /// signature caches, subrelation edges, or matching ground facts), and the
+    /// rows are joined on shared variables.  A higher-order variable no such
+    /// guard binds is then enumerated from the problem symbols that are
+    /// instances of its `instance` guard's class.
     ///
     /// Every candidate is validated against *all* guards.  At most `cap`
     /// bindings are returned; when the candidate set is larger, bindings that
@@ -279,159 +236,51 @@ impl TranslationLayer {
         ordered_syms: &[SymbolId],
         seed_syms: &HashSet<SymbolId>,
         cap: usize,
-        scope: crate::semantics::types::Scope,
+        scope: Scope,
     ) -> Vec<Vec<Bound>> {
-        use std::collections::HashMap;
-        let pred_vars = &schema.pred_vars;
-
-        let mut candidates: Vec<HashMap<SymbolId, Bound>> = Vec::new();
-
-        let subrel_guard = schema.guards.iter().find_map(|g| match g {
-            PvGuard::Subrelation { v1, v2 } => Some((*v1, *v2)),
-            _ => None,
-        });
-
-        // Pre-sorted seed-first by the caller, so the `cap` cutoff keeps
-        // query/assertion-relevant relations deterministically.
-        let sorted_syms = ordered_syms;
-
-        // A relation is eligible for this schema variant only at its declared
-        // arity (row-var expansion stamps one arity per variant); variadic /
-        // unknown-arity relations accept any variant.
-        let arity_ok = |r: SymbolId| -> bool {
-            match (schema.body_arity, self.semantic.arity(r)) {
-                (Some(k), Some(a)) if a >= 0 => a as usize == k,
-                _ => true, // no variant arity, variadic (-1), or unknown
-            }
-        };
-
         // Collection bound: well above `cap` so ranking (below) sees the full
-        // realistic candidate set, but still a hard ceiling on cross-product
-        // blowup for pathological schemas.
+        // realistic candidate set, but still a hard ceiling on join blowup for
+        // pathological schemas.
         let collect_max = cap.saturating_mul(16).max(cap);
 
-        let signature_guard = schema.guards.iter().find_map(|guard| match guard {
-            PvGuard::Signature { kind, vars, .. } => Some((*kind, vars.as_slice())),
-            _ => None,
-        });
-
-        if let Some((kind, vars)) = signature_guard {
-            for &sym in sorted_syms {
-                if !arity_ok(sym) {
-                    continue;
+        let mut candidates: Vec<Binding> = vec![Binding::new()];
+        for guard in &schema.guards {
+            let rows = match guard {
+                PvGuard::Instance { .. } => continue,
+                PvGuard::Subrelation { v1, v2 } => {
+                    self.subrelation_rows(schema, *v1, *v2, ordered_syms, scope)
                 }
-                match kind {
-                    SignatureKind::Domain | SignatureKind::DomainSubclass => {
-                        for (position, domain) in
-                            self.semantic.domain_scoped(sym, scope).iter().enumerate()
-                        {
-                            if schema.body_arity.is_some_and(|arity| position + 1 > arity) {
-                                continue;
-                            }
-                            let class = match (kind, domain) {
-                                (SignatureKind::Domain, RelationDomain::Domain(class))
-                                | (
-                                    SignatureKind::DomainSubclass,
-                                    RelationDomain::DomainSubclass(class),
-                                ) => *class,
-                                _ => continue,
-                            };
-                            let Ok(position) = u32::try_from(position + 1) else {
-                                continue;
-                            };
-                            let mut binding = HashMap::new();
-                            binding.insert(vars[0], Bound::Sym(sym));
-                            binding.insert(vars[1], Bound::Pos(position));
-                            binding.insert(vars[2], Bound::Sym(class));
-                            candidates.push(binding);
-                        }
-                    }
-                    SignatureKind::Range | SignatureKind::RangeSubclass => {
-                        if !self.semantic.is_function_scoped(sym, scope) {
-                            continue;
-                        }
-                        let class = match (kind, self.semantic.range_scoped(sym, scope)) {
-                            (SignatureKind::Range, RelationRange::Range(class))
-                            | (SignatureKind::RangeSubclass, RelationRange::RangeSubclass(class)) => {
-                                class
-                            }
-                            _ => continue,
-                        };
-                        let mut binding = HashMap::new();
-                        binding.insert(vars[0], Bound::Sym(sym));
-                        binding.insert(vars[1], Bound::Sym(class));
-                        candidates.push(binding);
-                    }
+                PvGuard::Signature { kind, vars, .. } => {
+                    self.signature_rows(schema, *kind, vars, ordered_syms, scope)
                 }
-                if candidates.len() >= collect_max {
-                    break;
+                PvGuard::Fact { head, args } => {
+                    self.fact_rows(schema, *head, args, ordered_syms, scope)
                 }
+            };
+            candidates = join(&candidates, &rows, collect_max);
+        }
+        for var in schema.higher_order_vars() {
+            if candidates.first().is_none_or(|b| b.contains_key(&var)) {
+                continue;
             }
-        } else if let Some((gv1, gv2)) = subrel_guard {
-            // Only the two-variable subrelation shape is handled here.
-            if pred_vars.len() != 2 {
+            let class = schema.guards.iter().find_map(|g| match g {
+                PvGuard::Instance { var: v, class } if *v == var => Some(*class),
+                _ => None,
+            });
+            let Some(class) = class else {
                 return Vec::new();
-            }
-            for &r1 in sorted_syms {
-                if !arity_ok(r1) {
-                    continue;
-                }
-                let mut parents = self.semantic.parents_of_scoped(r1, scope);
-                parents.sort_unstable_by_key(|(p, _)| *p);
-                for (parent, rel) in parents {
-                    if !matches!(rel, TaxRelation::Subrelation) {
-                        continue;
-                    }
-                    let mut b = HashMap::new();
-                    b.insert(gv1, Bound::Sym(r1));
-                    b.insert(gv2, Bound::Sym(parent));
-                    candidates.push(b);
-                }
-                if candidates.len() > collect_max {
-                    break;
-                }
-            }
-        } else {
-            // Instance-guard-only: per-var domain, cross product.
-            let mut domains: Vec<(SymbolId, Vec<SymbolId>)> = Vec::new();
-            for &v in pred_vars {
-                let class = schema.guards.iter().find_map(|g| match g {
-                    PvGuard::Instance { var, class } if *var == v => Some(*class),
-                    _ => None,
-                });
-                let Some(class) = class else {
-                    return Vec::new();
-                };
-                let dom: Vec<SymbolId> = sorted_syms
-                    .iter()
-                    .copied()
-                    .filter(|&r| {
-                        r != class
-                            && arity_ok(r)
-                            && self.reaches_via_instance_scoped(r, class, scope)
-                    })
-                    .collect();
-                domains.push((v, dom));
-            }
-            // Cross product (bounded).
-            candidates.push(HashMap::new());
-            for (v, dom) in &domains {
-                let mut next: Vec<HashMap<SymbolId, Bound>> = Vec::new();
-                for base in &candidates {
-                    for &r in dom {
-                        let mut b = base.clone();
-                        b.insert(*v, Bound::Sym(r));
-                        next.push(b);
-                        if next.len() > collect_max {
-                            break;
-                        }
-                    }
-                    if next.len() > collect_max {
-                        break;
-                    }
-                }
-                candidates = next;
-            }
+            };
+            let rows: Vec<Row> = ordered_syms
+                .iter()
+                .copied()
+                .filter(|&r| {
+                    r != class
+                        && self.arity_ok(schema, var, r)
+                        && self.reaches_via_instance_scoped(r, class, scope)
+                })
+                .map(|r| vec![(var, Bound::Sym(r))])
+                .collect();
+            candidates = join(&candidates, &rows, collect_max);
         }
 
         // Validate every candidate against all guards; dedup.
@@ -441,7 +290,14 @@ impl TranslationLayer {
             if !self.binding_satisfies_guards(schema, &b, scope) {
                 continue;
             }
-            let key: Vec<Bound> = schema.bound_vars.iter().map(|v| b[v]).collect();
+            let Some(key) = schema
+                .bound_vars
+                .iter()
+                .map(|v| b.get(v).copied())
+                .collect::<Option<Vec<Bound>>>()
+            else {
+                continue;
+            };
             if seen.insert(key.clone()) {
                 out.push(key);
             }
@@ -457,12 +313,163 @@ impl TranslationLayer {
         out
     }
 
-    /// `true` iff `binding` (var->relation) satisfies all of `schema`'s guards.
+    /// Whether `value` may be bound to the higher-order variable `var`: only
+    /// at the arity `var` is applied with (row-var expansion stamps one arity
+    /// per variant); variadic / unknown-arity symbols accept any variant.
+    fn arity_ok(&self, schema: &PredVarSchema, var: SymbolId, value: SymbolId) -> bool {
+        match (schema.call_arity.get(&var), self.semantic.arity(value)) {
+            (Some(&k), Some(a)) if a >= 0 => a as usize == k,
+            _ => true,
+        }
+    }
+
+    /// Rows of a `domain*` / `range*` signature guard, one per declared
+    /// signature of a problem symbol.
+    fn signature_rows(
+        &self,
+        schema: &PredVarSchema,
+        kind: SignatureKind,
+        vars: &[SymbolId],
+        ordered_syms: &[SymbolId],
+        scope: Scope,
+    ) -> Vec<Row> {
+        let mut rows = Vec::new();
+        for &sym in ordered_syms {
+            if !self.arity_ok(schema, vars[0], sym) {
+                continue;
+            }
+            match kind {
+                SignatureKind::Domain | SignatureKind::DomainSubclass => {
+                    let applied = schema.call_arity.get(&vars[0]).copied();
+                    for (position, domain) in
+                        self.semantic.domain_scoped(sym, scope).iter().enumerate()
+                    {
+                        if applied.is_some_and(|arity| position + 1 > arity) {
+                            continue;
+                        }
+                        let class = match (kind, domain) {
+                            (SignatureKind::Domain, RelationDomain::Domain(class))
+                            | (
+                                SignatureKind::DomainSubclass,
+                                RelationDomain::DomainSubclass(class),
+                            ) => *class,
+                            _ => continue,
+                        };
+                        let Ok(position) = u32::try_from(position + 1) else {
+                            continue;
+                        };
+                        rows.push(vec![
+                            (vars[0], Bound::Sym(sym)),
+                            (vars[1], Bound::Pos(position)),
+                            (vars[2], Bound::Sym(class)),
+                        ]);
+                    }
+                }
+                SignatureKind::Range | SignatureKind::RangeSubclass => {
+                    if !self.semantic.is_function_scoped(sym, scope) {
+                        continue;
+                    }
+                    let class = match (kind, self.semantic.range_scoped(sym, scope)) {
+                        (SignatureKind::Range, RelationRange::Range(class))
+                        | (SignatureKind::RangeSubclass, RelationRange::RangeSubclass(class)) => {
+                            class
+                        }
+                        _ => continue,
+                    };
+                    rows.push(vec![
+                        (vars[0], Bound::Sym(sym)),
+                        (vars[1], Bound::Sym(class)),
+                    ]);
+                }
+            }
+        }
+        rows
+    }
+
+    /// Rows of a `(subrelation ?V1 ?V2)` guard: each problem relation paired
+    /// with each of its subrelation parents.
+    fn subrelation_rows(
+        &self,
+        schema: &PredVarSchema,
+        v1: SymbolId,
+        v2: SymbolId,
+        ordered_syms: &[SymbolId],
+        scope: Scope,
+    ) -> Vec<Row> {
+        let mut rows = Vec::new();
+        for &r1 in ordered_syms {
+            if !self.arity_ok(schema, v1, r1) {
+                continue;
+            }
+            let mut parents = self.semantic.parents_of_scoped(r1, scope);
+            parents.sort_unstable_by_key(|(p, _)| *p);
+            for (parent, rel) in parents {
+                if matches!(rel, TaxRelation::Subrelation) {
+                    rows.push(vec![(v1, Bound::Sym(r1)), (v2, Bound::Sym(parent))]);
+                }
+            }
+        }
+        rows
+    }
+
+    /// Rows of a fact guard: one per ground fact with `head` visible in
+    /// `scope` that matches the guard's constants and binds every variable to
+    /// a symbol, with each higher-order value occurring in the problem.
+    fn fact_rows(
+        &self,
+        schema: &PredVarSchema,
+        head: SymbolId,
+        args: &[GuardArg],
+        ordered_syms: &[SymbolId],
+        scope: Scope,
+    ) -> Vec<Row> {
+        let problem: HashSet<SymbolId> = ordered_syms.iter().copied().collect();
+        let ho_vars: HashSet<SymbolId> = schema.higher_order_vars().collect();
+        let facts = self
+            .semantic
+            .scope_filter_sids(self.semantic.syntactic.by_head_id(&head), scope);
+        let mut rows: Vec<Row> = facts
+            .into_iter()
+            .filter_map(|sid| {
+                let fact = self.semantic.syntactic.sentence(sid)?;
+                if fact.elements.len() != args.len() + 1 {
+                    return None;
+                }
+                let mut row = Row::new();
+                for (arg, element) in args.iter().zip(&fact.elements[1..]) {
+                    match (arg, element) {
+                        (GuardArg::Var(var), Element::Symbol(sym)) => {
+                            let value = sym.id();
+                            if ho_vars.contains(var)
+                                && (!problem.contains(&value)
+                                    || !self.arity_ok(schema, *var, value))
+                            {
+                                return None;
+                            }
+                            row.push((*var, Bound::Sym(value)));
+                        }
+                        (GuardArg::Sym(expected), Element::Symbol(sym))
+                            if sym.id() == *expected => {}
+                        (GuardArg::Lit(expected), Element::Literal(lit)) if lit == expected => {}
+                        _ => return None,
+                    }
+                }
+                Some(row)
+            })
+            .collect();
+        rows.sort_unstable();
+        rows.dedup();
+        rows
+    }
+
+    /// `true` iff `binding` (var->value) satisfies all of `schema`'s guards.
+    /// A fact guard holds by construction: its rows are the matching facts,
+    /// and every candidate was joined with them.
     fn binding_satisfies_guards(
         &self,
         schema: &PredVarSchema,
-        binding: &std::collections::HashMap<SymbolId, Bound>,
-        scope: crate::semantics::types::Scope,
+        binding: &Binding,
+        scope: Scope,
     ) -> bool {
         schema.guards.iter().all(|g| match g {
             PvGuard::Instance { var, class } => match binding.get(var) {
@@ -477,6 +484,10 @@ impl TranslationLayer {
                     .any(|(p, rel)| matches!(rel, TaxRelation::Subrelation) && p == *r2),
                 _ => false,
             },
+            PvGuard::Fact { args, .. } => args.iter().all(|arg| match arg {
+                GuardArg::Var(var) => binding.contains_key(var),
+                _ => true,
+            }),
             PvGuard::Signature { kind, vars, .. } => match kind {
                 SignatureKind::Domain | SignatureKind::DomainSubclass => {
                     let (Some(Bound::Sym(rel)), Some(Bound::Pos(pos)), Some(Bound::Sym(class))) =
@@ -524,12 +535,7 @@ impl TranslationLayer {
     /// `instance` edge and the subclass walk both see the session overlay,
     /// so a relation declared transitive inside a test session satisfies the
     /// schema guard.  `Base` scope is byte-identical to the unscoped form.
-    fn reaches_via_instance_scoped(
-        &self,
-        sym: SymbolId,
-        class: SymbolId,
-        scope: crate::semantics::types::Scope,
-    ) -> bool {
+    fn reaches_via_instance_scoped(&self, sym: SymbolId, class: SymbolId, scope: Scope) -> bool {
         self.semantic
             .parents_of_scoped(sym, scope)
             .into_iter()
@@ -538,4 +544,25 @@ impl TranslationLayer {
                     && (k == class || self.semantic.has_ancestor_scoped(k, class, scope))
             })
     }
+}
+
+/// Join every candidate with every row it agrees with on shared variables,
+/// stopping once `max` bindings are collected.
+fn join(candidates: &[Binding], rows: &[Row], max: usize) -> Vec<Binding> {
+    let mut out = Vec::new();
+    for base in candidates {
+        for row in rows {
+            let mut binding = base.clone();
+            let consistent = row
+                .iter()
+                .all(|&(var, value)| *binding.entry(var).or_insert(value) == value);
+            if consistent {
+                out.push(binding);
+                if out.len() >= max {
+                    return out;
+                }
+            }
+        }
+    }
+    out
 }
