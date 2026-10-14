@@ -178,7 +178,7 @@ async function boot(page, base, query = "") {
     await gotoApp(page, base + query);
   } catch (e) {
     throw new Error("failed to open application", {
-      cause: e
+      cause: e,
     });
   }
   try {
@@ -190,7 +190,7 @@ async function boot(page, base, query = "") {
       .click();
   } catch (e) {
     throw new Error("failed to open Knowledge base tab", {
-      cause: e
+      cause: e,
     });
   }
   try {
@@ -209,35 +209,41 @@ async function boot(page, base, query = "") {
       await page.waitForSelector(".src-report", { timeout: 1_000 });
     } catch (e) {
       throw new Error("failed to open source subtab", {
-        cause: e
+        cause: e,
       });
     }
   }
 }
 
-/** Open `name` in the Edit tab and return the editor's visible text. */
+/** Open `name` in the Edit tab and return the editor's visible text. Runs
+ *  against both builds: older ones open files from a dialog, newer ones from
+ *  the KB tab. */
 async function editorText(page, name) {
   try {
     await page.locator("nav.tabs button", { hasText: "Edit" }).first().click();
     await page
-      .getByRole("button", {
-        name: "Open a file, or create a new one",
-        exact: true,
-      })
+      .getByRole("button", { name: "Open a file from the KB tab", exact: true })
+      .or(
+        page.getByRole("button", {
+          name: "Open a file, or create a new one",
+          exact: true,
+        }),
+      )
       .click();
   } catch (e) {
-    throw new Error("failed to open the editor and create a new file", {
-      cause: e
+    throw new Error("failed to open the editor's file picker", {
+      cause: e,
     });
   }
   try {
     await page
-      .locator(".open-list .open-file", { hasText: name })
+      .locator('a.name[title="Open"]', { hasText: name })
+      .or(page.locator(".open-list .open-file", { hasText: name }))
       .first()
       .click();
   } catch (e) {
     throw new Error("failed to open the first file in the list", {
-      cause: e
+      cause: e,
     });
   }
   try {
@@ -248,7 +254,7 @@ async function editorText(page, name) {
     );
   } catch (e) {
     throw new Error("failed to modify file", {
-      cause: e
+      cause: e,
     });
   }
 }
@@ -434,14 +440,14 @@ await runCase("edited-upload-with-snapshot", {
       await editAndSave(page, "Merge.kif", `${LOCAL_MARKER}Merge`);
     } catch (e) {
       throw new Error(`failed to open and edit Merge.kif: ${e}`, {
-        cause: e
+        cause: e,
       });
     }
     try {
       await editAndSave(page, MINE, `${LOCAL_MARKER}Mine`);
     } catch (e) {
       throw new Error(`failed to open and edit ${MINE}: ${e}`, {
-        cause: e
+        cause: e,
       });
     }
 

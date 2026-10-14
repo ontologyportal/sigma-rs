@@ -237,12 +237,13 @@ await runCase(
     await page.locator("nav.tabs button", { hasText: "Edit" }).first().click();
     await page
       .getByRole("button", {
-        name: "Open a file, or create a new one",
+        name: "Open a file from the KB tab",
         exact: true,
       })
       .click();
     await page
-      .locator(".open-list .open-file", { hasText: "Merge.kif" })
+      .locator('a.name[title="Open"]', { hasText: "Merge.kif" })
+      .first()
       .click();
     await page.waitForFunction(
       (marker) =>
