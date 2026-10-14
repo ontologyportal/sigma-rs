@@ -336,14 +336,7 @@ await step("15-problems", async () => {
     null,
     { timeout: 30_000 },
   );
-  await page
-    .getByRole("button", {
-      name: "Open a file, or create a new one",
-      exact: true,
-    })
-    .click();
-  await page.locator(".open-list .open-file", { hasText: name }).waitFor();
-  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await page.locator(".edit-tab .file-name", { hasText: name }).waitFor();
   // Back to Inference Tests (the tab returns to its last query).
   await tab("Inference Tests").click();
   await row.waitFor({ timeout: 5000 });

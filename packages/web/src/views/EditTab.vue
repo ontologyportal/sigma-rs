@@ -22,11 +22,11 @@ import StatusLine from "../components/StatusLine.vue";
 import ContributePanel from "../components/edit/ContributePanel.vue";
 import DiffDialog from "../components/edit/DiffDialog.vue";
 import FileInfoDialog from "../components/edit/FileInfoDialog.vue";
-import OpenFileDialog from "../components/edit/OpenFileDialog.vue";
 import ProblemsPanel from "../components/edit/ProblemsPanel.vue";
 import TptpPane from "../components/edit/TptpPane.vue";
 import { useStatus } from "../composables/useStatus";
 import { useTabQuery } from "../composables/useTabQuery";
+import { EDIT_LAST_FILE_KEY } from "../constants";
 import { engineFile, type Constituent } from "../models/Constituent";
 
 /** A KB constituent or a test file -- anything the editor can open. */
@@ -87,7 +87,6 @@ const tptpOpen = ref(false);
 const downloadMenuOpen = ref(false);
 const splitMenuOpen = ref(false);
 const ghPanelOpen = ref(false);
-const openDialogOpen = ref(false);
 const diffOpen = ref(false);
 const diffRow = ref<ChangeRow | null>(null);
 const infoOpen = ref(false);
@@ -351,11 +350,6 @@ onActivated(() => {
   if (t && text.value === loadedText && t.text !== loadedText) openFile(t);
 });
 
-function onPick(c: OpenedFile) {
-  openFile(c);
-  updateParams({ file: fileParam(c) });
-}
-
 function onCreate() {
   openFile(null);
   updateParams({});
@@ -371,8 +365,31 @@ function fileParam(f: { name: string; origin: Origin }): string {
 
 const { onQuery, str, num } = useTabQuery(["edit"]);
 
+function storedLastFile(): string {
+  try {
+    return localStorage.getItem(EDIT_LAST_FILE_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+watch(current, (f) => {
+  try {
+    if (f) localStorage.setItem(EDIT_LAST_FILE_KEY, fileParam(f));
+    else localStorage.removeItem(EDIT_LAST_FILE_KEY);
+  } catch {
+    // storage unavailable: the tab just opens on a new file next time
+  }
+});
+
+/** The first visit without a `file` link reopens the last-edited file. */
+let restored = false;
+
 onQuery(async (q) => {
-  const file = str(q.file);
+  let file = str(q.file);
+  const fromStore = !file && !restored;
+  restored = true;
+  if (fromStore) file = storedLastFile();
   if (file && file !== (current.value && fileParam(current.value))) {
     // Engine name first (what citations link with), then the bare name, which
     // is all a link from before uploads were namespaced carries.
@@ -384,8 +401,16 @@ onQuery(async (q) => {
         .whenLoaded()
         .then(() => tests.ensure(file))
         .catch(() => undefined);
-    if (c) openFile(c);
-    else log.set(`${file} is not among the loaded files.`, true);
+    if (c) {
+      openFile(c);
+      if (fromStore) updateParams({ ...q, file });
+    } else if (fromStore) {
+      try {
+        localStorage.removeItem(EDIT_LAST_FILE_KEY);
+      } catch {
+        // nothing to forget
+      }
+    } else log.set(`${file} is not among the loaded files.`, true);
   }
   const line = num(q.l);
   if (line) {
@@ -608,9 +633,9 @@ function onJump({ line, col }: { line: number; col: number }) {
         <div class="btn-group" role="toolbar" aria-label="Editor actions">
           <button
             type="button"
-            title="Open a file, or create a new one"
-            aria-label="Open a file, or create a new one"
-            @click="openDialogOpen = true"
+            title="Open a file from the KB tab"
+            aria-label="Open a file from the KB tab"
+            @click="navigate('kb')"
           >
             <svg
               viewBox="0 0 16 16"
@@ -621,6 +646,24 @@ function onJump({ line, col }: { line: number; col: number }) {
             >
               <path
                 d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2A1.75 1.75 0 0 0 5 1H1.75Z"
+              />
+            </svg>
+          </button>
+          <button
+            type="button"
+            title="New file (Save asks for a filename)"
+            aria-label="New file"
+            @click="onCreate"
+          >
+            <svg
+              viewBox="0 0 16 16"
+              width="16"
+              height="16"
+              fill="currentColor"
+              aria-hidden="true"
+            >
+              <path
+                d="M7.25 2a.75.75 0 0 1 1.5 0v5.25H14a.75.75 0 0 1 0 1.5H8.75V14a.75.75 0 0 1-1.5 0V8.75H2a.75.75 0 0 1 0-1.5h5.25V2Z"
               />
             </svg>
           </button>
@@ -802,15 +845,6 @@ function onJump({ line, col }: { line: number; col: number }) {
          buried below the editor -- the one place a user glances after
          clicking Save. -->
       <StatusLine :text="saveStatus.text" :error="saveStatus.error" />
-
-      <!-- Open-file dialog: pick a loaded constituent or start a new file.
-         A new file starts unnamed -- Save prompts for a filename the
-         first time, rather than asking for one up front here. -->
-      <OpenFileDialog
-        v-model="openDialogOpen"
-        @pick="onPick"
-        @create="onCreate"
-      />
 
       <!-- Contribute the selected changes upstream as a branch + pull request -->
       <ContributePanel

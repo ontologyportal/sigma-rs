@@ -182,12 +182,9 @@ async function expectOpfsContent(page, dir, name, expected, label) {
 async function editorText(page, name) {
   await page.locator("nav.tabs button", { hasText: "Edit" }).first().click();
   await page
-    .getByRole("button", {
-      name: "Open a file, or create a new one",
-      exact: true,
-    })
+    .getByRole("button", { name: "Open a file from the KB tab", exact: true })
     .click();
-  await page.locator(".open-list .open-file", { hasText: name }).click();
+  await page.locator('a.name[title="Open"]', { hasText: name }).first().click();
   await page.waitForSelector(".edit-tab .view-lines", { timeout: 30_000 });
   // Monaco renders asynchronously after the file is swapped in.
   await page.waitForTimeout(500);

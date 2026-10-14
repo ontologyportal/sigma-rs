@@ -38,6 +38,9 @@ export const EDITS_KEY = "sumoBrowserEdits";
 export const THEME_KEY = "sumoBrowserTheme";
 export const LAYOUT_KEY = "sumoBrowserLayout";
 export const SEEN_VERSION_KEY = "sumoBrowserSeenVersion";
+/** The `file` query value of the Edit tab's last-opened file, reopened when
+ *  the tab is entered without one; absent means a new file. */
+export const EDIT_LAST_FILE_KEY = "sumoBrowserEditLastFile";
 /** Prover profiles (Ask/Tell + Audit), backend and Vampire args. */
 export const PROVER_SETTINGS_KEY = "sumoProverSettings";
 /** Ask/Tell's run history (see `useAskHistoryStore`). */
