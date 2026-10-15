@@ -89,12 +89,12 @@ export const PROOF_GRAPH_LEGEND: { kind: StepKind; label: string }[] = [
   { kind: "lemma", label: "derived lemma" },
 ];
 
-/** A node's body: pretty-printed, syntax-highlighted KIF -- `data.kif` is
- *  already `formatKif`-ed by `stepsToElements`, so this only tokenizes it.
+/** A node's body: 1-based step number plus syntax-highlighted KIF --
+ *  `data.kif` is already `formatKif`-ed by `stepsToElements`.
  *  Reused both by `cy.nodeHtmlLabel`'s live template and, once, up front by
  *  `measureLabel` to size the underlying canvas node to match. */
-function nodeLabelHtml(data: { kif: string }): string {
-  return `<div class="pg-node-label">${highlightKif(data.kif)}</div>`;
+function nodeLabelHtml(data: { index: number; kif: string }): string {
+  return `<div class="pg-node-label"><span class="pg-idx">${data.index + 1}.</span>${highlightKif(data.kif)}</div>`;
 }
 
 let labelProbe: HTMLDivElement | null = null;
@@ -124,7 +124,7 @@ function measureLabel(html: string): { w: number; h: number } {
 function stepsToElements(steps: AuditStep[]): cytoscape.ElementDefinition[] {
   const nodes = steps.map((s) => {
     const kif = formatKif(s.kif);
-    const { w, h } = measureLabel(nodeLabelHtml({ kif }));
+    const { w, h } = measureLabel(nodeLabelHtml({ index: s.index, kif }));
     return {
       data: {
         id: `n${s.index}`,
