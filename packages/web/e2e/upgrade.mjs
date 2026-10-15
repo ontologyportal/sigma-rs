@@ -178,7 +178,7 @@ async function boot(page, base, query = "") {
     await gotoApp(page, base + query);
   } catch (e) {
     throw new Error("failed to open application", {
-      cause: e
+      cause: e,
     });
   }
   try {
@@ -190,7 +190,7 @@ async function boot(page, base, query = "") {
       .click();
   } catch (e) {
     throw new Error("failed to open Knowledge base tab", {
-      cause: e
+      cause: e,
     });
   }
   try {
@@ -209,7 +209,7 @@ async function boot(page, base, query = "") {
       await page.waitForSelector(".src-report", { timeout: 1_000 });
     } catch (e) {
       throw new Error("failed to open source subtab", {
-        cause: e
+        cause: e,
       });
     }
   }
@@ -227,7 +227,7 @@ async function editorText(page, name) {
       .click();
   } catch (e) {
     throw new Error("failed to open the editor and create a new file", {
-      cause: e
+      cause: e,
     });
   }
   try {
@@ -237,7 +237,7 @@ async function editorText(page, name) {
       .click();
   } catch (e) {
     throw new Error("failed to open the first file in the list", {
-      cause: e
+      cause: e,
     });
   }
   try {
@@ -248,7 +248,7 @@ async function editorText(page, name) {
     );
   } catch (e) {
     throw new Error("failed to modify file", {
-      cause: e
+      cause: e,
     });
   }
 }
@@ -434,14 +434,14 @@ await runCase("edited-upload-with-snapshot", {
       await editAndSave(page, "Merge.kif", `${LOCAL_MARKER}Merge`);
     } catch (e) {
       throw new Error(`failed to open and edit Merge.kif: ${e}`, {
-        cause: e
+        cause: e,
       });
     }
     try {
       await editAndSave(page, MINE, `${LOCAL_MARKER}Mine`);
     } catch (e) {
       throw new Error(`failed to open and edit ${MINE}: ${e}`, {
-        cause: e
+        cause: e,
       });
     }
 
