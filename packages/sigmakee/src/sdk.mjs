@@ -23,7 +23,7 @@ import initWasm, {
   parseTest as wasmParseTest,
   parseTptpTest as wasmParseTptpTest,
   sumoSymbols as wasmSumoSymbols,
-} from "./sumo_parser_wasm.js";
+} from "./engine.js";
 
 export { Config };
 

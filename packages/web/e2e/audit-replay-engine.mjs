@@ -77,7 +77,7 @@ try {
   );
   await init({
     module_or_path: readFileSync(
-      join(root, "packages/sigmakee/dist/sumo_parser_wasm_bg.wasm"),
+      join(root, "packages/sigmakee/dist/engine_bg.wasm"),
     ),
   });
   const config = new Config();

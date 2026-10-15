@@ -35,6 +35,7 @@ import { fileURLToPath } from "node:url";
 const PKG_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const WORKSPACE_ROOT = resolve(PKG_DIR, "..", "..");
 const LIB_NAME = "sumo_parser_wasm";
+const OUT_NAME = "engine";
 const WASM_TRIPLE = "wasm32-unknown-unknown";
 const TARGET = process.argv[2] ?? "web";
 const OUT_DIR = join(PKG_DIR, process.argv[3] ?? "dist");
@@ -159,13 +160,21 @@ if (!existsSync(wasmIn)) throw new Error(`expected ${wasmIn}`);
 console.log(`==> Generating bindings (${TARGET}) into ${basename(OUT_DIR)}/`);
 rmSync(OUT_DIR, { recursive: true, force: true });
 mkdirSync(OUT_DIR, { recursive: true });
-run(bindgen, ["--target", TARGET, "--out-dir", OUT_DIR, wasmIn]);
+run(bindgen, [
+  "--target",
+  TARGET,
+  "--out-dir",
+  OUT_DIR,
+  "--out-name",
+  OUT_NAME,
+  wasmIn,
+]);
 
 // Prefer the pinned `binaryen` devDependency over PATH: this build emits
 // reference-types / bulk-memory opcodes, and the older binaryen distros ship
 // rejects them ("invalid code after misc prefix: 17"). Never fatal -- an
 // unoptimized .wasm is correct, just ~25% bigger.
-const wasmFile = join(OUT_DIR, `${LIB_NAME}_bg.wasm`);
+const wasmFile = join(OUT_DIR, `${OUT_NAME}_bg.wasm`);
 const localWasmOpt = join(WORKSPACE_ROOT, "node_modules", ".bin", "wasm-opt");
 const wasmOpt = existsSync(localWasmOpt)
   ? localWasmOpt

@@ -272,9 +272,14 @@ READMEs for each component:
 This repo has two "SDK" packages which expose the primary functionality of SigmaKEE via a programatic
 interface:
 
-- **Rust SDK**: The Rust SDK's documentation is viewable via Rust docs. On your local machine, your can 
-build the Rust docs using the command: `cargo doc`. Documentation is then available at [./target/doc/sigmakee_rs_sdk/index.html](./target/doc/sigmakee_rs_sdk/index.html). **We are currently working on hosting the Rust Docs via GitHub pages. This is COMING SOON**. 
-- [JavaScript SDK Reference](./packages/sigmakee/README.md).
+- **Rust SDK**: The Rust SDK's documentation is viewable via Rust docs. On your local machine, you can 
+build the Rust docs using the command: `cargo doc`. Documentation is then available at [./target/doc/sigmakee_rs_sdk/index.html](./target/doc/sigmakee_rs_sdk/index.html). You can also find the Rust docs hosted on [GitHub pages](https://ontologyportal.github.io/sigma-rs/docs/rust).  
+- **JavaScript SDK**: The `sigmakee` npm package's documentation is generated with TypeDoc from its
+type declarations. On your local machine, run `npm run build --workspace sigmakee` and then
+`npm run docs --workspace sigmakee`; documentation is then available at
+[./packages/sigmakee/dist-docs/index.html](./packages/sigmakee/dist-docs/index.html). You can also find the
+JavaScript docs hosted on [GitHub pages](https://ontologyportal.github.io/sigma-rs/docs/js/). See also the
+[package README](./packages/sigmakee/README.md).
 
 ## Bug Reports
 

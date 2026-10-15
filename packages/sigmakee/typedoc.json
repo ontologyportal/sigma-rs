@@ -1,0 +1,16 @@
+{
+  "$schema": "https://typedoc.org/schema.json",
+  "name": "sigmakee",
+  "entryPoints": ["dist/sdk.d.ts", "dist/engine.d.ts", "dist/node.d.ts"],
+  "out": "dist-docs",
+  "readme": "README.md",
+  "includeVersion": true,
+  "compilerOptions": {
+    "target": "esnext",
+    "lib": ["esnext", "dom"],
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noEmit": true
+  }
+}

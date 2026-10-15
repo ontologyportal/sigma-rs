@@ -2,7 +2,7 @@
  * SDK-shaped facade over the raw wasm bindings — mirrors `sigmakee-rs-sdk`'s
  * `Session` / `Source` / `Backend` / `Config` for the browser.
  */
-import { Config, Session as WasmSession } from "./sumo_parser_wasm";
+import { Config, Session as WasmSession } from "./engine";
 
 export { Config };
 /** The raw wasm binding behind {@link Session.kb}. */

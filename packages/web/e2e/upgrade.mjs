@@ -231,7 +231,7 @@ async function editorText(page, name) {
       )
       .click();
   } catch (e) {
-    throw new Error("failed to open the editor's file picker", {
+    throw new Error("failed to open the editor and create a new file", {
       cause: e,
     });
   }

@@ -1,4 +1,5 @@
-# GitHub Pages: the in-browser demo (always) + the SUMO regression report.
+# GitHub Pages: the in-browser demo (always) + the SUMO regression report
+# + the Rust and JavaScript API docs at /docs/rust/ and /docs/js/ (always).
 # The demo is ADDITIONALLY deployed to Cloudflare Pages (see the "Deploy demo
 # to Cloudflare Pages" step) because only Cloudflare can serve the COOP/COEP
 # headers the in-browser Vampire backend needs; the regression report lives on
@@ -200,6 +201,46 @@ jobs:
             curl -fsSL "${url%/}/$f?run=$GITHUB_RUN_ID" -o "site/$f" \
               && echo "restored $f" || echo "no prior $f (first deploy?)"
           done
+
+      # ---- Rust API docs (every run) ------------------------------------------
+      # Served at <pages>/docs/rust/. Rebuilt on push AND nightly: a Pages
+      # deploy replaces the whole site, so they must be in every artifact.
+      # Every library feature except `integrated-prover`, which pulls in the
+      # vampire-sys C++ build (cmake) that push runs don't install.
+      - name: Build Rust API docs
+        run: |
+          cargo doc --no-deps --locked \
+            -p sigmakee-rs-core -p sigmakee-rs-sdk -p sumo-lsp \
+            --features "sigmakee-rs-core/persist sigmakee-rs-core/native-prover sigmakee-rs-core/model-builder sigmakee-rs-core/lexicon sigmakee-rs-core/parallel"
+          mkdir -p site/docs/rust
+          cp -r target/doc/. site/docs/rust/
+          cat > site/docs/rust/index.html <<'EOF'
+          <!doctype html>
+          <meta charset="utf-8">
+          <title>sigmakee-rs API docs</title>
+          <meta http-equiv="refresh" content="0; url=sigmakee_rs_sdk/index.html">
+          <a href="sigmakee_rs_sdk/index.html">sigmakee_rs_sdk</a> ·
+          <a href="sigmakee_rs_core/index.html">sigmakee_rs_core</a> ·
+          <a href="sumo_lsp/index.html">sumo_lsp</a>
+          EOF
+          test -f site/docs/rust/sigmakee_rs_sdk/index.html
+
+      # ---- JavaScript API docs (every run) ------------------------------------
+      # Served at <pages>/docs/js/. TypeDoc reads the generated dist/*.d.ts, so
+      # the wasm package is built first.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Build JavaScript API docs
+        run: |
+          npm ci
+          npm run build --workspace sigmakee
+          npm run docs --workspace sigmakee
+          mkdir -p site/docs/js
+          cp -r packages/sigmakee/dist-docs/. site/docs/js/
+          test -f site/docs/js/index.html
 
       # A Pages deploy REPLACES the whole site, so publishing an artifact with
       # no browse/ in it would delete the live demo -- silently, since the demo
