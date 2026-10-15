@@ -23,6 +23,18 @@ const props = defineProps<{
 const listEl = ref<HTMLUListElement | null>(null);
 const shell = useShellStore();
 
+/** Rows whose rank breakdown is pinned open by a click/tap/Enter, keyed by
+ *  hit identity -- the native `title` tooltip is hover-only, so it's
+ *  invisible on touch and easy to miss on desktop; this makes the same
+ *  content reachable and dismissable without a mouse. */
+const expandedRanks = ref(new Set<SearchHit>());
+function toggleRank(hit: SearchHit) {
+  const next = new Set(expandedRanks.value);
+  if (next.has(hit)) next.delete(hit);
+  else next.add(hit);
+  expandedRanks.value = next;
+}
+
 const relHits = computed(() =>
   props.hits.filter(
     (h) => !!h.kinds.find((k) => k == "predicate" || k == "function"),
@@ -43,13 +55,22 @@ watch(
   },
 );
 
-/** Plain-text breakdown of a search hit's rank score, one labeled
- *  contribution per line plus the total -- rendered as a native `title`
- *  tooltip on hover. */
+/** Plain-text breakdown of a search hit's rank score: a one-line
+ *  explanation of what the number even is (not a percentage, no fixed
+ *  maximum -- the rank tooltip is the only place this is ever stated, so
+ *  without it the number alone is just unexplained internal scoring),
+ *  then one labeled contribution per line plus the total. Rendered as a
+ *  native `title` tooltip on hover and in the click-to-pin panel below the
+ *  row. */
 function rankTooltip(hit: SearchHit): string {
-  const lines = hit.rank_breakdown.map(
-    (c) => `${c.label}: ${c.value >= 0 ? "+" : ""}${c.value.toFixed(1)}`,
-  );
+  const lines = [
+    "Relevance score, not a percentage -- no fixed maximum. How well the name " +
+      "matched sets the tier (exact/prefix/substring/none); everything else " +
+      "below is a small tie-breaking nudge within that tier:",
+    ...hit.rank_breakdown.map(
+      (c) => `${c.label}: ${c.value >= 0 ? "+" : ""}${c.value.toFixed(1)}`,
+    ),
+  ];
   lines.push(`= ${hit.rank.toFixed(1)}`);
   return lines.join("\n");
 }
@@ -114,13 +135,24 @@ function boldifyDoc(text: unknown): string {
           class="sym open"
           @click.prevent="navigate('browse', { q: query, sym: h.symbol })"
           >{{ h.symbol }}</a
-        >
-        <span class="kinds"
+        >{{ " " }}<span class="kinds"
           >{{ kindsText(h) }} ·
-          <span class="rank" :title="rankTooltip(h)"
+          <span
+            class="rank"
+            :title="rankTooltip(h)"
+            tabindex="0"
+            role="button"
+            :aria-expanded="expandedRanks.has(h)"
+            @click="toggleRank(h)"
+            @keydown.enter="toggleRank(h)"
+            @keydown.space.prevent="toggleRank(h)"
             >rank {{ h.rank.toFixed(0) }}</span
           ></span
         >
+        <pre
+          v-if="expandedRanks.has(h)"
+          class="rank-breakdown"
+        >{{ rankTooltip(h) }}</pre>
         <div v-if="h.text" class="snippet" v-html="boldifyDoc(h.text)"></div>
         <WordNetEntry
           v-for="(m, j) in relevantWordnet(h.wordnet, query)"
@@ -149,13 +181,24 @@ function boldifyDoc(text: unknown): string {
               class="sym open"
               @click.prevent="navigate('browse', { q: query, sym: h.symbol })"
               >{{ h.symbol }}</a
-            >
-            <span class="kinds"
+            >{{ " " }}<span class="kinds"
               >{{ kindsText(h) }} ·
-              <span class="rank" :title="rankTooltip(h)"
+              <span
+                class="rank"
+                :title="rankTooltip(h)"
+                tabindex="0"
+                role="button"
+                :aria-expanded="expandedRanks.has(h)"
+                @click="toggleRank(h)"
+                @keydown.enter="toggleRank(h)"
+                @keydown.space.prevent="toggleRank(h)"
                 >rank {{ h.rank.toFixed(0) }}</span
               ></span
             >
+            <pre
+              v-if="expandedRanks.has(h)"
+              class="rank-breakdown"
+            >{{ rankTooltip(h) }}</pre>
             <div
               v-if="h.text"
               class="snippet"
@@ -187,13 +230,24 @@ function boldifyDoc(text: unknown): string {
               class="sym open"
               @click.prevent="navigate('browse', { q: query, sym: h.symbol })"
               >{{ h.symbol }}</a
-            >
-            <span class="kinds"
+            >{{ " " }}<span class="kinds"
               >{{ kindsText(h) }} ·
-              <span class="rank" :title="rankTooltip(h)"
+              <span
+                class="rank"
+                :title="rankTooltip(h)"
+                tabindex="0"
+                role="button"
+                :aria-expanded="expandedRanks.has(h)"
+                @click="toggleRank(h)"
+                @keydown.enter="toggleRank(h)"
+                @keydown.space.prevent="toggleRank(h)"
                 >rank {{ h.rank.toFixed(0) }}</span
               ></span
             >
+            <pre
+              v-if="expandedRanks.has(h)"
+              class="rank-breakdown"
+            >{{ rankTooltip(h) }}</pre>
             <div
               v-if="h.text"
               class="snippet"
@@ -222,6 +276,15 @@ function boldifyDoc(text: unknown): string {
 .kinds .rank {
   cursor: help;
   border-bottom: 1px dotted currentColor;
+}
+.rank-breakdown {
+  margin: 4px 0 0;
+  padding: 6px 8px;
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--card);
+  border-radius: 6px;
+  white-space: pre-wrap;
 }
 .count {
   margin-bottom: 6px;
