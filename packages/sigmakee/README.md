@@ -7,7 +7,7 @@ browser or in Node** with the pure-Rust native saturation prover. No server or
 WASI is required; external provers (Vampire, E) plug in through a JS bridge.
 
 This package powers the [sigmakee.dev](https://sigmakee.dev) web IDE
-([`packages/web`](../web)).
+([`packages/web`](https://github.com/ontologyportal/sigma-rs/tree/main/packages/web)).
 
 ```bash
 npm install sigmakee
@@ -19,7 +19,7 @@ npm install sigmakee
 
 | Import | What it is |
 | --- | --- |
-| **`sigmakee/sdk`** | The SDK facade (`Session`, `Source`, `Backend`, `Config`), shaped like the [`sigmakee-rs-sdk`](../../crates/sdk) Rust crate. **Start here.** |
+| **`sigmakee/sdk`** | The SDK facade (`Session`, `Source`, `Backend`, `Config`), shaped like the [`sigmakee-rs-sdk`](https://ontologyportal.github.io/sigma-rs/docs/rust/sigmakee_rs_sdk/) Rust crate. **Start here.** |
 | `sigmakee` | The `engine` module: the raw wasm-bindgen classes (`Session`, `Config`, `WasmLsp`) the facade wraps. Use it for lower-level control or the in-process language server. |
 | `sigmakee/node` | Node-only helper that runs a local `vampire` binary for the Vampire backend (see [External provers](#external-provers)). |
 | `sigmakee/engine_bg.wasm` | The compiled engine, for bundlers or hosts that load it themselves. (`sigmakee/sumo_parser_wasm_bg.wasm` is kept as an alias for older imports.) |

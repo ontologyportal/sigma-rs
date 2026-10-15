@@ -1,5 +1,5 @@
 # GitHub Pages: the in-browser demo (always) + the SUMO regression report
-# + the Rust API docs at /docs/rust/ (always).
+# + the Rust and JavaScript API docs at /docs/rust/ and /docs/js/ (always).
 # The demo is ADDITIONALLY deployed to Cloudflare Pages (see the "Deploy demo
 # to Cloudflare Pages" step) because only Cloudflare can serve the COOP/COEP
 # headers the in-browser Vampire backend needs; the regression report lives on
@@ -224,6 +224,23 @@ jobs:
           <a href="sumo_lsp/index.html">sumo_lsp</a>
           EOF
           test -f site/docs/rust/sigmakee_rs_sdk/index.html
+
+      # ---- JavaScript API docs (every run) ------------------------------------
+      # Served at <pages>/docs/js/. TypeDoc reads the generated dist/*.d.ts, so
+      # the wasm package is built first.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Build JavaScript API docs
+        run: |
+          npm ci
+          npm run build --workspace sigmakee
+          npm run docs --workspace sigmakee
+          mkdir -p site/docs/js
+          cp -r packages/sigmakee/dist-docs/. site/docs/js/
+          test -f site/docs/js/index.html
 
       # A Pages deploy REPLACES the whole site, so publishing an artifact with
       # no browse/ in it would delete the live demo -- silently, since the demo

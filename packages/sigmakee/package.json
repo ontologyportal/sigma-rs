@@ -24,10 +24,12 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
+    "docs": "typedoc",
     "prepack": "npm run build"
   },
   "devDependencies": {
-    "binaryen": "^132.0.0"
+    "binaryen": "^132.0.0",
+    "typedoc": "^0.28.20"
   },
   "files": [
     "dist",
