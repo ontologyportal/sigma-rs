@@ -215,15 +215,20 @@ async function boot(page, base, query = "") {
   }
 }
 
-/** Open `name` in the Edit tab and return the editor's visible text. */
+/** Open `name` in the Edit tab and return the editor's visible text. Runs
+ *  against both builds: older ones open files from a dialog, newer ones from
+ *  the KB tab. */
 async function editorText(page, name) {
   try {
     await page.locator("nav.tabs button", { hasText: "Edit" }).first().click();
     await page
-      .getByRole("button", {
-        name: "Open a file, or create a new one",
-        exact: true,
-      })
+      .getByRole("button", { name: "Open a file from the KB tab", exact: true })
+      .or(
+        page.getByRole("button", {
+          name: "Open a file, or create a new one",
+          exact: true,
+        }),
+      )
       .click();
   } catch (e) {
     throw new Error("failed to open the editor and create a new file", {
@@ -232,7 +237,8 @@ async function editorText(page, name) {
   }
   try {
     await page
-      .locator(".open-list .open-file", { hasText: name })
+      .locator('a.name[title="Open"]', { hasText: name })
+      .or(page.locator(".open-list .open-file", { hasText: name }))
       .first()
       .click();
   } catch (e) {
