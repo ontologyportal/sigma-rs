@@ -16,11 +16,9 @@
  * The token comes from OAuth or a personal access token and is sent to
  * `api.github.com` over `Authorization: Bearer`.
  *
- * INVARIANT: this module never pushes to a default branch. Every change lands
- * on a freshly created feature branch and is proposed by pull request -- there
- * is no direct-commit path, no merge call, and no fork sync (which would write
- * to the fork's own main). `assertFeatureBranch` enforces it at both the
- * branch-creation and commit steps.
+ * Pull-request contributions use feature branches. Explicit direct pushes
+ * update the selected branch only after checking the edited files against
+ * their recorded base versions; ref updates are never forced.
  */
 
 import type { Endpoints } from "@octokit/types";
@@ -135,7 +133,7 @@ const encodePath = (p: string) =>
   p.split("/").map(encodeURIComponent).join("/");
 
 /**
- * Hard invariant: every write goes to a purpose-made feature branch, never to a
+ * Pull-request contributions go to a purpose-made feature branch, never to a
  * default branch. Checked at branch creation and again immediately before the
  * commit, so a future edit that reorders or reuses this code still trips it
  * rather than writing to main.
@@ -296,6 +294,69 @@ export async function contributeFiles({
 
   assertFeatureBranch(branch, base); // re-check immediately before the write
 
+  const { blobShas } = await commitFiles({
+    token,
+    owner: headOwner,
+    repo,
+    branch,
+    parentSha,
+    files,
+    title,
+    onStep,
+  });
+
+  if (existing) {
+    return {
+      url: existing.url,
+      number: existing.number,
+      branch,
+      headOwner,
+      forked: headOwner !== owner,
+      amended: true,
+      blobShas,
+    };
+  }
+
+  onStep("Opening pull request...");
+  const pr = await api<Res<"POST /repos/{owner}/{repo}/pulls">>(
+    token,
+    `/repos/${owner}/${repo}/pulls`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        title,
+        body,
+        head: headOwner === owner ? branch : `${login}:${branch}`,
+        base,
+      }),
+    },
+  );
+
+  return {
+    url: pr.html_url,
+    number: pr.number,
+    branch,
+    headOwner,
+    forked: headOwner !== owner,
+    amended: false,
+    blobShas,
+  };
+}
+
+/** Commit the selected files on top of one parent and advance its branch. */
+async function commitFiles({
+  token,
+  owner: headOwner,
+  repo,
+  branch,
+  parentSha,
+  files,
+  title,
+  onStep = () => {},
+}: Pick<
+  ContributeFilesOpts,
+  "token" | "owner" | "repo" | "files" | "title" | "onStep"
+> & { branch: string; parentSha: string }) {
   const blobShas: string[] = [];
   for (let i = 0; i < files.length; i++) {
     onStep(`Uploading ${files[i].path} (${i + 1}/${files.length})...`);
@@ -350,46 +411,134 @@ export async function contributeFiles({
     `/repos/${headOwner}/${repo}/git/refs/heads/${encodePath(branch)}`,
     {
       method: "PATCH",
-      body: JSON.stringify({ sha: commit.sha }),
+      body: JSON.stringify({ sha: commit.sha, force: false }),
     },
   );
 
-  if (existing) {
-    return {
-      url: existing.url,
-      number: existing.number,
-      branch,
-      headOwner,
-      forked: headOwner !== owner,
-      amended: true,
-      blobShas,
-    };
-  }
+  return { sha: commit.sha, blobShas };
+}
 
-  onStep("Opening pull request...");
-  const pr = await api<Res<"POST /repos/{owner}/{repo}/pulls">>(
+/** Push saved files to an existing branch, refusing changed remote inputs. */
+export async function pushFiles({
+  token,
+  owner,
+  repo,
+  branch,
+  files,
+  title,
+  onStep = () => {},
+}: Pick<
+  ContributeFilesOpts,
+  "token" | "owner" | "repo" | "title" | "onStep"
+> & {
+  branch: string;
+  files: { path: string; content: string; baseBlobSha: string | null }[];
+}) {
+  if (!token || !branch || !files.length)
+    throw new GitHubError("Choose saved files and sign in before pushing.", 0);
+  const paths = new Set<string>();
+  for (const file of files) {
+    const path = file.path;
+    if (
+      !path ||
+      path.startsWith("/") ||
+      path.split("/").some((p) => !p || p === "." || p === "..") ||
+      path.includes("\\")
+    )
+      throw new GitHubError(`Invalid repository path: ${path}`, 0);
+    const key = path.toLowerCase();
+    if (paths.has(key))
+      throw new GitHubError(`Multiple selected files use ${path}.`, 0);
+    paths.add(key);
+  }
+  onStep("Checking branch access...");
+  const repository = await api<Res<"GET /repos/{owner}/{repo}">>(
+    token,
+    `/repos/${owner}/${repo}`,
+  );
+  if (!repository.permissions?.push)
+    throw new GitHubError(
+      `You do not have push access to ${owner}/${repo}. Choose your fork or create a pull request.`,
+      403,
+    );
+  const head = await api<GitRef>(
+    token,
+    `/repos/${owner}/${repo}/git/ref/heads/${encodePath(branch)}`,
+  );
+  const tree = await api<Res<"GET /repos/{owner}/{repo}/git/trees/{tree_sha}">>(
+    token,
+    `/repos/${owner}/${repo}/git/trees/${head.object.sha}?recursive=1`,
+  );
+  if (tree.truncated)
+    throw new GitHubError(
+      "The branch file list was incomplete; no changes were pushed.",
+      0,
+    );
+  const remote = new Map(tree.tree.map((entry) => [entry.path, entry]));
+  for (const file of files) {
+    const entry = remote.get(file.path);
+    if (
+      (entry?.sha ?? null) !== file.baseBlobSha ||
+      (entry && (entry.type !== "blob" || entry.mode !== "100644"))
+    )
+      throw new GitHubError(
+        `${file.path} changed on ${branch}. Reload or resolve the remote changes before pushing.`,
+        409,
+      );
+  }
+  const committed = await commitFiles({
+    token,
+    owner,
+    repo,
+    branch,
+    parentSha: head.object.sha,
+    files,
+    title,
+    onStep,
+  });
+  return {
+    ...committed,
+    url: `https://github.com/${owner}/${repo}/commit/${committed.sha}`,
+  };
+}
+
+/** Open a pull request for a branch that has already been pushed. */
+export async function createBranchPullRequest({
+  token,
+  headOwner,
+  branch,
+  title,
+  body,
+  owner = SUMO.owner,
+  repo = SUMO.repo,
+}: {
+  token: string;
+  headOwner: string;
+  branch: string;
+  title: string;
+  body: string;
+  owner?: string;
+  repo?: string;
+}) {
+  const upstream = await api<Res<"GET /repos/{owner}/{repo}">>(
+    token,
+    `/repos/${owner}/${repo}`,
+  );
+  const base = upstream.default_branch;
+  const head = `${headOwner}:${branch}`;
+  const existing = await api<Res<"GET /repos/{owner}/{repo}/pulls">>(
+    token,
+    `/repos/${owner}/${repo}/pulls?state=open&head=${encodeURIComponent(head)}&base=${encodeURIComponent(base)}`,
+  );
+  if (existing.length) return existing[0];
+  return api<Res<"POST /repos/{owner}/{repo}/pulls">>(
     token,
     `/repos/${owner}/${repo}/pulls`,
     {
       method: "POST",
-      body: JSON.stringify({
-        title,
-        body,
-        head: headOwner === owner ? branch : `${login}:${branch}`,
-        base,
-      }),
+      body: JSON.stringify({ title, body, head, base }),
     },
   );
-
-  return {
-    url: pr.html_url,
-    number: pr.number,
-    branch,
-    headOwner,
-    forked: headOwner !== owner,
-    amended: false,
-    blobShas,
-  };
 }
 
 // -- Authenticated reads ------------------------------------------------------
@@ -487,10 +636,14 @@ export async function createSumoIssue(
  * base64 content (it omits the body for blobs over 1 MB). Reading by SHA
  * pins the text to one exact version, unlike the raw CDN.
  */
-export async function fetchBlobText(sha: string): Promise<string | null> {
+export async function fetchBlobText(
+  sha: string,
+  owner = SUMO.owner,
+  repo = SUMO.repo,
+): Promise<string | null> {
   const blob = await githubApi<
     Res<"GET /repos/{owner}/{repo}/git/blobs/{file_sha}">
-  >(`/repos/${SUMO.owner}/${SUMO.repo}/git/blobs/${sha}`);
+  >(`/repos/${owner}/${repo}/git/blobs/${sha}`);
   return blob?.encoding === "base64" && blob.content
     ? fromBase64(blob.content)
     : null;
@@ -500,6 +653,21 @@ export async function fetchBlobText(sha: string): Promise<string | null> {
 // tracker both want the upstream tree, and two overlapping callers would
 // otherwise spend two of the 60/hour unauthenticated budget on the same read.
 const treePromises = new Map<string, Promise<TreeEntry[]>>();
+
+/** List every branch of a repository, including all result pages. */
+export async function fetchRepoBranches(
+  owner: string,
+  repo: string,
+): Promise<string[]> {
+  const names: string[] = [];
+  for (let page = 1; ; page++) {
+    const branches = await githubApi<Res<"GET /repos/{owner}/{repo}/branches">>(
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches?per_page=100&page=${page}`,
+    );
+    names.push(...branches.map((b) => b.name));
+    if (branches.length < 100) return names;
+  }
+}
 
 /**
  * Every blob in `owner/repo` at `ref`, as `[{ path, type, sha, size }]`, one
@@ -520,7 +688,7 @@ export function fetchRepoTree(
   let p = treePromises.get(key);
   if (!p) {
     p = githubApi<Res<"GET /repos/{owner}/{repo}/git/trees/{tree_sha}">>(
-      `/repos/${owner}/${repo}/git/trees/${ref}?recursive=1`,
+      `/repos/${owner}/${repo}/git/trees/${encodeURIComponent(ref)}?recursive=1`,
     )
       .then((t) => {
         if (t?.truncated)

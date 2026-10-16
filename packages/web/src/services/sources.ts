@@ -12,11 +12,13 @@ export async function fetchText(url: string): Promise<string> {
 }
 
 /** `name`'s text from `origin`. A git origin is read at `ref` (a commit
- *  SHA) when given, else at its branch tip. */
+ *  SHA) when given, else at its branch tip. `upstream` bypasses saved git
+ *  edits when preparing an explicitly requested branch replacement. */
 export async function fromOrigin(
   name: string,
   origin: Origin,
   ref?: string,
+  upstream = false,
 ): Promise<string> {
   switch (origin.kind) {
     case "sumo": {
@@ -24,7 +26,9 @@ export async function fromOrigin(
       // from the KB snapshot cache for exactly this reason: an upstream commit
       // discards that cache and sends every 'sumo' file back through here,
       // which would otherwise silently restore the pre-edit text.
-      const edited = await useChangesStore().readEdit(name, "sumo");
+      const edited = upstream
+        ? null
+        : await useChangesStore().readEdit(name, "sumo");
       if (edited !== null) return edited;
       const git = origin as GitOrigin;
       return fetchText(git.rawUrl(git.pathOf(name), ref));
@@ -43,12 +47,14 @@ export async function fromOrigin(
  *  order. A per-file failure is captured rather than thrown so one bad file
  *  cannot abandon the rest -- sequential fetching would make Full SUMO a
  *  minutes-long wait. `pin` names the commit to read an origin at (see
- *  `fromOrigin`); omitted, every file is read at its branch tip. */
+ *  `fromOrigin`); omitted, every file is read at its branch tip. `upstream`
+ *  bypasses saved git edits, as in `fromOrigin`. */
 export async function fetchAllTexts(
   files: { name: string; origin: Origin }[],
   limit: number,
   onDone: (done: number) => void,
   pin?: (origin: Origin) => string | undefined,
+  upstream = false,
 ): Promise<(string | Error)[]> {
   const out = new Array<string | Error>(files.length);
   let next = 0;
@@ -57,7 +63,7 @@ export async function fetchAllTexts(
     for (let i = next++; i < files.length; i = next++) {
       try {
         const { name, origin } = files[i];
-        out[i] = await fromOrigin(name, origin, pin?.(origin));
+        out[i] = await fromOrigin(name, origin, pin?.(origin), upstream);
       } catch (e) {
         out[i] = e instanceof Error ? e : new Error(String(e));
       }

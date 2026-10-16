@@ -176,3 +176,64 @@ node packages/web/e2e/audit-recheck-engine.mjs
 For an isolated visual preview of the confirmation flow (no real saved work
 or GitHub requests), run `node packages/web/e2e/audit-replay-preview.mjs` and
 open the printed address. Add `?stale=1` to inspect rejection of an old report.
+
+## Working on a SUMO branch
+
+In **Knowledge base > Constituents**, click **Branch: master** (or the current
+branch name) to open the branch dropdown. Long names are truncated in the
+button; hover over it to see the full name. Search the published branches and
+select one to load the current file set from that branch. If the KB is empty
+or contains multiple sources, selection loads Minimal SUMO instead.
+
+To use your fork, expand **Use another repository or fork**, enter
+`your-username/sumo`, and click **Show branches**. The account before `/` is
+the GitHub user or organization that owns the repository; the name after `/`
+is the repository. The standard-set menu also uses the selected branch.
+
+The app confirms before replacing the entire KB and discarding local edits.
+Switching also replaces the library's repository catalog, so files from the
+previous branch disappear from the constituent list, including after reload.
+All files are downloaded from one commit before replacement starts; a missing
+branch or failed download leaves the current KB intact. Loaded constituents
+retain the selected repository and branch across browser restarts. Source
+update preferences still determine whether subsequent upstream commits are
+automatically loaded.
+
+Public branches require no login (signing in can raise GitHub's API limit).
+Create and push your branch and commits with Git, or use the existing web
+contribution flow to publish edits as a branch and pull request. On another
+computer, enter that branch's owner, repository, and name. Browser-local
+edits and Git branches that have not been pushed are not available elsewhere.
+The web loader reads public raw GitHub files; signing in does not add support
+for loading private repository contents through this path.
+
+Branch-loading regression checks:
+
+```bash
+node --test packages/web/src/stores/kb.test.mjs packages/web/src/services/sources.test.mjs packages/web/src/views/KbTab.test.mjs
+node packages/web/e2e/branches.mjs
+```
+
+
+## Pushing saved edits
+
+In the editor, save your files, then open the GitHub panel. Select the files
+and use **Push to BRANCH** to commit them directly to their loaded source
+repository and branch. The destination is shown above the title field.
+Sign in with GitHub and use a token with repository Contents write access.
+Direct push requires write access to that repository; select your fork if
+you cannot push to upstream SUMO.
+
+One push is one commit. Files from different branches cannot be pushed
+together. The app checks the edited files against the remote branch and
+refuses to overwrite newer remote edits. Concurrent pushes and branch
+protection failures are reported without clearing your local edits.
+
+**Create pull request** keeps the existing contribution workflow. After a
+direct push, **Create pull request from this branch** opens a PR against
+upstream SUMO, or links to an existing open PR for that branch.
+
+```bash
+node --test packages/web/src/api/push.test.mjs packages/web/src/components/edit/ContributePanel.test.mjs packages/web/src/stores/changes.test.mjs
+node packages/web/e2e/push.mjs
+```

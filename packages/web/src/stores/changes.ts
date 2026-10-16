@@ -22,8 +22,13 @@
 
 import { defineStore } from "pinia";
 import { EDITS_KEY, rawUrl } from "../constants";
-import { originForKind, type OriginKind } from "../models/Origin";
-import { fetchBlobText, fetchPullRequest, fetchSumoTree } from "../api/github";
+import { GitOrigin, originForKind, type OriginKind } from "../models/Origin";
+import {
+  fetchBlobText,
+  fetchPullRequest,
+  fetchSumoTree,
+  fetchRepoTree,
+} from "../api/github";
 import type { PullRequest } from "../api/github";
 import { useBootStore } from "./boot";
 import { useKBStore } from "./kb";
@@ -71,6 +76,8 @@ export interface ChangeRecord {
   savedAt: number;
   proposed: ProposedInfo | null;
   prClosed: PrClosedInfo | null;
+  /** Destination of a directly pushed local upload or URL file. */
+  pushed?: { owner: string; repo: string; branch: string };
 }
 
 /**
@@ -212,6 +219,8 @@ export const useChangesStore = defineStore("changes", {
       const rows: ChangeRow[] = [];
       for (const rec of Object.values(state.index)) {
         if (!loaded.has(key(rec.name, rec.origin))) continue; // no longer in the KB
+        if (rec.pushed && !rec.proposed && rec.savedBlobSha === rec.baseBlobSha)
+          continue;
         const up = hasRepoPath(rec)
           ? (state.upstreamShas[rec.path] ?? null)
           : null;
@@ -223,7 +232,7 @@ export const useChangesStore = defineStore("changes", {
             ? rec.savedBlobSha === rec.proposed.blobSha
               ? "review"
               : "amended"
-            : rec.origin === "sumo"
+            : rec.origin === "sumo" || rec.pushed
               ? "modified"
               : "local",
         });
@@ -263,6 +272,13 @@ export const useChangesStore = defineStore("changes", {
           )?.text ?? ""
         );
       return useKBStore().find(row.name, row.origin)?.text ?? "";
+    },
+
+    /** The full source of a loaded constituent or test. */
+    trackedOrigin(row: { name: string; origin: OriginKind }) {
+      return [...useKBStore().constituents, ...useTestsStore().tests].find(
+        (c) => c.name === row.name && c.origin.kind === row.origin,
+      )?.origin;
     },
 
     /** Save `text` as a tracked file through the store that owns it -- the
@@ -307,7 +323,7 @@ export const useChangesStore = defineStore("changes", {
     },
 
     /**
-     * Refresh every tracked path's upstream SHA from one tree read, then drop
+     * Refresh tracked paths from their source repository branches, then drop
      * any record whose saved content is what upstream already holds (a landed
      * pull request, or an edit someone else committed verbatim).
      *
@@ -335,6 +351,31 @@ export const useChangesStore = defineStore("changes", {
       this.upstreamShas = Object.fromEntries(
         tree.filter((e) => e.type === "blob").map((e) => [e.path, e.sha]),
       );
+      const sourceTrees = new Map<
+        string,
+        Promise<Awaited<ReturnType<typeof fetchRepoTree>>>
+      >();
+      for (const rec of tracked) {
+        const origin = this.trackedOrigin(rec);
+        if (origin?.kind !== "sumo") continue;
+        const git = origin as GitOrigin;
+        if (git.isDefault) continue;
+        delete this.upstreamShas[rec.path];
+        try {
+          let pending = sourceTrees.get(git.id);
+          if (!pending) {
+            pending = fetchRepoTree(git.owner, git.repo, git.branch, { force });
+            sourceTrees.set(git.id, pending);
+          }
+          const entries = await pending;
+          const entry = entries.find(
+            (e) => e.type === "blob" && e.path === git.pathOf(rec.name),
+          );
+          if (entry?.sha) this.upstreamShas[rec.path] = entry.sha;
+        } catch {
+          /* Retain local edits when their source is unavailable. */
+        }
+      }
       let dropped = false;
       for (const rec of Object.values<ChangeRecord>(this.index)) {
         // An unproposed url record's path is just its name; one that happens
@@ -450,13 +491,20 @@ export const useChangesStore = defineStore("changes", {
       // What upstream holds NOW. A url source not yet pushed to the repo has
       // no repo path, so its version signal is the content hash
       // `checkUrlSource` records instead.
-      const up =
-        origin === "url" && !(rec && hasRepoPath(rec))
+      const up = rec?.pushed
+        ? null
+        : origin === "url" && !(rec && hasRepoPath(rec))
           ? (useKBStore().updateBaselines[`url:${name}`] ?? null)
           : this.upstreamSha(path);
       const backToUpstream =
         sha && ((up && sha === up) || (base && sha === base && !rec?.proposed));
       if (backToUpstream) {
+        if (rec?.pushed) {
+          if (ownsText(origin)) await writeEdit(name, origin, text);
+          rec.savedBlobSha = sha;
+          this.persist();
+          return rec;
+        }
         if (rec) {
           await this.dropRecord(rec);
           this.persist();
@@ -474,6 +522,7 @@ export const useChangesStore = defineStore("changes", {
         savedAt: Date.now(),
         proposed: rec?.proposed || null,
         prClosed: rec?.prClosed || null,
+        pushed: rec?.pushed,
       };
       this.persist();
       return this.index[k];
@@ -492,6 +541,43 @@ export const useChangesStore = defineStore("changes", {
       const up = this.upstreamSha(rec.path);
       if (!up || rec.baseBlobSha === up) return;
       rec.baseBlobSha = up;
+      this.persist();
+    },
+
+    /** Clear uploaded edits while preserving saves made during the push.
+     *  Local files retain their destination and base for subsequent pushes. */
+    async markPushed(
+      entries: {
+        name: string;
+        origin: OriginKind;
+        path: string;
+        blobSha: string;
+      }[],
+      target: { owner: string; repo: string; branch: string },
+    ) {
+      for (const entry of entries) {
+        const rec = this.record(entry.name, entry.origin);
+        if (entry.origin !== "sumo") {
+          this.index[key(entry.name, entry.origin)] = {
+            name: entry.name,
+            origin: entry.origin,
+            path: entry.path,
+            baseBlobSha: entry.blobSha,
+            savedBlobSha: await blobSha(this.trackedText(entry)),
+            savedAt: rec?.savedAt ?? Date.now(),
+            proposed: rec?.proposed ?? null,
+            prClosed: rec?.prClosed ?? null,
+            pushed: {
+              owner: target.owner,
+              repo: target.repo,
+              branch: target.branch,
+            },
+          };
+        } else if (rec) {
+          if (rec.savedBlobSha === entry.blobSha) await this.dropRecord(rec);
+          else rec.baseBlobSha = entry.blobSha;
+        }
+      }
       this.persist();
     },
 
@@ -538,12 +624,17 @@ export const useChangesStore = defineStore("changes", {
      * compared against rather than whatever the raw CDN is serving this second.
      */
     async fetchUpstreamText(path: string): Promise<string> {
+      const rec = Object.values(this.index).find((rec) => rec.path === path);
+      const origin = rec ? this.trackedOrigin(rec) : undefined;
+      const git = origin?.kind === "sumo" ? (origin as GitOrigin) : undefined;
       const sha = this.upstreamSha(path);
       if (sha) {
-        const text = await fetchBlobText(sha);
+        const text = await fetchBlobText(sha, git?.owner, git?.repo);
         if (text !== null) return text;
       }
-      const r = await fetch(rawUrl(path));
+      const r = await fetch(
+        git ? git.rawUrl(git.pathOf(rec!.name)) : rawUrl(path),
+      );
       if (!r.ok) throw new Error(`${path}: HTTP ${r.status}`);
       return r.text();
     },

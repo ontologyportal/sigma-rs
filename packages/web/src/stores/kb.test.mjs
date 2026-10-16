@@ -15,9 +15,10 @@ const source = ts.transpileModule(
   },
 ).outputText;
 
-function fixture({ cached = {} } = {}) {
+function fixture({ cached = {}, downloads = [], sha = "commit" } = {}) {
   setActivePinia(createPinia());
   const fetched = [];
+  const events = [];
   const imports = {
     pinia: { defineStore },
     "../constants": {
@@ -41,10 +42,19 @@ function fixture({ cached = {} } = {}) {
       serializeOrigin: (origin) => origin,
       sourceLabel: () => "source",
     },
-    "../api/github": { fetchRepoLastCommit: async () => "commit" },
+    "../api/github": {
+      fetchRepoLastCommit: async (...args) => {
+        events.push(["head", ...args]);
+        return { sha };
+      },
+    },
     "../services/sigma": { call: async () => ({}) },
     "../services/sources": {
-      fetchAllTexts: async () => [],
+      fetchAllTexts: async (entries, limit, progress, pin, upstream) => {
+        events.push(["fetch", entries, pin(entries[0].origin), upstream]);
+        progress(entries.length);
+        return downloads;
+      },
       fetchText: async () => "",
       fromOrigin: async (name) => {
         fetched.push(name);
@@ -67,12 +77,15 @@ function fixture({ cached = {} } = {}) {
     "./wordnet": { useWordNetStore: () => ({ reinstall: async () => {} }) },
     "./changes": {
       blobSha: async () => "sha",
-      useChangesStore: () => ({}),
+      useChangesStore: () => ({
+        forget: async (name) => events.push(["forget", name]),
+      }),
     },
-    "./library": { useLibraryStore: () => ({}) },
+    "./library": { useLibraryStore: () => ({ addRepo: async () => {} }) },
   };
   const exports = {};
   vm.runInNewContext(source, {
+    Error,
     exports,
     require: (name) => imports[name],
     localStorage: {
@@ -82,8 +95,65 @@ function fixture({ cached = {} } = {}) {
     performance,
     setTimeout,
   });
-  return { store: exports.useKBStore(), fetched };
+  return { store: exports.useKBStore(), fetched, events };
 }
+
+const branchOrigin = {
+  kind: "sumo",
+  owner: "alice",
+  repo: "sumo",
+  branch: "work/ontology",
+  label: "alice/sumo@work/ontology",
+  nameFor: (path) => `alice/sumo/${path}`,
+};
+
+test("branch replacement downloads one fresh commit before replacing and ignores old edits", async () => {
+  const { store, events } = fixture({ downloads: ["(new)"] });
+  store.updateBaselines.origin = "old";
+  store.replaceAll = async () => events.push(["replace"]);
+  store.applyChanges = async ({ add }) => {
+    events.push(["apply", add]);
+    return { added: add.length, failed: [] };
+  };
+  const result = await store.loadBranch(branchOrigin, ["Merge.kif"]);
+  assert.equal(result.added, 1);
+  assert.deepEqual(
+    events.map((e) => e[0]),
+    ["head", "fetch", "replace", "forget", "apply"],
+  );
+  assert.equal(events[0][3], "work/ontology");
+  assert.equal(events[0][4].force, true);
+  assert.equal(events[1][2], "commit");
+  assert.equal(events[1][3], true);
+  assert.equal(events[4][1][0].name, "alice/sumo/Merge.kif");
+  assert.equal(events[4][1][0].text, "(new)");
+  assert.equal(store.updateBaselines.origin, "commit");
+});
+
+test("a failed branch download preserves the existing KB and edits", async () => {
+  const { store, events } = fixture({ downloads: [new Error("HTTP 404")] });
+  store.replaceAll = async () => assert.fail("must not replace");
+  await assert.rejects(store.loadBranch(branchOrigin, ["Missing.kif"]), /404/);
+  assert.deepEqual(
+    events.map((e) => e[0]),
+    ["head", "fetch"],
+  );
+});
+
+test("an empty selection or missing branch never replaces the KB", async () => {
+  const { store, events } = fixture({ sha: null });
+  store.replaceAll = async () => assert.fail("must not replace");
+  await assert.rejects(store.loadBranch(branchOrigin, []), /constituent set/);
+  assert.equal(events.length, 0);
+  await assert.rejects(
+    store.loadBranch(branchOrigin, ["Merge.kif"]),
+    /Cannot resolve/,
+  );
+  assert.deepEqual(
+    events.map((e) => e[0]),
+    ["head"],
+  );
+});
 
 test("saved constituent failures do not stop the remaining boot load", async () => {
   const { store, fetched } = fixture();
@@ -139,4 +209,17 @@ test("a file with no cached copy is unavailable and reported", async () => {
     ),
     [["Missing.kif", "HTTP 404"]],
   );
+});
+
+test("replacing the KB clears unavailable files and alerts from the previous branch", async () => {
+  const { store } = fixture();
+  store.unavailable = [
+    { name: "Old.kif", origin: { kind: "sumo" }, reason: "404" },
+  ];
+  store.updateAlerts = [{ key: "old", message: "Old branch changed" }];
+  store.changedOnLoad = [{ key: "old", message: "Old branch changed" }];
+  await store.replaceAll();
+  assert.equal(store.unavailable.length, 0);
+  assert.equal(store.updateAlerts.length, 0);
+  assert.equal(store.changedOnLoad.length, 0);
 });

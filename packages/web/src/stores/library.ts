@@ -101,8 +101,7 @@ function loadPersisted(): { repos: RepoRef[]; entries: LibraryEntry[] } {
   } catch {
     /* corrupt value */
   }
-  // The upstream repo is always registered, always first.
-  repos = [DEFAULT_REPO, ...repos.filter((r) => !isDefaultRepo(r))];
+  if (!repos.length) repos = [DEFAULT_REPO];
   return { repos, entries };
 }
 
@@ -164,7 +163,8 @@ export const useLibraryStore = defineStore("library", {
     catalogRefs: {} as Record<string, string>,
   }),
   getters: {
-    defaultRepo: (state) => state.repos.find(isDefaultRepo) ?? DEFAULT_REPO,
+    defaultRepo: (state) =>
+      state.repos.find(isDefaultRepo) ?? state.repos[0] ?? DEFAULT_REPO,
     repoId: () => repoId,
     entry:
       (state) =>
@@ -173,8 +173,12 @@ export const useLibraryStore = defineStore("library", {
     /** Every non-test file the library knows about. */
     size: (state) =>
       state.entries.filter((e) => !isTestFile(e.name)).length +
-      Object.values(state.catalogs).reduce(
-        (n, c) => n + (c ?? []).filter((e) => !isTestFile(e.path)).length,
+      state.repos.reduce(
+        (n, repo) =>
+          n +
+          (state.catalogs[repoId(repo)] ?? []).filter(
+            (e) => !isTestFile(e.path),
+          ).length,
         0,
       ),
     /** One line for the tables' hint: the catalogs still listing, or the
@@ -210,9 +214,15 @@ export const useLibraryStore = defineStore("library", {
 
     /** List a repo's KIF and test files -- one tree read per repo, shared
      *  with the change tracker for the default repo (which reads `SUMO.ref`). */
-    async loadCatalog(repo: RepoRef, { force = false } = {}): Promise<void> {
+    async loadCatalog(
+      repo: RepoRef,
+      {
+        force = false,
+        ref: requestedRef,
+      }: { force?: boolean; ref?: string } = {},
+    ): Promise<void> {
       const id = repoId(repo);
-      const ref = this.catalogRef(repo);
+      const ref = requestedRef ?? this.catalogRef(repo);
       if (this.catalogs[id] && this.catalogRefs[id] === ref && !force) return;
       delete this.catalogErrors[id];
       try {
@@ -244,8 +254,12 @@ export const useLibraryStore = defineStore("library", {
     },
 
     /** Register a repo, validating it by listing its tree. Rejects
-     *  duplicates and repos with no KIF or test files. */
-    async addRepo(r: RepoRef): Promise<void> {
+     *  duplicates and repos with no KIF or test files. `replace` switches
+     *  the library to this source after successful validation. */
+    async addRepo(
+      r: RepoRef,
+      { replace = false, ref }: { replace?: boolean; ref?: string } = {},
+    ): Promise<void> {
       const repo: RepoRef = {
         owner: r.owner.trim(),
         repo: r.repo.trim(),
@@ -253,16 +267,25 @@ export const useLibraryStore = defineStore("library", {
       };
       if (!repo.owner || !repo.repo)
         throw new Error("Enter a GitHub user and repository name.");
-      if (this.repos.some((x) => sameRepo(x, repo)))
+      if (!replace && this.repos.some((x) => sameRepo(x, repo)))
         throw new Error(
           `${repo.owner}/${repo.repo}@${repo.branch} is already registered.`,
         );
-      await this.loadCatalog(repo);
+      await this.loadCatalog(repo, { ref });
       if (!this.catalogs[repoId(repo)]?.length)
         throw new Error(
           `${repo.owner}/${repo.repo}@${repo.branch} has no .kif or test files.`,
         );
-      this.repos.push(repo);
+      this.repos = replace ? [repo] : [...this.repos, repo];
+      if (replace) {
+        const id = repoId(repo);
+        for (const key of Object.keys(this.catalogs)) {
+          if (key === id) continue;
+          delete this.catalogs[key];
+          delete this.catalogRefs[key];
+          delete this.catalogErrors[key];
+        }
+      }
       this.persist();
     },
 

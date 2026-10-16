@@ -232,3 +232,34 @@ test("catalogs list a pinned source at its accepted commit, and relist when it m
   await f.store.loadCatalog(repo);
   assert.equal(f.trees.length, 2);
 });
+
+test("switching branches replaces the old catalog and persists only the selected source", async () => {
+  const f = fixture();
+  await f.store.loadCatalogs();
+  const target = { owner: "alice", repo: "sumo", branch: "work/ontology" };
+  await f.store.addRepo(target, { replace: true, ref: "selected-commit" });
+  assert.deepEqual(JSON.parse(JSON.stringify(f.store.repos)), [target]);
+  assert.deepEqual(Object.keys(f.store.catalogs), [f.store.repoId(target)]);
+  assert.equal(f.store.size, 1);
+  assert.equal(f.store.catalogRefs[f.store.repoId(target)], "selected-commit");
+  const persisted = JSON.parse(f.stored.get("library"));
+  const restored = fixture({ persisted });
+  assert.deepEqual(JSON.parse(JSON.stringify(restored.store.repos)), [target]);
+  assert.equal(restored.store.defaultRepo.branch, target.branch);
+});
+
+test("a catalog failure preserves the previous registered branch", async () => {
+  const f = fixture();
+  const before = JSON.stringify(f.store.repos);
+  f.store.loadCatalog = async () => {
+    throw new Error("HTTP 404");
+  };
+  await assert.rejects(
+    f.store.addRepo(
+      { owner: "alice", repo: "sumo", branch: "missing" },
+      { replace: true },
+    ),
+    /404/,
+  );
+  assert.equal(JSON.stringify(f.store.repos), before);
+});
