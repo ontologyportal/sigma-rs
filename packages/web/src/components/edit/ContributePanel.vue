@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /**
- * The list of unpushed changes and the pull request that carries them
- * upstream to `ontologyportal/sumo`.
+ * Saved changes can be pushed to their source branch or proposed upstream
+ * to `ontologyportal/sumo` through a pull request.
  *
  * The panel acts on a SELECTION, not on whichever file the editor happens to
  * show: every tracked change (see stores/changes.ts) is listed with a
@@ -20,7 +20,11 @@ import BusyButton from "../BusyButton.vue";
 import StatusLine from "../StatusLine.vue";
 import { useStatus } from "../../composables/useStatus";
 import { SUMO } from "../../constants";
-import { contributeFiles } from "../../api/github";
+import {
+  contributeFiles,
+  pushFiles,
+  createBranchPullRequest,
+} from "../../api/github";
 import { useAuthStore } from "../../stores/auth";
 import {
   useChangesStore,
@@ -28,7 +32,8 @@ import {
   hasRepoPath,
   type ChangeRow,
 } from "../../stores/changes";
-import type { Origin } from "../../models/Origin";
+import { GitOrigin, type Origin } from "../../models/Origin";
+import { useKBStore } from "../../stores/kb";
 import { errMsg } from "../../utils/format";
 
 const props = defineProps<{
@@ -122,6 +127,37 @@ const submitLabel = computed(() => {
     ? `Update pull request #${[...prs.keys()][0]}`
     : "Create pull request";
 });
+const pushTarget = computed(() => {
+  const sources: GitOrigin[] = [];
+  for (const row of chosen.value) {
+    const origin = changes.trackedOrigin(row);
+    const pushed = changes.record(row.name, row.origin)?.pushed;
+    if (row.origin === "sumo") {
+      if (origin?.kind !== "sumo") return null;
+      sources.push(origin as GitOrigin);
+    } else if (pushed) {
+      sources.push(
+        new GitOrigin("github", pushed.owner, pushed.repo, pushed.branch),
+      );
+    }
+  }
+  if (!sources.length) {
+    if (props.current?.origin.kind === "sumo")
+      sources.push(props.current.origin as GitOrigin);
+    else
+      sources.push(
+        ...useKBStore()
+          .constituents.filter((c) => c.origin.kind === "sumo")
+          .map((c) => c.origin as GitOrigin),
+      );
+  }
+  return sources.length && sources.every((s) => s.id === sources[0].id)
+    ? sources[0]
+    : null;
+});
+const pushLabel = computed(() =>
+  pushTarget.value ? `Push to ${pushTarget.value.branch}` : "Push to branch",
+);
 const canSubmit = computed(() => chosen.value.length > 0);
 
 /** A title that describes the selection, not whatever file is open. */
@@ -139,6 +175,7 @@ const submitBusy = ref(false);
 type Result =
   | { kind: "text"; text: string }
   | { kind: "error"; text: string }
+  | { kind: "push"; url: string; target: GitOrigin; count: number }
   | {
       kind: "pr";
       amended: boolean;
@@ -151,7 +188,13 @@ type Result =
 const result = ref<Result | null>(null);
 
 const pathId = (r: ChangeRow) => `ghPath-${rowKey(r)}`;
-const pathOf = (r: ChangeRow) => localPaths.get(rowKey(r)) ?? r.path;
+const pathOf = (r: ChangeRow) => {
+  const source = changes.trackedOrigin(r);
+  return (
+    localPaths.get(rowKey(r)) ??
+    (source?.kind === "sumo" ? (source as GitOrigin).pathOf(r.name) : r.path)
+  );
+};
 
 function toggle(r: ChangeRow, e: Event) {
   const k = rowKey(r);
@@ -206,6 +249,115 @@ watch(
     if (on) onOpened();
   },
 );
+
+async function push() {
+  if (submitBusy.value) return;
+  const picked = [...chosen.value];
+  const target = pushTarget.value;
+  if (!picked.length || !target) {
+    status.set("Select files from one repository and branch to push.", true);
+    return;
+  }
+  const open = props.current;
+  if (
+    open &&
+    picked.some((r) => r.name === open.name && r.origin === open.origin.kind) &&
+    props.dirty
+  ) {
+    status.set(
+      `Save ${open.name} first - the editor has unsaved changes.`,
+      true,
+    );
+    return;
+  }
+  if (!auth.token) {
+    auth.openLoginDialog();
+    return;
+  }
+  submitBusy.value = true;
+  result.value = null;
+  try {
+    const files = picked.map((r) => {
+      const origin = changes.trackedOrigin(r);
+      const rec = changes.record(r.name, r.origin);
+      if (origin?.kind === "sumo" && !rec?.baseBlobSha)
+        throw new Error(
+          `Cannot verify the original version of ${r.name}. Reload it before pushing.`,
+        );
+      return {
+        path:
+          origin?.kind === "sumo"
+            ? (origin as GitOrigin).pathOf(r.name)
+            : pathOf(r).trim(),
+        content: textOf(r),
+        baseBlobSha:
+          origin?.kind === "sumo" || rec?.pushed ? rec!.baseBlobSha : null,
+      };
+    });
+    const pushed = await pushFiles({
+      token: auth.token,
+      owner: target.owner,
+      repo: target.repo,
+      branch: target.branch,
+      files,
+      title: title.value.trim() || defaultTitle(picked),
+      onStep: (message) => status.set(message),
+    });
+    await changes.markPushed(
+      picked.map((r, i) => ({
+        name: r.name,
+        origin: r.origin,
+        path: files[i].path,
+        blobSha: pushed.blobShas[i],
+      })),
+      target,
+    );
+    result.value = {
+      kind: "push",
+      url: pushed.url,
+      target,
+      count: files.length,
+    };
+    status.clear();
+  } catch (e) {
+    status.clear();
+    result.value = { kind: "error", text: errMsg(e) };
+  } finally {
+    submitBusy.value = false;
+  }
+}
+
+async function proposePushedBranch() {
+  if (submitBusy.value || result.value?.kind !== "push") return;
+  if (!auth.token) {
+    auth.openLoginDialog();
+    return;
+  }
+  const pushed = result.value;
+  submitBusy.value = true;
+  try {
+    const pr = await createBranchPullRequest({
+      token: auth.token,
+      headOwner: pushed.target.owner,
+      branch: pushed.target.branch,
+      title: title.value.trim() || "Update SUMO",
+      body: body.value.trim(),
+    });
+    result.value = {
+      kind: "pr",
+      amended: false,
+      url: pr.html_url,
+      number: pr.number,
+      branch: pushed.target.branch,
+      forked: pushed.target.owner !== SUMO.owner,
+      what: `${pushed.count} files`,
+    };
+  } catch (e) {
+    status.fail(e);
+  } finally {
+    submitBusy.value = false;
+  }
+}
 
 async function submit() {
   const token = auth.token;
@@ -362,7 +514,7 @@ async function submit() {
               <input
                 type="checkbox"
                 :checked="selected.has(rowKey(r))"
-                :aria-label="`Include ${r.name} in the pull request`"
+                :aria-label="`Include ${r.name}`"
                 @change="toggle(r, $event)"
               />
               <span class="gh-row-name mono">{{ r.name }}</span>
@@ -415,14 +567,18 @@ async function submit() {
         </template>
       </div>
     </div>
-    <p class="hint intro">
+    <p v-if="pushTarget" class="hint intro">
+      Push saved files directly to <code>{{ pushTarget.label }}</code
+      >, or propose them to upstream SUMO through a pull request.
+    </p>
+    <p v-else class="hint intro">
       Opens a pull request against <code>ontologyportal/sumo</code> with the
       ticked files, as one commit. You will be forked automatically if you lack
       push access.
     </p>
     <div class="settings-grid">
       <div>
-        <label for="ghTitle">Pull request title</label>
+        <label for="ghTitle">Commit / pull request title</label>
         <input
           id="ghTitle"
           v-model="title"
@@ -445,10 +601,21 @@ async function submit() {
       <div class="inline tight">
         <BusyButton
           :busy="submitBusy"
-          :label="submitLabel"
+          :label="pushLabel"
+          busy-label="Pushing..."
+          :disabled="!canSubmit || !pushTarget"
+          @click="push"
+        />
+        <BusyButton
+          :busy="submitBusy"
+          :label="
+            result?.kind === 'push'
+              ? 'Create pull request from this branch'
+              : submitLabel
+          "
           busy-label="Submitting…"
-          :disabled="!canSubmit"
-          @click="submit"
+          :disabled="!canSubmit && result?.kind !== 'push'"
+          @click="result?.kind === 'push' ? proposePushedBranch() : submit()"
         />
       </div>
     </div>
@@ -470,6 +637,12 @@ async function submit() {
           with {{ result.what }} from <code>{{ result.branch }}</code
           >{{ result.forked ? " (via your fork)" : "" }}.</template
         >
+      </template>
+      <template v-else-if="result?.kind === 'push'">
+        Pushed {{ result.count }} file(s) to
+        <code>{{ result.target.label }}</code
+        >.
+        <a :href="result.url" target="_blank" rel="noopener">View commit</a>
       </template>
       <span v-else-if="result?.kind === 'error'" class="bad">{{
         result.text

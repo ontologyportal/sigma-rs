@@ -379,6 +379,9 @@ export const useKBStore = defineStore("kb", {
         await changes.forget(c.name, c.origin.kind);
       this.constituents = [];
       this.saved = [];
+      this.unavailable = [];
+      this.updateAlerts = [];
+      this.changedOnLoad = [];
       persistSaved(this.saved);
       await call("newSession");
       lspReset();
@@ -479,6 +482,51 @@ export const useKBStore = defineStore("kb", {
       const r = await this.applyChanges({ add });
       failed.push(...r.failed);
       return { added: r.added, failed };
+    },
+
+    /** Replace the KB with files from a branch after downloading every input.
+     *  The caller must confirm discarding edits before invoking this action. */
+    async loadBranch(
+      origin: GitOrigin,
+      paths: string[],
+      onProgress?: (done: number, total: number) => void,
+    ): Promise<{ added: number; failed: string[] }> {
+      if (!paths.length) throw new Error("Choose a constituent set to load.");
+      const { sha } = await fetchRepoLastCommit(
+        origin.owner,
+        origin.repo,
+        origin.branch,
+        { force: true },
+      );
+      if (!sha) throw new Error(`Cannot resolve ${origin.label}.`);
+      const entries = paths.map((path) => ({
+        name: origin.nameFor(path),
+        origin,
+      }));
+      const texts = await fetchAllTexts(
+        entries,
+        6,
+        (n) => onProgress?.(n, entries.length),
+        () => sha,
+        true,
+      );
+      const add = entries.map((entry, i) => {
+        const text = texts[i];
+        if (text instanceof Error) throw text;
+        return { ...entry, text };
+      });
+      await useLibraryStore().addRepo(
+        { owner: origin.owner, repo: origin.repo, branch: origin.branch },
+        { replace: true, ref: sha },
+      );
+      await this.replaceAll();
+      for (const { name } of entries)
+        await useChangesStore().forget(name, "sumo");
+      this.updateBaselines[originId(origin)] = sha;
+      persistUpdateBaselines(this.updateBaselines);
+      const result = await this.applyChanges({ add });
+      await flushKbCacheSave();
+      return result;
     },
 
     async resetToMerge() {

@@ -142,6 +142,47 @@ These flags are available on every subcommand:
 on `PATH`; if `--config` is active and the config specifies a vampire
 path, that takes precedence over the `PATH` lookup.
 
+`--branch NAME` selects the branch for `--git URL` (or a Git test-source
+argument). Without it, sigma-rs resolves the remote's default branch.
+
+### Working on a SUMO branch
+
+Use the existing `--git URL --branch NAME` flags to select a published SUMO
+branch. The URL may point to your fork. Branch names containing slashes are
+accepted. Omitting `--branch` uses the remote repository's default branch.
+
+```bash
+# Load the configured constituents from a branch into a separate database.
+sumo -c --git https://github.com/YOUR-USER/sumo --branch work/ontology --db work.lmdb load
+sumo --db work.lmdb man Human
+```
+
+Use a separate `--db` for each branch to keep cached knowledge bases apart.
+To replace an existing database entirely, add `load --flush`; this deletes
+that database before fetching, so use a new database when you need to keep
+the old one if loading fails. Ordinary `load` only reconciles supplied files
+and retains other files already in the database. The branch flag selects
+remote input; it does not switch a local Git checkout or upload edits.
+
+To create work on one computer and load it on another, create and push a
+branch in a SUMO checkout (a fork if you cannot push to the upstream repo):
+
+```bash
+git switch -c work/ontology
+# Edit your KIF files, then commit them.
+git add Merge.kif
+git commit -m "fix: update ontology"
+git push -u origin work/ontology
+```
+
+Run the same `sumo ... --git ... --branch ... load` command on the other
+computer, supplying its constituent configuration or explicit `-f` paths.
+Public repositories can be read without GitHub login. Pushing requires
+GitHub authentication and write access (for example, Git credential manager
+or SSH). sigma-rs does not provide a separate GitHub login command. For a
+private repository, authenticate with Git, clone it locally, check out the
+branch, and load its files with `-f` or `-d`.
+
 ### `sumo validate`
 
 Parse KIF files and semantically validate every formula.

@@ -594,7 +594,7 @@ const ghTitle = computed(() => {
   const n = ghCount.value;
   return n
     ? `GitHub — ${n} file${n === 1 ? "" : "s"} changed and not yet pushed`
-    : "Submit changes to GitHub as a pull request";
+    : "Push changes or create a pull request";
 });
 
 function onPropose() {
@@ -743,7 +743,7 @@ function onJump({ line, col }: { line: number; col: number }) {
             type="button"
             :aria-expanded="ghPanelOpen"
             :title="ghTitle"
-            aria-label="Submit changes to GitHub as a pull request"
+            aria-label="Push changes or create a pull request"
             @click="onPropose"
           >
             <svg
@@ -846,7 +846,7 @@ function onJump({ line, col }: { line: number; col: number }) {
          clicking Save. -->
       <StatusLine :text="saveStatus.text" :error="saveStatus.error" />
 
-      <!-- Contribute the selected changes upstream as a branch + pull request -->
+      <!-- Push selected changes or propose them upstream. -->
       <ContributePanel
         v-show="ghPanelOpen"
         :open="ghPanelOpen"

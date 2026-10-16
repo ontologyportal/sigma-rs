@@ -197,24 +197,6 @@ onBeforeUnmount(() => {
           </div>
         </div>
       </header>
-      <div
-        v-if="
-          boot.assetCacheState === 'caching' || boot.assetCacheState === 'ready'
-        "
-        class="hint"
-        role="status"
-        :title="
-          boot.assetCacheState === 'ready'
-            ? 'Tabs and editing tools are cached. External provers and graph libraries need a connection on first use; GitHub operations need a connection.'
-            : 'Keep using the app while editing tools are cached. External provers and graph libraries download only when used.'
-        "
-      >
-        {{
-          boot.assetCacheState === "ready"
-            ? "Editing ready for server disconnection"
-            : "Preparing editing disconnect protection..."
-        }}
-      </div>
       <div v-if="boot.assetCacheWarning" class="recover-banner" role="status">
         {{ boot.assetCacheWarning }}
       </div>
