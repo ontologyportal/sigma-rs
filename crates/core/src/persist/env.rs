@@ -35,7 +35,7 @@ const MAP_SIZE: usize = 10 * 1024 * 1024 * 1024; // 10 GiB virtual
 /// On-disk format revision for the cache-snapshot store.  Bump on an
 /// incompatible change to any persisted cache's serialized shape; a mismatched
 /// stamp means "ignore the persisted blobs and rebuild from a cold load".
-const FORMAT_VERSION: u64 = 1;
+const FORMAT_VERSION: u64 = 3;
 
 const DB_CACHES: &str = "caches"; // cache NAME -> bincode blob
 const DB_META: &str = "meta"; // "format_version" -> 8-byte LE u64

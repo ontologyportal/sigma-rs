@@ -36,6 +36,24 @@ pub fn default_budget() -> usize {
         .unwrap_or(2000)
 }
 
+/// Whether pinned-owner selection is on by default
+/// ([`SineParams::pinned_ownership`]).
+///
+/// On, unless the `SIGMA_PINNED_OWNERSHIP_DISABLE` environment variable is
+/// set to something other than an empty string, `0` or `false`.  Fixed-tolerance
+/// and whole-KB constructors keep it off regardless.
+pub fn default_pinned_ownership() -> bool {
+    !parse_flag(
+        std::env::var("SIGMA_PINNED_OWNERSHIP_DISABLE")
+            .ok()
+            .as_deref(),
+    )
+}
+
+fn parse_flag(value: Option<&str>) -> bool {
+    value.is_some_and(|v| !matches!(v, "" | "0" | "false"))
+}
+
 /// Upper bound on the tolerance the auto-selector will climb to.
 ///
 /// Beyond the empirical plateau (~20 for the AFP; far lower for SUMO/CYC)
@@ -94,6 +112,23 @@ pub struct SineParams {
     /// `select_all` is `false`; a fixed tolerance ([`Self::benevolent`] /
     /// [`Self::strict`]) and whole-KB mode run single-shot.
     pub autoscale: bool,
+    /// Pinned-owner selection.  Ground taxonomy edges (`subclass`, `instance`,
+    /// `subrelation`, `subAttribute`) are owned by their first argument (the
+    /// child) and `domain` / `range` declarations by the relation they
+    /// describe, instead of by whichever symbol is least general.  The owner
+    /// selects them at any tolerance, no other symbol does, and the symbols
+    /// they mention are pulled into the fan-out with their own pinned axioms
+    /// chased to closure regardless of [`Self::depth_limit`] -- giving the
+    /// full superclass chain of every reached symbol and the classes (with
+    /// superclasses) of every reached relation's signature.  The relation
+    /// list is `pins::TAXONOMY_PINS` and `pins::SIGNATURE_PINS` plus every
+    /// relation the KB declares transitive.  Under an auto budget, when even
+    /// the strictest tolerance overruns, the pinned chain is truncated by
+    /// depth until the selection fits.  Default `true` for [`Self::default`] and
+    /// [`Self::auto`], switched off by the `SIGMA_PINNED_OWNERSHIP_DISABLE`
+    /// environment variable (see [`default_pinned_ownership`]); the
+    /// fixed-tolerance and whole-KB constructors leave it `false`.
+    pub pinned_ownership: bool,
 }
 
 impl Default for SineParams {
@@ -104,6 +139,7 @@ impl Default for SineParams {
             auto_budget: Some(default_budget()),
             select_all: false,
             autoscale: true,
+            pinned_ownership: default_pinned_ownership(),
         }
     }
 }
@@ -118,6 +154,7 @@ impl SineParams {
             auto_budget: None,
             select_all: false,
             autoscale: false,
+            pinned_ownership: false,
         }
     }
     /// Benevolent: a fixed user-supplied tolerance, clamped to ≥ 1.0.
@@ -129,6 +166,7 @@ impl SineParams {
             auto_budget: None,
             select_all: false,
             autoscale: false,
+            pinned_ownership: false,
         }
     }
     /// Auto-tolerance with a budget given as a percentage (0-100, clamped)
@@ -154,6 +192,7 @@ impl SineParams {
             auto_budget: Some(budget),
             select_all: false,
             autoscale: true,
+            pinned_ownership: default_pinned_ownership(),
         }
     }
     /// No preselection: select the entire KB (every axiom).  Equivalent
@@ -165,6 +204,7 @@ impl SineParams {
             auto_budget: None,
             select_all: true,
             autoscale: false,
+            pinned_ownership: false,
         }
     }
 
@@ -238,6 +278,22 @@ pub fn scale_signature_predvar_cap() -> usize {
         .and_then(|s| s.parse().ok())
         .filter(|&n| n >= 1)
         .unwrap_or(256)
+}
+
+#[cfg(test)]
+mod pinned_flag_tests {
+    use super::parse_flag;
+
+    #[test]
+    fn flag_is_on_for_any_value_except_empty_zero_and_false() {
+        assert!(!parse_flag(None));
+        for off in ["", "0", "false"] {
+            assert!(!parse_flag(Some(off)), "{off:?}");
+        }
+        for on in ["1", "true", "yes", "on"] {
+            assert!(parse_flag(Some(on)), "{on:?}");
+        }
+    }
 }
 
 #[cfg(test)]

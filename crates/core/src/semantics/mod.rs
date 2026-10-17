@@ -15,7 +15,7 @@ pub mod validate;
 #[cfg_attr(not(feature = "native-prover"), allow(dead_code))]
 pub(crate) mod roles;
 
-use crate::cache::{Cache, CacheBehavior, CacheConfig, EagerMap, WholeCache};
+use crate::cache::{Cache, CacheBehavior, CacheConfig, Eager, EagerMap, WholeCache};
 use crate::layer::Layer;
 use crate::semantics::taxonomy::TaxRelation;
 use crate::syntactic::SyntacticLayer;
@@ -38,6 +38,7 @@ use caches::range::Range;
 use caches::subrel_lattice::SubrelLattice;
 use caches::tax_edges::TaxEdges;
 use caches::trans_reach::TransReach;
+use caches::transitive_relations::TransitiveRelations;
 use caches::validate::Validate;
 
 /// Middle layer of the KB stack, owning the [`SyntacticLayer`] and providing
@@ -92,6 +93,8 @@ pub struct SemanticLayer {
     /// Ground-fact reachability per (relation, start), with witness
     /// pointers.  See [`caches::trans_reach`].
     pub(crate) trans_reach: Cache<TransReach>,
+    /// Relations the KB declares transitive.  See [`caches::transitive_relations`].
+    pub(crate) transitive_relations: Eager<TransitiveRelations>,
 
     /// Shape-recognized taxonomy roles (`SIGMA_RECOGNIZE_ROLES`).  When set,
     /// `tax_role_of` classifies edges against these ids instead of the
@@ -132,6 +135,7 @@ impl SemanticLayer {
             inferred_class: Cache::new(cfg, InferredClass),
             subrel_lattice: Cache::new(cfg, SubrelLattice),
             trans_reach: Cache::new(cfg, TransReach),
+            transitive_relations: Eager::new(cfg, TransitiveRelations),
             tax_roles: std::sync::OnceLock::new(),
         };
         use crate::layer::Layer;
@@ -261,7 +265,10 @@ impl SemanticLayer {
         self.inferred_class.clear();
         self.subrel_lattice.clear();
         self.trans_reach.clear();
+        self.transitive_relations
+            .modify(|set| *set = Default::default());
         self.tax_edges.initialize(self);
+        self.transitive_relations.initialize(self);
     }
 }
 
@@ -305,6 +312,7 @@ impl Layer for SemanticLayer {
             bind(&self.inferred_class, self),
             bind(&self.subrel_lattice, self),
             bind(&self.trans_reach, self),
+            bind(&self.transitive_relations, self),
             bind(&self.validate, self),
         ]
     }
@@ -317,6 +325,7 @@ impl Layer for SemanticLayer {
 
     fn initialize_own_caches(&self) {
         self.tax_edges.initialize(self);
+        self.transitive_relations.initialize(self);
     }
 }
 

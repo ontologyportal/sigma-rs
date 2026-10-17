@@ -45,6 +45,7 @@ SUMO_RELATION_CLASS    = "Relation"
 SUMO_PREDICATE_CLASS   = "Predicate"
 SUMO_FUNCTION_CLASS    = "Function"
 SUMO_INSTANCE_RELATION = "instance"
+SUMO_TRANSITIVE_RELATION_CLASS = "TransitiveRelation"
 
 # ----------------------------------------------------------------------------
 # SUMO Arity Classes

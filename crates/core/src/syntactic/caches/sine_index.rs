@@ -33,7 +33,11 @@ impl EagerBehavior for SineCache {
     }
 
     fn consumes(&self) -> &'static [EventKind] {
-        &[EventKind::AxiomsPromoted, EventKind::RootRemoved]
+        &[
+            EventKind::AxiomsPromoted,
+            EventKind::RootRemoved,
+            EventKind::TransitiveRelationsChanged,
+        ]
     }
 
     // `react` derives each promoted sid's symbols via `parent.sentence_symbols`,
@@ -49,6 +53,15 @@ impl EagerBehavior for SineCache {
         store: &EagerIndex<SineIndex>,
     ) -> Vec<Event> {
         store.update_with(|idx| {
+            // The transitive set is settled before promotions are indexed, so
+            // facts promoted in the same batch pin under the up-to-date set.
+            for e in events {
+                if let Event::TransitiveRelationsChanged { added, removed } = e {
+                    idx.update_transitive(added, removed, |sid, transitive| {
+                        parent.pin_for(sid, transitive)
+                    });
+                }
+            }
             for e in events {
                 match e {
                     Event::AxiomsPromoted { sids } => {
@@ -71,6 +84,14 @@ impl EagerBehavior for SineCache {
                         } else {
                             for sid in sids {
                                 idx.add_axiom(*sid, parent.sentence_symbols(*sid));
+                            }
+                        }
+                        // Pins do not depend on generality, so they are
+                        // registered now even for deferred axioms.
+                        for &sid in sids {
+                            let pin = parent.pin_for(sid, &idx.transitive);
+                            if let Some(pin) = pin {
+                                idx.pin(sid, pin);
                             }
                         }
                     }

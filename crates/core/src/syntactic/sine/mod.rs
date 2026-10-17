@@ -20,6 +20,7 @@
 // Submodules (split by responsibility):
 //   params.rs — tuning knobs (`SineParams`, tolerance / budget defaults, scale_*)
 //   index.rs  — the `SineIndex` data structure + incremental maintenance
+//   pins.rs   - which axioms are pinned to which argument (pinned selection)
 //   select.rs — the selection BFS + auto-tolerance budget search
 //   layer.rs  — the `SyntacticLayer` glue (symbol extraction + entry points)
 //
@@ -31,8 +32,10 @@
 mod index;
 mod layer;
 mod params;
+mod pins;
 mod select;
 
+pub(crate) use index::Pin;
 pub use index::SineIndex;
 pub use params::*;
 

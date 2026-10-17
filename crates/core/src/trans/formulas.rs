@@ -614,6 +614,57 @@ mod tests {
         );
     }
 
+    const INTEGER_ARITHMETIC_SIGNATURES: &str = "
+        (subclass Integer RationalNumber)
+        (subclass RationalNumber RealNumber)
+        (subclass BinaryFunction Function)
+        (subclass Function Relation)
+        (instance age BinaryPredicate)
+        (domain age 2 Integer)
+        (instance AdditionFn BinaryFunction)
+        (domain AdditionFn 1 RealNumber)
+        (domain AdditionFn 2 RealNumber)
+        (range AdditionFn RealNumber)
+        (instance DivisionFn BinaryFunction)
+        (domain DivisionFn 1 RealNumber)
+        (domain DivisionFn 2 RealNumber)
+        (range DivisionFn RealNumber)";
+
+    /// The TFF rendering of the root whose KIF mentions `marker`.
+    fn tff_of(trans: &TranslationLayer, marker: &str) -> String {
+        let sid = roots_of(trans)
+            .into_iter()
+            .find(|&sid| {
+                crate::syntactic::sentence_to_plain_kif(sid, &trans.semantic.syntactic)
+                    .contains(marker)
+            })
+            .expect("root present");
+        let cf = trans.formula_tff(sid).expect("should convert");
+        crate::trans::ir::tptp_emit::formula_to_tptp(&cf.formula)
+    }
+
+    #[test]
+    fn formula_tff_integer_arithmetic_stays_integer_despite_real_declaration() {
+        let trans = make_trans(&format!(
+            "{INTEGER_ARITHMETIC_SIGNATURES}
+            (=> (age ?X ?N) (lessThan (AdditionFn ?N 1) 10))"
+        ));
+        let tptp = tff_of(&trans, "lessThan");
+        assert!(tptp.contains("$less($sum(X1,1),10)"), "{tptp}");
+        assert!(!tptp.contains("$to_real"), "{tptp}");
+    }
+
+    #[test]
+    fn formula_tff_integer_division_keeps_exact_real_division() {
+        let trans = make_trans(&format!(
+            "{INTEGER_ARITHMETIC_SIGNATURES}
+            (=> (age ?X ?N) (lessThan (DivisionFn ?N 2) 10))"
+        ));
+        let tptp = tff_of(&trans, "lessThan");
+        assert!(tptp.contains("$quotient($to_real(X1),2.0)"), "{tptp}");
+        assert!(!tptp.contains("$quotient_e"), "{tptp}");
+    }
+
     #[test]
     fn formula_tff_has_declarations() {
         // A predicate in TFF mode should produce pred_decls in the cached entry.

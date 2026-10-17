@@ -128,12 +128,21 @@ impl SyntacticLayer {
         // within the budget.  Otherwise honour the fixed tolerance.
         let (selected, effective_tol, mode) = match params.auto_budget {
             Some(budget) => {
-                let (chosen, set) =
-                    self.select_axioms_within_budget(&seed, budget, params.depth_limit);
+                let (chosen, set) = self.select_axioms_within_budget(
+                    &seed,
+                    budget,
+                    params.depth_limit,
+                    params.pinned_ownership,
+                );
                 (set, chosen, format!("auto (budget {})", budget))
             }
             None => {
-                let set = self.select_axioms(&seed, params.tolerance, params.depth_limit);
+                let set = self.select_axioms(
+                    &seed,
+                    params.tolerance,
+                    params.depth_limit,
+                    params.pinned_ownership,
+                );
                 (set, params.tolerance, "fixed".to_string())
             }
         };

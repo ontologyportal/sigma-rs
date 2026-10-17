@@ -25,6 +25,7 @@ pub(crate) mod domain;
 pub(crate) mod range;
 pub(crate) mod subrel_lattice;
 pub(crate) mod trans_reach;
+pub(crate) mod transitive_relations;
 
 // Documentation
 pub(crate) mod defining_sentences;

@@ -167,3 +167,158 @@ impl<L: Layer + TopLayer> KnowledgeBase<L> {
         self.layer.semantic().syntactic.filter_excluded_heads(sids)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+    use std::path::PathBuf;
+
+    use crate::{KnowledgeBase, SineParams};
+
+    fn load(kb: &mut KnowledgeBase, file: &str, kif: &str) {
+        let r = kb.reload_kif(kif, &PathBuf::from(file), file);
+        assert!(r.ok, "ingest: {:?}", r.diagnostics);
+        kb.make_session_axiomatic(file).expect("promote");
+    }
+
+    /// Name of the symbol the root whose plain KIF is `kif` is pinned to.
+    fn pinned_to(kb: &KnowledgeBase, kif: &str) -> Option<String> {
+        let syn = kb.store_for_testing();
+        let sid = syn
+            .root_sids()
+            .into_iter()
+            .find(|&sid| crate::syntactic::display::sentence_to_plain_kif(sid, syn) == kif)
+            .unwrap_or_else(|| panic!("no root {kif}"));
+        let pin = syn.sine.with_ref(|idx| idx.pinned_of(sid))?;
+        Some(syn.sym_name(pin.owner).unwrap().name().to_string())
+    }
+
+    #[test]
+    fn facts_of_a_declared_transitive_relation_are_pinned_to_their_first_argument() {
+        let mut kb = KnowledgeBase::new();
+        load(
+            &mut kb,
+            "a.kif",
+            "(instance part TransitiveRelation)\n(part Wheel Car)\n(color Sky Blue)",
+        );
+        assert_eq!(pinned_to(&kb, "(part Wheel Car)").as_deref(), Some("Wheel"));
+        assert_eq!(pinned_to(&kb, "(color Sky Blue)"), None);
+    }
+
+    #[test]
+    fn a_later_declaration_pins_existing_facts_and_its_removal_unpins_them() {
+        let mut kb = KnowledgeBase::new();
+        load(&mut kb, "facts.kif", "(part Wheel Car)");
+        assert_eq!(pinned_to(&kb, "(part Wheel Car)"), None);
+
+        load(&mut kb, "decl.kif", "(instance part TransitiveRelation)");
+        assert_eq!(pinned_to(&kb, "(part Wheel Car)").as_deref(), Some("Wheel"));
+
+        kb.reload_kif(
+            "(instance other TransitiveRelation)",
+            &PathBuf::from("decl.kif"),
+            "decl.kif",
+        );
+        kb.commit("decl.kif");
+        assert_eq!(pinned_to(&kb, "(part Wheel Car)"), None);
+    }
+
+    #[test]
+    fn inherited_instances_pin_but_subrelations_of_a_transitive_relation_do_not() {
+        let mut kb = KnowledgeBase::new();
+        load(
+            &mut kb,
+            "a.kif",
+            "(subclass PartialOrderingRelation TransitiveRelation)\n\
+             (instance lessThan PartialOrderingRelation)\n\
+             (lessThan One Two)\n\
+             (instance ancestor TransitiveRelation)\n\
+             (subrelation parent ancestor)\n\
+             (parent Al Bo)\n\
+             (ancestor Al Cy)",
+        );
+        assert_eq!(pinned_to(&kb, "(lessThan One Two)").as_deref(), Some("One"));
+        assert_eq!(pinned_to(&kb, "(ancestor Al Cy)").as_deref(), Some("Al"));
+        assert_eq!(pinned_to(&kb, "(parent Al Bo)"), None);
+    }
+
+    #[test]
+    fn transitive_facts_are_selected_from_their_first_argument_even_when_it_is_common() {
+        let mut kb = KnowledgeBase::new();
+        load(
+            &mut kb,
+            "a.kif",
+            "(instance part TransitiveRelation)\n\
+             (part Wheel Car)\n\
+             (instance W1 Wheel)\n\
+             (instance W2 Wheel)\n\
+             (instance W3 Wheel)",
+        );
+        let wheel: HashSet<_> = [kb.store_for_testing().sym_id("Wheel").unwrap()].into();
+        let on = SineParams {
+            pinned_ownership: true,
+            ..SineParams::strict()
+        };
+        assert!(kb
+            .sine_select_with_seed(wheel.clone(), SineParams::strict())
+            .is_empty());
+        let syn = kb.store_for_testing();
+        let selected: HashSet<String> = kb
+            .sine_select_with_seed(wheel, on)
+            .into_iter()
+            .map(|sid| crate::syntactic::display::sentence_to_plain_kif(sid, syn))
+            .collect();
+        // The fact, and (reached through `part`) the declaration that makes
+        // the relation transitive.
+        assert_eq!(
+            selected,
+            HashSet::from([
+                "(part Wheel Car)".to_string(),
+                "(instance part TransitiveRelation)".to_string(),
+            ])
+        );
+    }
+
+    /// Promotion goes through the `AxiomsPromoted` reactor, which must
+    /// register the pins; selection then follows the pinned relation.
+    #[test]
+    fn pinned_ownership_applies_to_promoted_axioms() {
+        let mut kb = KnowledgeBase::new();
+        let r = kb.reload_kif(
+            "(subclass Dog Animal)\n\
+             (subclass Animal Entity)\n\
+             (instance Rex Dog)\n\
+             (instance Fido Dog)\n\
+             (instance Spot Dog)",
+            &std::path::PathBuf::from("pin.kif"),
+            "load",
+        );
+        assert!(r.ok, "ingest: {:?}", r.diagnostics);
+        kb.make_session_axiomatic("load").expect("promote");
+
+        let seed = || {
+            let dog = kb.store_for_testing().sym_id("Dog").unwrap();
+            std::collections::HashSet::from([dog])
+        };
+        let off = SineParams::strict();
+        let on = SineParams {
+            pinned_ownership: true,
+            ..SineParams::strict()
+        };
+        assert!(kb.sine_select_with_seed(seed(), off).is_empty());
+        let selected = kb.sine_select_with_seed(seed(), on);
+        assert_eq!(selected.len(), 2, "Dog's edge and the chain above it");
+    }
+
+    #[test]
+    fn pinned_ownership_defaults_follow_the_environment_and_fixed_modes_stay_off() {
+        let default = crate::syntactic::sine::default_pinned_ownership();
+        assert_eq!(SineParams::default().pinned_ownership, default);
+        assert_eq!(SineParams::auto(10).pinned_ownership, default);
+        assert!(!SineParams::strict().pinned_ownership);
+        assert!(!SineParams::benevolent(2.0).pinned_ownership);
+        assert!(!SineParams::whole_kb().pinned_ownership);
+        let from_json: SineParams = serde_json::from_str("{}").unwrap();
+        assert_eq!(from_json.pinned_ownership, default);
+    }
+}

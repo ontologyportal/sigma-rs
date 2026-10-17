@@ -526,6 +526,7 @@ a CLI flag:
 | `backward_ms` | `SIGMA_BACKWARD_MS` | `800` | Wall-clock cap (ms) for backward chaining |
 | `backward_nodes` | `SIGMA_BACKWARD_NODES` | `200_000` | Search-node cap for backward chaining |
 | `cores` | `SIGMA_CORES` | `available_parallelism()` | Portfolio-lane worker-thread cap (concurrent TPTP lane racing) |
+| `selection` (`SineParams.pinned_ownership`) | `SIGMA_PINNED_OWNERSHIP_DISABLE` | on | Set (to anything but an empty string, `0` or `false`) to turn off pinned-owner SInE selection. When on, taxonomy edges (`subclass`, `instance`, `subrelation`, `subAttribute`) are owned by their first argument, `domain`/`range` declarations by the relation they describe, and ground facts of any relation the KB declares transitive by their first argument; the owner selects them at any tolerance, the symbols they mention join the fan-out, and the superclass chain is followed past `depth_limit`. Under an auto budget, if the strictest tolerance still overruns, the chain is truncated by depth until it fits. Read by `SineParams::default()` / `SineParams::auto()`, so it applies to the native and external backends alike; fixed-tolerance (`--scope`) and `--full-kb` selection ignore it |
 
 `max_lits` also has a `SIGMA_MAX_LITS` env override applied post-construction
 in `NativeProver::new` (distinct from, and layered on top of, the CLI/config
