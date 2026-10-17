@@ -22,6 +22,7 @@ use std::collections::HashMap;
 
 use crate::semantics::consts::{
     DOMAIN_RELATION, INSTANCE_RELATION, RANGE_RELATION, SUBCLASS_RELATION, SUBRELATION_RELATION,
+    TRANSITIVE_RELATION_CLASS,
 };
 use crate::semantics::taxonomy::TaxRelation;
 
@@ -76,7 +77,7 @@ impl Default for TaxonomyRoles {
             instance: INSTANCE_RELATION.id(),
             subclass: SUBCLASS_RELATION.id(),
             subrelation: SUBRELATION_RELATION.id(),
-            transitive: Symbol::hash_name("TransitiveRelation"),
+            transitive: TRANSITIVE_RELATION_CLASS.id(),
             symmetric: Symbol::hash_name("SymmetricRelation"),
             domain: DOMAIN_RELATION.id(),
             range: RANGE_RELATION.id(),

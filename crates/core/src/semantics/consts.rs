@@ -30,6 +30,7 @@ define_symbols_from_env! {
     RELATION_CLASS        => "SUMO_RELATION_CLASS",
     PREDICATE_CLASS       => "SUMO_PREDICATE_CLASS",
     FUNCTION_CLASS        => "SUMO_FUNCTION_CLASS",
+    TRANSITIVE_RELATION_CLASS => "SUMO_TRANSITIVE_RELATION_CLASS",
 
     // --- Taxonomy Relations ---
     SUBCLASS_RELATION     => "SUMO_SUBCLASS_RELATION",
@@ -42,6 +43,13 @@ define_symbols_from_env! {
     RANGE_SUB_REL_CLASS      => "SUMO_RANGE_SUBCLASS_RELATION",
     DOMAIN_RELATION          => "SUMO_DOMAIN_RELATION",
     RANGE_RELATION           => "SUMO_RANGE_RELATION",
+
+    // --- List/function term definitions used by signature-rule reduction ---
+    #[cfg(feature = "external-prover")]
+    LIST_FN                  => "SUMO_LIST_FN",
+    #[cfg(feature = "external-prover")]
+    LIST_ORDER_FN            => "SUMO_LIST_ORDER_FN",
+    ASSIGNMENT_FN            => "SUMO_ASSIGNMENT_FN",
 
     // --- Metadata Relations ---
     DOC_RELATION          => "SUMO_DOC_RELATION",
@@ -63,7 +71,7 @@ define_symbols_from_env! {
 
 symbol_set!(
     /// The documentation/metadata relations (`documentation`, `format`,
-    /// `termFormat`) — the subset of the env-derived symbols carrying
+    /// `termFormat`) - the subset of the env-derived symbols carrying
     /// human-facing descriptions, for code that processes only those.
     DOCUMENTATION_RELATIONS => DOC_RELATION, FORMAT_RELATION, TERM_RELATION
 );

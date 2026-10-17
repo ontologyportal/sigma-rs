@@ -1,3 +1,5 @@
+#![cfg(any(feature = "external-prover", feature = "native-prover"))]
+
 use sigmakee_rs_core::prover::proof::formula_to_kif;
 
 #[test]

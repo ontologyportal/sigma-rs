@@ -2,9 +2,9 @@
 
 use super::*;
 
-use super::augment::substitute_var;
 use super::extract::var_appears_as_predicate;
 use super::preprocess::most_specific;
+use super::subst::substitute_var;
 use crate::cache::{CacheConfig, EagerMap};
 use crate::parse::ast::OpKind;
 use crate::semantics::SemanticLayer;

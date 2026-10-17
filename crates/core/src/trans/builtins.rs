@@ -157,6 +157,15 @@ impl SumoArith {
         )
     }
 
+    /// `true` when the operation's TPTP interpretation at its arguments' own
+    /// numeric sort agrees with the SUMO operation, so a call need not be
+    /// widened to the sort SUMO declares for it (`$int + $int` stays `$int`).
+    /// `DivisionFn` is excluded: at `$int` it emits Euclidean `$quotient_e`,
+    /// while SUMO division is exact.
+    pub(crate) fn exact_at_argument_sort(&self) -> bool {
+        !matches!(self, Self::DivisionFn)
+    }
+
     /// Build the typed IR predicate for this comparison, using `sort` to
     /// select the Int / Rat / Real `Interp` family.
     ///

@@ -12,6 +12,14 @@ use super::params::default_tolerance;
 
 // -- SineIndex ---------------------------------------------------------------
 
+/// How an axiom is pinned: the symbol that owns it and whether the symbols
+/// reached through it are traversed outside the depth limit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Pin {
+    pub owner: SymbolId,
+    pub depth_exempt: bool,
+}
+
 /// Eagerly-maintained SInE index.
 ///
 /// Owned by [`SyntacticLayer`] as the `sine` field. Use the
@@ -58,6 +66,21 @@ pub struct SineIndex {
     /// g_min values can change.
     pub(in crate::syntactic::sine) sym_to_owned: HashMap<SymbolId, HashSet<SentenceId>>,
 
+    /// Pin per axiom (see [`Self::pin`]).  Independent of generality, so it
+    /// never needs recomputing when `occ` changes.
+    #[serde(default)]
+    pub(in crate::syntactic::sine) pinned_owner: HashMap<SentenceId, Pin>,
+
+    /// Inverse of [`Self::pinned_owner`]: the axioms each symbol owns.
+    #[serde(default)]
+    pub(in crate::syntactic::sine) pinned_by_owner: HashMap<SymbolId, Vec<SentenceId>>,
+
+    /// Relations the KB declares transitive, as last reported by the
+    /// `TransitiveRelationsChanged` event.  Their ground facts are pinned
+    /// like the static pinned relations.
+    #[serde(default)]
+    pub(crate) transitive: HashSet<SymbolId>,
+
     /// Which-code-path counters, used by unit tests to verify that the bulk
     /// rebuild and incremental paths fire as expected.
     #[serde(skip)]
@@ -80,6 +103,9 @@ impl Default for SineIndex {
             axiom_g_min: HashMap::new(),
             sym_to_axioms: HashMap::new(),
             sym_to_owned: HashMap::new(),
+            pinned_owner: HashMap::new(),
+            pinned_by_owner: HashMap::new(),
+            transitive: HashSet::new(),
             stats: AddAxiomStats::default(),
             pending: Vec::new(),
         }
@@ -169,6 +195,71 @@ impl SineIndex {
     /// The symbol set of an indexed axiom. `None` if `sid` is not tracked.
     pub fn symbols_of_axiom(&self, sid: SentenceId) -> Option<&HashSet<SymbolId>> {
         self.axiom_syms.get(&sid)
+    }
+
+    /// Pin `sid`: under pinned selection only `pin.owner` triggers the axiom,
+    /// and it does so regardless of tolerance and generality.  Idempotent;
+    /// re-pinning to a different owner moves the pin.
+    pub(crate) fn pin(&mut self, sid: SentenceId, pin: Pin) {
+        match self.pinned_owner.insert(sid, pin) {
+            Some(old) if old.owner == pin.owner => return,
+            Some(old) => self.drop_from_inverse(old.owner, sid),
+            None => {}
+        }
+        self.pinned_by_owner.entry(pin.owner).or_default().push(sid);
+    }
+
+    /// How `sid` is pinned, if it is.
+    #[cfg_attr(not(test), allow(dead_code))]
+    #[inline]
+    pub(crate) fn pinned_of(&self, sid: SentenceId) -> Option<Pin> {
+        self.pinned_owner.get(&sid).copied()
+    }
+
+    fn drop_from_inverse(&mut self, owner: SymbolId, sid: SentenceId) {
+        if let Some(v) = self.pinned_by_owner.get_mut(&owner) {
+            v.retain(|&a| a != sid);
+            if v.is_empty() {
+                self.pinned_by_owner.remove(&owner);
+            }
+        }
+    }
+
+    /// Apply a change to the set of transitive relations and re-pin every
+    /// indexed fact that mentions an affected relation: `pin_for` gives each
+    /// sentence's pin under the updated set (`None` unpins it).
+    pub(crate) fn update_transitive(
+        &mut self,
+        added: &[SymbolId],
+        removed: &[SymbolId],
+        pin_for: impl Fn(SentenceId, &HashSet<SymbolId>) -> Option<Pin>,
+    ) {
+        // Promotions still deferred are invisible to `sym_to_axioms`.
+        self.flush_pending();
+        for r in removed {
+            self.transitive.remove(r);
+        }
+        self.transitive.extend(added.iter().copied());
+        let affected: HashSet<SentenceId> = added
+            .iter()
+            .chain(removed)
+            .filter_map(|r| self.sym_to_axioms.get(r))
+            .flatten()
+            .map(|&(_, sid)| sid)
+            .collect();
+        for sid in affected {
+            let pin = pin_for(sid, &self.transitive);
+            match pin {
+                Some(pin) => self.pin(sid, pin),
+                None => self.unpin(sid),
+            }
+        }
+    }
+
+    pub(crate) fn unpin(&mut self, sid: SentenceId) {
+        if let Some(pin) = self.pinned_owner.remove(&sid) {
+            self.drop_from_inverse(pin.owner, sid);
+        }
     }
 
     // -- Sorted-Vec helpers --------------------------------------------------
@@ -301,6 +392,7 @@ impl SineIndex {
         if !self.pending.is_empty() {
             self.pending.retain(|(p, _)| *p != sid);
         }
+        self.unpin(sid);
         let Some(syms) = self.axiom_syms.remove(&sid) else {
             return;
         };
@@ -406,6 +498,21 @@ impl SineIndex {
             self.insert_entry(a, &syms);
         }
 
+        // Pins are independent of generality and survive a rebuild, but only
+        // for axioms the rebuilt index still tracks.
+        let tracked = &self.axiom_syms;
+        self.pinned_owner.retain(|sid, _| tracked.contains_key(sid));
+        let mut pins: Vec<(SentenceId, SymbolId)> = self
+            .pinned_owner
+            .iter()
+            .map(|(&sid, pin)| (sid, pin.owner))
+            .collect();
+        pins.sort_unstable();
+        self.pinned_by_owner.clear();
+        for (sid, owner) in pins {
+            self.pinned_by_owner.entry(owner).or_default().push(sid);
+        }
+
         crate::emit_event!(crate::progress::ProgressEvent::Log {
             level: crate::progress::LogLevel::Debug,
             target: "sigmakee_rs_core::sine",
@@ -425,6 +532,9 @@ impl SineIndex {
         self.axiom_g_min.clear();
         self.sym_to_axioms.clear();
         self.sym_to_owned.clear();
+        self.pinned_owner.clear();
+        self.pinned_by_owner.clear();
+        self.transitive.clear();
     }
 
     // -- Internal helpers ----------------------------------------------------

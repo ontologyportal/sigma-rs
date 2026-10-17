@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use smallvec::smallvec;
 
-use super::augment::collect_conjuncts;
+use super::subst::{collect_conjuncts, decompose_implication};
 use crate::parse::ast::OpKind;
 use crate::semantics::SemanticLayer;
 use crate::syntactic::SyntacticLayer;
@@ -156,21 +156,6 @@ pub(crate) fn inject_domain_guards(
     }
 
     new_sids
-}
-
-/// Decompose `(=> Sub(ant) Sub(con))`.  Returns `None` for any other shape.
-pub(super) fn decompose_implication(
-    syntactic: &SyntacticLayer,
-    sid: SentenceId,
-) -> Option<(SentenceId, SentenceId)> {
-    let s = syntactic.sentence(sid)?;
-    if !matches!(s.elements.first(), Some(Element::Op(OpKind::Implies))) {
-        return None;
-    }
-    match (s.elements.get(1), s.elements.get(2)) {
-        (Some(Element::Sub(a)), Some(Element::Sub(c))) => Some((*a, *c)),
-        _ => None,
-    }
 }
 
 /// Walk the sentence tree rooted at `sid`, recording every

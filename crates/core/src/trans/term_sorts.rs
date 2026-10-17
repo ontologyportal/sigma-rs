@@ -168,12 +168,31 @@ impl TranslationLayer {
     /// declaration is silent (Individual), the actual is an un-coercible `$i`
     /// term, or the actual is *wider* than the declaration (no narrowing
     /// coercion exists; emitting the declared sort there would be ill-typed).
+    /// Interpreted arithmetic exact at its arguments' sort (see
+    /// [`SumoArith::exact_at_argument_sort`]) ignores the declaration and
+    /// keeps the actual sorts.
     pub(in crate::trans) fn resolve_call_sorts(
         &self,
         rel: SymbolId,
         actual: &[Option<Sort>],
         scope: Scope,
     ) -> Vec<Sort> {
+        // TPTP arithmetic is defined at every numeric sort, so an interpreted
+        // operation exact at its arguments' sort keeps them: SUMO's
+        // `RealNumber` declaration would otherwise widen `$int + $int` to
+        // `$real` and hide integer facts behind `$to_real` casts.
+        let interpreted_exact = self
+            .semantic
+            .syntactic
+            .sym_name(rel)
+            .and_then(|name| SumoArith::from_sumo_name(&name.name()))
+            .is_some_and(|arith| arith.exact_at_argument_sort());
+        if interpreted_exact {
+            return actual
+                .iter()
+                .map(|a| a.unwrap_or(Sort::Individual))
+                .collect();
+        }
         let declared = self.declared_arg_sorts(rel, scope);
         actual
             .iter()

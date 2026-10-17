@@ -107,6 +107,12 @@ pub(crate) enum Event {
     /// Relation domain/range changed; `syms` = the affected relation symbols
     /// (added ∪ removed domain/range).
     DomainRangeChanged { syms: Vec<SymbolId> },
+    /// The set of relations the KB declares transitive changed; the symbols
+    /// that joined and left it (`Base` scope).
+    TransitiveRelationsChanged {
+        added: Vec<SymbolId>,
+        removed: Vec<SymbolId>,
+    },
     /// Non-taxonomy, non-domain/range roots changed; `syms` = all symbols those
     /// sentences mention (`SemanticDelta::all_affected_symbols`).
     #[allow(dead_code)] // parked: see `SentencesChanged`
@@ -196,6 +202,8 @@ pub(crate) enum EventKind {
     TaxonomyChanged,
     /// Relation domain/range changed.
     DomainRangeChanged,
+    /// The set of declared-transitive relations changed.
+    TransitiveRelationsChanged,
     /// Non-taxonomy, non-domain/range roots changed.
     OtherRootsChanged,
     /// The batch is a pure addition (enables cache fast paths).
@@ -239,6 +247,7 @@ impl Event {
             Event::SymbolsRetracted { .. } => EventKind::SymbolsRetracted,
             Event::TaxonomyChanged { .. } => EventKind::TaxonomyChanged,
             Event::DomainRangeChanged { .. } => EventKind::DomainRangeChanged,
+            Event::TransitiveRelationsChanged { .. } => EventKind::TransitiveRelationsChanged,
             Event::OtherRootsChanged { .. } => EventKind::OtherRootsChanged,
             Event::PureAddition => EventKind::PureAddition,
             Event::ImplicationsAdded => EventKind::ImplicationsAdded,

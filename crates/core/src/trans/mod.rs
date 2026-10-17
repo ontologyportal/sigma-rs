@@ -44,7 +44,7 @@ use crate::layer::{Layer, NoLayer, TopLayer};
 #[allow(unused_imports)]
 use crate::semantics::SemanticLayer;
 // pub(crate) use crate::trans::ir::problem;
-use crate::types::{SentenceId, SymbolId};
+use crate::types::SentenceId;
 use caches::formulas_fof::FormulasFof;
 use caches::formulas_tff::FormulasTff;
 use caches::formulas_thf::FormulasThf;
@@ -112,10 +112,9 @@ pub struct TranslationLayer {
     pub(crate) formulas_fof: Cache<FormulasFof>,
     /// Memo table for per-query predicate-variable instantiation:
     /// `(schema_sid, binding) -> instantiated synthetic sid`, where `binding`
-    /// is the tuple of concrete relations assigned to the schema's predicate
-    /// variables (in `pred_vars` order).  Cleared when the rewrite pass
-    /// re-runs.
-    pub(crate) predvar_cache: RwLock<HashMap<(SentenceId, Vec<SymbolId>), SentenceId>>,
+    /// is the tuple of concrete values assigned to the schema's guard-bound
+    /// variables (in `bound_vars` order). Cleared when the rewrite pass re-runs.
+    pub(crate) predvar_cache: RwLock<HashMap<(SentenceId, Vec<rewrite::Bound>), SentenceId>>,
     /// Every synthetic sentence id ever produced by `instantiate_predvars`.
     /// Lets `synthetic_replacements` reject them so they never leak between
     /// problems.  Persists across the rewrite pass (unlike `predvar_cache`).

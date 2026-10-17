@@ -429,7 +429,7 @@ fn build_manpage<L: TopLayer + Layer>(
     let (antecedent_refs, consequent_count) = antecedent_consequent(store, sym_id);
     let owned_sids = store.sine_current(|idx| {
         let seed: std::collections::HashSet<SymbolId> = std::iter::once(sym_id).collect();
-        idx.select(&seed, 1.0, Some(1))
+        idx.select(&seed, 1.0, Some(1), false)
     });
 
     ManPage {

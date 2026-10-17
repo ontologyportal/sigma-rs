@@ -4,9 +4,10 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use crate::types::{SentenceId, SymbolId};
+use crate::types::{Element, SentenceId, SymbolId};
 
 use super::super::SyntacticLayer;
+use super::Pin;
 
 // -- SyntacticLayer wrapper methods ------------------------------------------
 
@@ -20,6 +21,42 @@ impl SyntacticLayer {
             self.sine.update_with(|idx| idx.flush_pending());
         }
         self.sine.with_ref(f)
+    }
+
+    /// How `sid` is pinned under pinned selection, given the relations
+    /// currently declared transitive: the owner named by its head's entry in
+    /// the always-pinned groups ([`TAXONOMY_PINS`], [`SIGNATURE_PINS`]), or
+    /// the owning argument of a fact of a transitive relation.  `None` for
+    /// every other sentence, and for pinned heads whose owner argument is not
+    /// a plain symbol.
+    pub(crate) fn pin_for(&self, sid: SentenceId, transitive: &HashSet<SymbolId>) -> Option<Pin> {
+        use super::pins::{
+            always_pinned_by_head, owner_at, TRANSITIVE_PIN_DEPTH_EXEMPT, TRANSITIVE_PIN_OWNER_ARG,
+        };
+        let sentence = self.sentence(sid)?;
+        let Some(Element::Symbol(head)) = sentence.elements.first() else {
+            return None;
+        };
+        if let Some(relation) = always_pinned_by_head().get(&head.id()) {
+            return relation.owner_of(&sentence).map(|owner| Pin {
+                owner,
+                depth_exempt: relation.depth_exempt,
+            });
+        }
+        if !transitive.contains(&head.id()) {
+            return None;
+        }
+        owner_at(&sentence, TRANSITIVE_PIN_OWNER_ARG).map(|owner| Pin {
+            owner,
+            depth_exempt: TRANSITIVE_PIN_DEPTH_EXEMPT,
+        })
+    }
+
+    /// [`Self::pin_for`] under the index's current set of transitive
+    /// relations.  Not for use inside a `sine` update closure.
+    pub(crate) fn pinned_of(&self, sid: SentenceId) -> Option<Pin> {
+        let transitive = self.sine.with_ref(|idx| idx.transitive.clone());
+        self.pin_for(sid, &transitive)
     }
 
     /// Add `sid` to the SInE index and register its symbols in
@@ -36,7 +73,13 @@ impl SyntacticLayer {
                 Arc::make_mut(set).insert(sid);
             });
         }
-        self.sine.modify(|idx| idx.add_axiom(sid, syms));
+        let pin = self.pinned_of(sid);
+        self.sine.modify(|idx| {
+            idx.add_axiom(sid, syms);
+            if let Some(pin) = pin {
+                idx.pin(sid, pin);
+            }
+        });
     }
 
     /// Remove `sid` from the SInE index and unregister its symbols from
@@ -110,7 +153,17 @@ impl SyntacticLayer {
                 });
             }
         }
-        self.sine.modify(|idx| idx.rebuild_from(pairs));
+        let transitive = self.sine.with_ref(|idx| idx.transitive.clone());
+        let pins: Vec<(SentenceId, Pin)> = pairs
+            .iter()
+            .filter_map(|(sid, _)| self.pin_for(*sid, &transitive).map(|p| (*sid, p)))
+            .collect();
+        self.sine.modify(|idx| {
+            idx.rebuild_from(pairs);
+            for (sid, pin) in pins {
+                idx.pin(sid, pin);
+            }
+        });
     }
 
     /// Rebuild the SInE index from scratch over all current root sentences.
@@ -126,13 +179,15 @@ impl SyntacticLayer {
     ///
     /// Records `tolerance` in [`SineIndex::tolerance`] so that
     /// [`KnowledgeBase::sine_tolerance`] reflects the last-used value.
+    /// `pinned` enables pinned-owner selection (see `SineParams::pinned_ownership`).
     pub fn select_axioms(
         &self,
         seed_syms: &HashSet<SymbolId>,
         tolerance: f32,
         depth_limit: Option<usize>,
+        pinned: bool,
     ) -> HashSet<SentenceId> {
-        let result = self.sine_current(|idx| idx.select(seed_syms, tolerance, depth_limit));
+        let result = self.sine_current(|idx| idx.select(seed_syms, tolerance, depth_limit, pinned));
         self.sine.modify(|idx| idx.tolerance = tolerance.max(1.0));
         result
     }
@@ -149,9 +204,10 @@ impl SyntacticLayer {
         seed_syms: &HashSet<SymbolId>,
         budget: usize,
         depth_limit: Option<usize>,
+        pinned: bool,
     ) -> (f32, HashSet<SentenceId>) {
-        let (chosen_t, result) =
-            self.sine_current(|idx| idx.select_within_budget(seed_syms, budget, depth_limit));
+        let (chosen_t, result) = self
+            .sine_current(|idx| idx.select_within_budget(seed_syms, budget, depth_limit, pinned));
         self.sine.modify(|idx| idx.tolerance = chosen_t.max(1.0));
         (chosen_t, result)
     }
