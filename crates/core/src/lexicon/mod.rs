@@ -180,6 +180,8 @@ pub struct WordNet {
     sumo_index: HashMap<String, Vec<SynsetId>>,
     /// irregular inflection -> base form(s), from `noun.exc` / `verb.exc`.
     exceptions: HashMap<String, Vec<String>>,
+    /// (lemma, pos) -> summed SemCor tag count from `index.sense`.
+    tag_counts: HashMap<(String, Pos), u32>,
 }
 
 impl fmt::Debug for WordNet {
@@ -252,6 +254,24 @@ impl WordNet {
                 }
             })
             .collect()
+    }
+
+    /// How often `lemma` was tagged as `pos` in WordNet's sense-tagged
+    /// corpus (`index.sense` tag counts summed over senses); 0 when
+    /// `index.sense` was not loaded or the lemma was never tagged.
+    pub fn tag_count(&self, lemma: &str, pos: Pos) -> u32 {
+        self.tag_counts
+            .get(&(lemma.to_lowercase().replace(' ', "_"), pos))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Tag count of `lemma` summed over every part of speech.
+    pub fn tag_total(&self, lemma: &str) -> u32 {
+        [Pos::Noun, Pos::Verb, Pos::Adj, Pos::Adv]
+            .into_iter()
+            .map(|p| self.tag_count(lemma, p))
+            .sum()
     }
 
     /// Every synset anchored to SUMO term `term` -- the reverse direction,

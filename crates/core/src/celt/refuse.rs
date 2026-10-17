@@ -14,8 +14,13 @@ use std::fmt;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Construct {
     Pronoun,
+    /// "It is cold", "It hurts to ...": an "it" that refers to nothing.
+    Expletive,
     Passive,
+    /// "shall"/"will": the future.
     Modal,
+    /// "would".
+    ModalCounterfactual,
     Coordination,
     Subordination,
     RelativeClause,
@@ -40,8 +45,10 @@ impl Construct {
     pub fn code(&self) -> &str {
         match self {
             Construct::Pronoun => "pronoun",
+            Construct::Expletive => "expletive-it",
             Construct::Passive => "passive",
             Construct::Modal => "modal",
+            Construct::ModalCounterfactual => "modal-counterfactual",
             Construct::Coordination => "coordination",
             Construct::Subordination => "subordination",
             Construct::RelativeClause => "relative-clause",
@@ -65,11 +72,17 @@ impl Construct {
 
     fn hint(&self) -> &str {
         match self {
-            Construct::Pronoun => "repeat the noun phrase (\"the man\") instead of a pronoun",
+            Construct::Pronoun => {
+                "repeat the noun phrase (\"the man\"), or bind the pronoun: \"he\"/\"it\" need an \
+                 earlier noun phrase, \"I\" a speaker, \"you\" an addressee or a generic class"
+            }
+            Construct::Expletive => "name the subject: \"The weather is cold\"",
             Construct::Passive => "use the active voice: \"Bob reads the book\"",
             Construct::Modal => {
-                "state the plain fact; modals (can, must, should) are not translated"
+                "the future (will, shall) is not translated; state the present fact. can/may \
+                 (Possibility), must (Necessity) and should (Obligation) are"
             }
+            Construct::ModalCounterfactual => "\"would\" is not translated; use \"can\" or \"must\"",
             Construct::Coordination => {
                 "write one clause per sentence; \"and\"/\"or\" are not translated"
             }
@@ -86,7 +99,10 @@ impl Construct {
             }
             Construct::Progressive => "use the simple present or past: \"Bob reads\", \"Bob read\"",
             Construct::Perfect => "use the simple past: \"Bob read the book\"",
-            Construct::Have => "for possession write \"owns\"; the perfect tense is not translated",
+            Construct::Have => {
+                "\"have\" is read only for body parts, artifact parts, attributes and \
+                 possessions; the perfect tense is not translated"
+            }
             Construct::Adverb => "drop the adverb; only nouns, verbs and adjectives carry meaning",
             Construct::Existential => "write \"A dog is in the garden\" instead of \"There is\"",
             Construct::Demonstrative => "use \"the\" or a proper name instead of this/that",

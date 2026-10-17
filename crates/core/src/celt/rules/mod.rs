@@ -8,6 +8,8 @@
 
 pub mod copula;
 pub mod event;
+pub mod have;
+pub mod modal;
 pub mod np;
 
 use super::grammar::{Cx, Head, Np, Scope};
@@ -27,8 +29,11 @@ pub(super) enum Force {
 }
 
 pub(super) fn force(subject: &Np, indefinite_is_generic: bool) -> Force {
+    if subject.possessor.is_some() {
+        return Force::Particular;
+    }
     match (&subject.head, subject.det) {
-        (Head::Name(_) | Head::NewName(_), _) => Force::Particular,
+        (Head::Name(_) | Head::NewName(_) | Head::Pronoun { .. }, _) => Force::Particular,
         (_, Some(Det::Definite | Det::Some)) => Force::Particular,
         (_, Some(Det::Universal)) => Force::Universal,
         (_, Some(Det::Negative)) => Force::None,
@@ -55,7 +60,7 @@ where
 {
     match force {
         Force::Particular => {
-            let scope = if cx.question || negated {
+            let scope = if cx.question || negated || cx.generic_you.is_some() || cx.under_modal {
                 Scope::Bound
             } else {
                 Scope::Assert
@@ -71,12 +76,10 @@ where
             Ok(drs)
         }
         Force::Universal => {
-            let class = subject.class(cx)?;
             let v = cx.discourse.var("X");
             let x = Term::Var(v.clone());
-            let mut ante = Drs::default();
+            let mut ante = subject.restrict(cx, &x)?;
             ante.bind(&v);
-            ante.atom("instance", vec![x.clone(), Term::Const(class.term)]);
             let body = build(cx, &x, Scope::Bound)?;
             let cons = if negated {
                 Drs {
@@ -92,12 +95,10 @@ where
             })
         }
         Force::None => {
-            let class = subject.class(cx)?;
             let v = cx.discourse.var("X");
             let x = Term::Var(v.clone());
-            let mut inner = Drs::default();
+            let mut inner = subject.restrict(cx, &x)?;
             inner.bind(&v);
-            inner.atom("instance", vec![x.clone(), Term::Const(class.term)]);
             let body = build(cx, &x, Scope::Bound)?;
             if negated {
                 inner.conds.push(Cond::Not(body));

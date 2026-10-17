@@ -8,7 +8,7 @@ use sigmakee::cli::args_project;
 use sigmakee::cli::{
     maybe_notify_update, run_celt, run_check, run_config, run_config_tui, run_config_write,
     run_flush, run_load, run_load_warm, run_man, run_search, run_translate, run_update,
-    run_validate, ConstituentEdit,
+    run_validate, CeltFlags, ConstituentEdit,
 };
 #[cfg(feature = "ask")]
 use sigmakee::cli::{run_ask, run_ask_tui, run_audit, run_test};
@@ -746,6 +746,10 @@ fn dispatch_translation(
             input,
             names,
             assume_names,
+            generic,
+            speaker,
+            addressee,
+            generic_you,
             kif_only,
             explain,
         } => run_celt(
@@ -754,9 +758,15 @@ fn dispatch_translation(
             text,
             input,
             names,
-            assume_names,
-            kif_only,
-            explain,
+            CeltFlags {
+                assume_names,
+                generic,
+                speaker,
+                addressee,
+                generic_you,
+                kif_only,
+                explain,
+            },
         ),
         _ => unreachable!("dispatch_translation only handles Translate/Man/Celt"),
     }

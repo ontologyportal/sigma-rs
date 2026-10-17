@@ -28,6 +28,8 @@ pub enum Det {
 pub enum Tense {
     Present,
     Past,
+    /// The bare form "be", grammatical only after a modal.
+    Base,
 }
 
 /// Grammatical number carried by a copula or auxiliary form.
@@ -63,6 +65,93 @@ pub enum Closed {
     There,
     /// `'s` possessive clitic
     Possessive,
+}
+
+/// Gender of a name or referent, for third-person pronoun resolution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Gender {
+    Male,
+    Female,
+}
+
+/// Grammatical features of a pronoun, for refusal messages, resolution and
+/// corpus tabulation: "you" is second person, singular or plural, subject
+/// or object.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PronounInfo {
+    pub person: u8,
+    /// `None` when the form does not fix it ("you").
+    pub number: Option<Number>,
+    pub case: PronounCase,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PronounCase {
+    Subject,
+    Object,
+    Possessive,
+    Reflexive,
+    /// Subject or object ("you", "it").
+    Either,
+}
+
+impl std::fmt::Display for PronounInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let person = match self.person {
+            1 => "first person",
+            2 => "second person",
+            _ => "third person",
+        };
+        let number = match self.number {
+            Some(Number::Singular) => "singular",
+            Some(Number::Plural) => "plural",
+            None => "singular or plural",
+        };
+        let case = match self.case {
+            PronounCase::Subject => "subject",
+            PronounCase::Object => "object",
+            PronounCase::Possessive => "possessive",
+            PronounCase::Reflexive => "reflexive",
+            PronounCase::Either => "subject or object",
+        };
+        write!(f, "{person}, {number}, {case}")
+    }
+}
+
+/// Features of a pronoun by its lowercase form.
+pub fn pronoun_info(lower: &str) -> Option<PronounInfo> {
+    use Number::*;
+    use PronounCase::*;
+    let (person, number, case) = match lower {
+        "i" => (1, Some(Singular), Subject),
+        "me" => (1, Some(Singular), Object),
+        "my" | "mine" => (1, Some(Singular), Possessive),
+        "myself" => (1, Some(Singular), Reflexive),
+        "we" => (1, Some(Plural), Subject),
+        "us" => (1, Some(Plural), Object),
+        "our" | "ours" => (1, Some(Plural), Possessive),
+        "ourselves" => (1, Some(Plural), Reflexive),
+        "you" => (2, None, Either),
+        "your" | "yours" => (2, None, Possessive),
+        "yourself" => (2, Some(Singular), Reflexive),
+        "yourselves" => (2, Some(Plural), Reflexive),
+        "he" | "she" => (3, Some(Singular), Subject),
+        "him" => (3, Some(Singular), Object),
+        "her" => (3, Some(Singular), Object),
+        "his" | "hers" | "its" => (3, Some(Singular), Possessive),
+        "it" => (3, Some(Singular), Either),
+        "himself" | "herself" | "itself" => (3, Some(Singular), Reflexive),
+        "they" => (3, Some(Plural), Subject),
+        "them" => (3, Some(Plural), Object),
+        "their" | "theirs" => (3, Some(Plural), Possessive),
+        "themselves" => (3, Some(Plural), Reflexive),
+        _ => return None,
+    };
+    Some(PronounInfo {
+        person,
+        number,
+        case,
+    })
 }
 
 /// Token class: closed-class word, open-class word, number, or punctuation.
@@ -282,7 +371,8 @@ fn classify(lower: &str) -> Option<Closed> {
         "every" | "all" | "each" => Det(self::Det::Universal),
         "no" => Det(self::Det::Negative),
         "this" | "that" | "these" | "those" => Det(self::Det::Demonstrative),
-        "is" => Copula(Tense::Present, Number::Singular),
+        "is" | "am" => Copula(Tense::Present, Number::Singular),
+        "be" => Copula(Tense::Base, Number::Plural),
         "are" => Copula(Tense::Present, Number::Plural),
         "was" => Copula(Tense::Past, Number::Singular),
         "were" => Copula(Tense::Past, Number::Plural),
@@ -292,9 +382,7 @@ fn classify(lower: &str) -> Option<Closed> {
         "not" => Not,
         "has" | "have" | "had" => Have,
         "there" => There,
-        "i" | "me" | "my" | "mine" | "you" | "your" | "he" | "him" | "his" | "she" | "her"
-        | "hers" | "it" | "its" | "we" | "us" | "our" | "they" | "them" | "their" | "myself"
-        | "himself" | "herself" | "itself" | "themselves" => Pronoun,
+        w if pronoun_info(w).is_some() => Pronoun,
         "and" | "or" | "but" | "nor" => Conjunction,
         "if" | "then" | "because" | "when" | "while" | "although" | "though" | "unless"
         | "since" | "so" | "whether" => Subordinator,
@@ -349,6 +437,20 @@ mod tests {
         assert!(t[1].is(Closed::Possessive));
         assert_eq!(t[2].class, Class::Number);
         assert_eq!(t[3].lower, "rats");
+    }
+
+    #[test]
+    fn pronoun_features() {
+        assert_eq!(
+            pronoun_info("you").map(|p| p.to_string()).as_deref(),
+            Some("second person, singular or plural, subject or object")
+        );
+        assert_eq!(
+            pronoun_info("their").map(|p| p.to_string()).as_deref(),
+            Some("third person, plural, possessive")
+        );
+        assert_eq!(pronoun_info("dog"), None);
+        assert!(tokenize("Yourselves").iter().all(|t| t.is(Closed::Pronoun)));
     }
 
     #[test]

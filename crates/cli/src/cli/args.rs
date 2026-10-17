@@ -532,6 +532,27 @@ pub enum Cmd {
         #[arg(long = "assume-names")]
         assume_names: bool,
 
+        /// Read a bare-plural or indefinite subject of an action verb as
+        /// a universal ("Dogs chase cats" -> every dog chases some cat)
+        /// instead of refusing it as ambiguous.
+        #[arg(long)]
+        generic: bool,
+
+        /// The KB instance "I"/"me"/"my" refers to.  Without it first
+        /// person is refused.
+        #[arg(long, value_name = "TERM")]
+        speaker: Option<String>,
+
+        /// The KB instance "you"/"your" refers to, when the text addresses
+        /// someone in particular.
+        #[arg(long, value_name = "TERM")]
+        addressee: Option<String>,
+
+        /// Read "you" as an arbitrary instance of this class ("A flashlight
+        /// helps you" -> every Human) when there is no --addressee.
+        #[arg(long = "you", value_name = "CLASS", conflicts_with = "addressee")]
+        generic_you: Option<String>,
+
         /// Print only the KIF formulas, one per line; refused sentences
         /// become `;;` comment lines.
         #[arg(long = "kif-only", conflicts_with = "explain")]

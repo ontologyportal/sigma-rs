@@ -101,11 +101,23 @@ impl KBManager {
     /// best-effort: a remote source, a disabled lexicon, or a missing file
     /// degrades to `None`.
     pub fn load_first_names(&self) -> Option<Vec<String>> {
+        Some(
+            self.load_first_name_genders()?
+                .into_iter()
+                .map(|(n, _)| n)
+                .collect(),
+        )
+    }
+
+    /// [`KBManager::load_first_names`] with each name's gender.
+    pub fn load_first_name_genders(
+        &self,
+    ) -> Option<Vec<(String, Option<sigmakee_rs_core::celt::Gender>)>> {
         if !self.load_lexicons {
             return None;
         }
         let dir = self.local_lexicon_dir()?;
-        match crate::lexicon::load_first_names(&dir) {
+        match crate::lexicon::load_first_name_genders(&dir) {
             Ok(names) => Some(names),
             Err(e) => {
                 log::debug!("wordnet: first names not loaded ({e})");

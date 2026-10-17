@@ -18,9 +18,9 @@
 use super::super::grammar::{
     attach_pp, best, Cx, Head, Kind, Logic, Np, Scope, SentenceRule, Step,
 };
-use super::super::ir::{Drs, Term};
+use super::super::ir::{Cond, Drs, Term};
 use super::super::refuse::{Construct, Refusal, Refused};
-use super::super::token::{Closed, Det};
+use super::super::token::{Closed, Det, Number, Tense};
 use super::{force, frame, Force};
 
 pub struct Copula;
@@ -66,12 +66,30 @@ impl SentenceRule for Copula {
 }
 
 impl Copula {
-    fn with_subject(&self, cx: &mut Cx, inverted: bool, subject: Np, mut i: usize) -> Step<Logic> {
+    pub(super) fn with_subject(
+        &self,
+        cx: &mut Cx,
+        inverted: bool,
+        subject: Np,
+        mut i: usize,
+    ) -> Step<Logic> {
+        let copula_at = if inverted { 0 } else { i };
+        let Some(Closed::Copula(tense, number)) = cx.tok(copula_at).and_then(|t| t.closed()) else {
+            return cx.miss(i, "is/are");
+        };
+        if tense == Tense::Base && !cx.under_modal {
+            return cx.miss(copula_at, "is/are");
+        }
+        if !subject.agrees(cx, number) {
+            return cx.miss(copula_at, "a copula agreeing with the subject in number");
+        }
+        let subject = if number == Number::Plural {
+            subject.pluralized(cx.lex)
+        } else {
+            subject
+        };
         if !inverted {
-            match cx.tok(i).and_then(|t| t.closed()) {
-                Some(Closed::Copula(..)) => i += 1,
-                _ => return cx.miss(i, "is/are"),
-            }
+            i += 1;
         }
         let negated = if cx.tok(i).is_some_and(|t| t.is(Closed::Not)) {
             i += 1;
@@ -113,7 +131,7 @@ impl Copula {
         let subject_force = force(&subject, true);
         // Class subject + class predicate is a taxonomic statement.
         if let (Force::Universal, Pred::Nominal(pn), false) = (&subject_force, &pred, negated) {
-            if pn.det.is_none_or(|d| d == Det::Indefinite) {
+            if pn.det.is_none_or(|d| d == Det::Indefinite) && subject.mods.is_empty() {
                 match self.taxonomic(cx, &subject, pn) {
                     Ok(Some(drs)) => {
                         return Step::Hit(
@@ -139,12 +157,13 @@ impl Copula {
                 .noun_class(word)
                 .is_ok_and(|c| cx.lex.has_ancestor(&c.term, "Process")),
             Head::Name(n) => cx.lex.has_ancestor(n, "Process"),
-            Head::NewName(_) => false,
+            Head::NewName(_) | Head::Pronoun { .. } => false,
         };
         let subject_class = match &subject.head {
             Head::Noun { word, .. } => cx.lex.noun_class(word).ok().map(|c| c.term),
             Head::Name(n) => Some(n.clone()),
             Head::NewName(_) => Some("Human".into()),
+            Head::Pronoun { .. } => cx.generic_you.as_ref().map(|(_, c)| c.clone()),
         };
         let result = frame(
             cx,
@@ -229,7 +248,10 @@ impl Copula {
                 }
                 _ => {}
             }
-            if matches!(np.head, Head::Name(_) | Head::NewName(_)) {
+            if matches!(
+                np.head,
+                Head::Name(_) | Head::NewName(_) | Head::Pronoun { .. }
+            ) {
                 return Err(cx.refused(
                     Refusal::Unsupported {
                         construct: Construct::Identity,
@@ -246,8 +268,10 @@ impl Copula {
         Ok(out)
     }
 
-    /// `(subclass S C)` for a class subject and a class predicate; `None`
-    /// when the predicate noun is an attribute (then it is a rule instead).
+    /// `(subclass S C)` for a class subject and a class predicate, plus one
+    /// rule per adjective on the predicate ("a sturdy boat": every S is
+    /// sturdy); `None` when the predicate noun is an attribute (then it is
+    /// a rule instead).
     fn taxonomic(
         &self,
         cx: &mut Cx,
@@ -263,9 +287,6 @@ impl Copula {
             .map_err(|r| cx.refused(r, pred.end - 1))?;
         if is_attr {
             return Ok(None);
-        }
-        if let Some(m) = pred.mods.first() {
-            return Err(cx.refused(Refusal::ModifiedClass { word: m.clone() }, pred.start));
         }
         let sub = subject.class(cx)?;
         cx.record(&choice);
@@ -285,8 +306,18 @@ impl Copula {
         let mut d = Drs::default();
         d.atom(
             "subclass",
-            vec![Term::Const(sub.term), Term::Const(choice.term)],
+            vec![Term::Const(sub.term.clone()), Term::Const(choice.term)],
         );
+        for a in pred.attributes(cx)? {
+            let v = cx.discourse.var("X");
+            let x = Term::Var(v.clone());
+            let mut ante = Drs::default();
+            ante.bind(&v);
+            ante.atom("instance", vec![x.clone(), Term::Const(sub.term.clone())]);
+            let mut cons = Drs::default();
+            cons.atom("attribute", vec![x, Term::Const(a.term)]);
+            d.conds.push(Cond::Implies(ante, cons));
+        }
         Ok(Some(d))
     }
 

@@ -12,16 +12,25 @@ use crate::style::*;
 use sigmakee_rs_sdk::celt::{self, Kind, Logic, Opts, Refused, Translation};
 use sigmakee_rs_sdk::{manager::KBManager, Session, TopLayer};
 
-#[allow(clippy::too_many_arguments)]
+/// The reading conventions `sumo celt` passes through to [`Opts`].
+#[derive(Debug, Clone, Default)]
+pub struct CeltFlags {
+    pub assume_names: bool,
+    pub generic: bool,
+    pub speaker: Option<String>,
+    pub addressee: Option<String>,
+    pub generic_you: Option<String>,
+    pub kif_only: bool,
+    pub explain: bool,
+}
+
 pub fn run_celt<L>(
     session: Session<L>,
     manager: KBManager,
     text: Vec<String>,
     input: Option<PathBuf>,
     names: Option<PathBuf>,
-    assume_names: bool,
-    kif_only: bool,
-    explain: bool,
+    flags: CeltFlags,
 ) -> bool
 where
     L: TopLayer,
@@ -47,25 +56,34 @@ where
     }
 
     let names = match names {
-        Some(path) => match sigmakee_rs_sdk::lexicon::load_first_names(&path) {
+        Some(path) => match sigmakee_rs_sdk::lexicon::load_first_name_genders(&path) {
             Ok(n) => n,
             Err(e) => {
                 log::error!("--names: {e}");
                 return false;
             }
         },
-        None => manager.load_first_names().unwrap_or_default(),
+        None => manager.load_first_name_genders().unwrap_or_default(),
     };
     let opts = Opts {
-        assume_human_names: assume_names,
-        names,
+        assume_human_names: flags.assume_names,
+        names: names.iter().map(|(n, _)| n.clone()).collect(),
+        generic_subjects: flags.generic,
+        name_genders: names
+            .into_iter()
+            .filter_map(|(n, g)| g.map(|g| (n, g)))
+            .collect(),
+        speaker: flags.speaker,
+        addressee: flags.addressee,
+        generic_you: flags.generic_you,
+        ..Opts::default()
     };
     let translation = celt::translate(session.kb(), wn, &input, &opts);
 
-    if kif_only {
+    if flags.kif_only {
         print_kif_only(&translation);
     } else {
-        print_report(&translation, explain);
+        print_report(&translation, flags.explain);
     }
     translation.complete()
 }

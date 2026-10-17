@@ -37,9 +37,25 @@
 //! Mike does not read a book.     (not (exists (?E1 ?X1) (and ...)))
 //! Bob owns a car.                (instance Car-1 Automobile) (possesses Bob Car-1)   stative verb
 //! Every boy likes fudge.         (forall (?X1) (=> (instance ?X1 Boy) (exists ...)))
+//! A foal is a young horse.       (subclass Foal Horse) (forall (?X1) (=> (instance ?X1 Foal) (attribute ?X1 Young)))
+//! Birds have feathers.           (forall (?X1) (=> (instance ?X1 Bird) (exists (?X2) (and (instance ?X2 Feather) (part ?X2 ?X1)))))
+//! Rex has a book.                (instance Book-1 Book) (possesses Rex Book-1)
+//! Dogs and cats are animals.     (subclass Dog Animal) (subclass Cat Animal)
+//! Rex is red, young, and loud.   (attribute Rex Red) (attribute Rex Young) (attribute Rex Loud)
+//! A dog is an animal that barks. (subclass Dog Animal) (forall (?X1) (=> (instance ?X1 Dog) (exists ...Barking...)))
 //! Is Rex a dog?                  conjecture (instance Rex Dog)
 //! Does Mike read the book?       conjecture (exists (?E1) (and ...))
 //! ```
+//!
+//! Words are classified in position by the rules, with three part-of-speech
+//! checks: subject-verb number agreement ("The dog bark" matches no rule),
+//! no proper-noun sense for a lowercase or sentence-initial word ("jays"
+//! is the bird, not the statesman), and the tag-count prior from
+//! `index.sense` ([`lookup`]: "make" is a verb 1612 times and a noun once,
+//! so it is never a noun).  Compound sentences are decomposed first
+//! ([`Grammar::decompose`]): coordination with "and"/"but" and a relative
+//! clause on the predicate nominal become simple sentences that must all
+//! translate.
 //!
 //! Conventions: with the copula an indefinite or bare subject is generic
 //! ("A dog is an animal" is about the class); with an action verb it is a
@@ -48,10 +64,24 @@
 //! sentence and is a common noun, or the KB labels a term with it, or
 //! WordNet lists it capitalized (Monday).
 //!
-//! Everything else is refused with a reason: pronouns, coordination,
-//! subordinate and relative clauses, modals, passives, possessives, numbers,
-//! progressive and perfect aspect, adverbs, bare-plural action generics
-//! ("Dogs chase cats"), and any word the KB has no term for.
+//! Pronouns are bound, never guessed ([`grammar::Np::realize`]).  First
+//! and second person are deictic: they come from [`Opts::speaker`],
+//! [`Opts::addressee`] or the generic class [`Opts::generic_you`] (one
+//! universal over the sentence, every "you"/"your" the same variable), and
+//! are refused otherwise.  Third person is anaphoric: the most recent
+//! compatible referent of an earlier sentence or clause, never a
+//! co-argument of the pronoun's own clause (a reflexive binds only there).
+//! Compatibility is read from the KB through [`Opts::pronoun_classes`] and
+//! from [`Opts::name_genders`]; two candidates is `ambiguous-reference`,
+//! none is a refusal ("It is cold" is `expletive-it`).  Possessives ("your
+//! tail", "Bob's car") use the same typing as "have"
+//! ([`grammar::possession_relation`]).
+//!
+//! Everything else is refused with a reason: unbound pronouns, "or",
+//! subordinate clauses, relative clauses on the subject, modals, passives,
+//! numbers, progressive and perfect aspect, adverbs, bare-plural action
+//! generics ("Dogs chase cats", unless [`Opts::generic_subjects`]), and any
+//! word the KB has no term for.
 //!
 //! # Extending the language
 //!
@@ -76,9 +106,10 @@ pub mod refuse;
 pub mod rules;
 pub mod token;
 
-pub use grammar::{Grammar, Kind, Logic, NpRule, Opts, PrepRule, SentenceRule};
+pub use grammar::{Grammar, Kind, Logic, NpRule, Opts, PrepRule, PronounClasses, SentenceRule};
 pub use lookup::{Choice, Lookup};
 pub use refuse::{Construct, Refusal, Refused};
+pub use token::Gender;
 
 use std::collections::BTreeMap;
 
@@ -108,10 +139,29 @@ impl Logic {
 /// Proper names from a `FirstNames.csv` text (`"name","gender"` rows, as
 /// shipped with the SUMO WordNet mappings), for [`Opts::names`].
 pub fn names_from_csv(text: &str) -> Vec<String> {
+    name_genders_from_csv(text)
+        .into_iter()
+        .map(|(n, _)| n)
+        .collect()
+}
+
+/// Proper names with their gender (`M`/`F`, else `None`) from a
+/// `FirstNames.csv` text, for [`Opts::names`] and [`Opts::name_genders`].
+pub fn name_genders_from_csv(text: &str) -> Vec<(String, Option<token::Gender>)> {
     text.lines()
-        .filter_map(|l| l.split(',').next())
-        .map(|n| n.trim().trim_matches('"').to_string())
-        .filter(|n| !n.is_empty() && n != "name")
+        .filter_map(|l| {
+            let mut cols = l.split(',').map(|c| c.trim().trim_matches('"'));
+            let name = cols.next()?;
+            if name.is_empty() || name == "name" {
+                return None;
+            }
+            let gender = match cols.next() {
+                Some("M") | Some("m") => Some(token::Gender::Male),
+                Some("F") | Some("f") => Some(token::Gender::Female),
+                _ => None,
+            };
+            Some((name.to_string(), gender))
+        })
         .collect()
 }
 
@@ -209,6 +259,7 @@ pub fn translate_with<L: TopLayer + Layer>(
                 opts,
                 sentence.question,
             );
+            cx.generic_subject = opts.generic_subjects;
             grammar.parse(&mut cx)
         };
         out.sentences.push(SentenceResult {
@@ -244,7 +295,28 @@ mod tests {
         (subclass Animal AutonomousAgent)
         (subclass Dog Animal)
         (subclass Cat Animal)
+        (subclass Bird Animal)
         (subclass Human Animal)
+        (subclass Man Human)
+        (subclass Woman Human)
+        (subclass Collection Object)
+        (instance Mary Woman)
+        (subclass BodyPart Object)
+        (subclass Feather BodyPart)
+        (subclass Wing BodyPart)
+        (subclass Tail BodyPart)
+        (subclass Artifact Object)
+        (subclass Engine Artifact)
+        (instance modalAttribute BinaryPredicate)
+        (subclass NormativeAttribute Attribute)
+        (subclass AlethicAttribute NormativeAttribute)
+        (subclass DeonticAttribute NormativeAttribute)
+        (instance Possibility AlethicAttribute)
+        (instance Necessity AlethicAttribute)
+        (instance Obligation DeonticAttribute)
+        (instance part BinaryPredicate)
+        (domain part 1 Object)
+        (domain part 2 Object)
         (subclass Boy Human)
         (instance wants BinaryPredicate)
         (domain wants 1 AutonomousAgent)
@@ -293,6 +365,14 @@ mod tests {
         (instance located BinaryPredicate)
         (domain located 1 Physical)
         (domain located 2 Object)
+        (subclass CaseRole BinaryPredicate)
+        (instance eventLocated BinaryPredicate)
+        (instance eventLocated CaseRole)
+        (domain eventLocated 1 Process)
+        (domain eventLocated 2 Object)
+        (instance agent CaseRole)
+        (instance patient CaseRole)
+        (instance instrument CaseRole)
         (instance destination BinaryPredicate)
         (domain destination 1 Process)
         (domain destination 2 Entity)
@@ -360,6 +440,15 @@ mod tests {
 00000030 05 n 01 young 0 000 | offspring &%Animal+
 00000031 05 n 01 purple 0 000 | the color &%Purple=
 00000019 05 n 01 mike 0 000 | a microphone &%Microphone=
+00000032 05 n 01 bird 0 000 | a bird &%Bird=
+00000033 05 n 01 feather 0 000 | a feather &%Feather=
+00000034 05 n 01 wing 0 000 | a wing &%Wing=
+00000035 05 n 01 tail 0 000 | a tail &%Tail=
+00000036 05 n 01 engine 0 000 | an engine &%Engine=
+00000037 05 n 01 Jay 0 000 | the statesman &%Human+
+00000038 05 n 01 jay 0 000 | the bird &%Bird+
+00000039 05 n 01 part 0 000 | a part &%Rock+
+00000040 05 n 01 people 0 000 | people &%Human+
 ";
     const VERBS: &str = "\
 00000101 30 v 01 read 0 000 00 | to read &%Reading=
@@ -373,6 +462,7 @@ mod tests {
 00000109 30 v 01 like 0 000 00 | to like &%wants+
 00000110 30 v 01 horse 0 000 00 | to provide with horses &%Process+
 00000111 30 v 01 live 0 000 00 | to live &%Living=
+00000112 30 v 01 part 0 000 00 | to part &%Falling+
 ";
     const ADJS: &str = "\
 00000201 00 a 01 loud 0 000 | loud &%Loud=
@@ -385,7 +475,9 @@ mod tests {
 ";
     const ADVS: &str =
         "00000301 02 r 01 quickly 0 000 | quickly &%SubjectiveAssessmentAttribute+\n";
-    const EXC: &str = "ran run\nsaw see\nfell fall\nmen man\n";
+    const EXC: &str = "ran run\nsaw see\nfell fall\nfallen fall\nmen man\n";
+    /// Tag counts: "part" is a noun 234 times and a verb 5 times.
+    const INDEX: &str = "part%1:24:00:: 00000039 1 234\npart%2:35:00:: 00000112 1 5\n";
 
     fn kb() -> KnowledgeBase {
         let mut kb = KnowledgeBase::new();
@@ -403,7 +495,7 @@ mod tests {
                 (ADJS, Pos::Adj, "adj"),
                 (ADVS, Pos::Adv, "adv"),
             ],
-            None,
+            Some(INDEX),
             Some(EXC),
         )
     }
@@ -512,8 +604,8 @@ mod tests {
         assert_eq!(refusal("A dog is a dog.").reason.code(), "trivial-fact");
         assert_eq!(refusal("Snow is ice.").reason.code(), "cross-category");
         assert_eq!(
-            refusal("A red dog is an animal.").reason.code(),
-            "modified-class"
+            one("A red dog is an animal."),
+            "(forall (?X1) (=> (and (instance ?X1 Dog) (attribute ?X1 Red)) (instance ?X1 Animal)))"
         );
         assert_eq!(refusal("Rex is big.").reason.code(), "not-an-attribute");
         assert_eq!(
@@ -558,7 +650,7 @@ mod tests {
     fn prepositional_roles_on_events() {
         assert_eq!(
             one("Mike reads a book in the garden."),
-            "(and (instance Reading-1 Reading) (agent Reading-1 Mike) (instance Book-1 Book) (patient Reading-1 Book-1) (instance Garden-1 Garden) (located Reading-1 Garden-1))"
+            "(and (instance Reading-1 Reading) (agent Reading-1 Mike) (instance Book-1 Book) (patient Reading-1 Book-1) (instance Garden-1 Garden) (eventLocated Reading-1 Garden-1))"
         );
         assert_eq!(
             one("Mike reads with Mary."),
@@ -678,6 +770,8 @@ mod tests {
             &Opts {
                 assume_human_names: false,
                 names: vec!["Zeke".into()],
+                generic_subjects: false,
+                ..Opts::default()
             },
         );
         let l = t.sentences[0].outcome.as_ref().expect("translated");
@@ -696,6 +790,8 @@ mod tests {
             &Opts {
                 assume_human_names: true,
                 names: Vec::new(),
+                generic_subjects: false,
+                ..Opts::default()
             },
         );
         let v: Vec<String> = t
@@ -732,6 +828,8 @@ mod tests {
             &Opts {
                 assume_human_names: true,
                 names: Vec::new(),
+                generic_subjects: false,
+                ..Opts::default()
             },
         );
         let l = t.sentences[0].outcome.as_ref().expect("ok");
@@ -757,6 +855,8 @@ mod tests {
             &Opts {
                 assume_human_names: false,
                 names,
+                generic_subjects: false,
+                ..Opts::default()
             },
         );
         assert!(t.complete(), "{:?}", t.sentences[0].outcome);
@@ -775,6 +875,8 @@ mod tests {
             &Opts {
                 assume_human_names: true,
                 names: Vec::new(),
+                generic_subjects: false,
+                ..Opts::default()
             },
         );
         assert!(t.complete(), "{:?}", t.sentences[0].outcome);
@@ -838,14 +940,7 @@ mod tests {
 
     #[test]
     fn cannot_and_relative_that_and_plurals() {
-        assert_eq!(
-            refusal("Rex cannot bark.").reason.code(),
-            "unsupported/modal"
-        );
-        assert_eq!(
-            refusal("A dog is an animal that barks.").reason.code(),
-            "unsupported/relative-clause"
-        );
+        assert!(one("Rex cannot bark.").starts_with("(not (modalAttribute"));
         assert_eq!(
             refusal("That dog barks.").reason.code(),
             "unsupported/demonstrative"
@@ -860,11 +955,11 @@ mod tests {
     #[test]
     fn noun_phrase_readings_are_disambiguated_by_the_rest() {
         // "young" is also a noun and "horse" also a verb: the longest
-        // predicate reading is the one under which the sentence completes,
-        // and its refusal (a modified class) wins over the partial parse.
+        // predicate reading is the one under which the sentence completes;
+        // the adjective on the class becomes a rule about the subject.
         assert_eq!(
-            refusal("A foal is a young horse.").reason.code(),
-            "modified-class"
+            one("A foal is a young horse."),
+            "(and (subclass Foal Horse) (forall (?X1) (=> (instance ?X1 Foal) (attribute ?X1 Young))))"
         );
         assert_eq!(
             one("Rex is a young horse."),
@@ -873,7 +968,7 @@ mod tests {
         // "live" is also an adjective: the subject stops at "dogs".
         assert_eq!(
             one("Every dog lives in a garden."),
-            "(forall (?X1) (=> (instance ?X1 Dog) (exists (?E1 ?X2) (and (instance ?E1 Living) (agent ?E1 ?X1) (instance ?X2 Garden) (located ?E1 ?X2)))))"
+            "(forall (?X1) (=> (instance ?X1 Dog) (exists (?E1 ?X2) (and (instance ?E1 Living) (agent ?E1 ?X1) (instance ?X2 Garden) (eventLocated ?E1 ?X2)))))"
         );
         // Failed readings leave no trace: no gaps in Skolem numbering.
         assert_eq!(
@@ -909,18 +1004,378 @@ mod tests {
         );
     }
 
+    // -- Part of speech: agreement, proper nouns, the tag-count prior ------------------
+
+    #[test]
+    fn subject_verb_agreement_filters_verb_readings() {
+        assert_eq!(one("The dog bark."), "[no-rule]");
+        assert_eq!(one("Dogs barks."), "[no-rule]");
+        assert_eq!(one("Rex bark."), "[no-rule]");
+        assert_eq!(one("A dog are an animal."), "[no-rule]");
+        assert_eq!(one("Does the dog barks?"), "[no-rule]");
+        assert_eq!(
+            one("Does Rex bark?"),
+            "(exists (?E1) (and (instance ?E1 Barking) (agent ?E1 Rex)))"
+        );
+        // A bare invariant plural takes its number from the verb.
+        assert_eq!(one("People are animals."), "(subclass Human Animal)");
+        assert_eq!(refusal("People bark.").reason.code(), "unsupported/generic");
+    }
+
+    #[test]
+    fn proper_noun_senses_need_a_capital() {
+        // "Jay" the statesman is listed before "jay" the bird, but a
+        // lowercase (or sentence-initial) word skips capitalized-only senses.
+        assert_eq!(one("Jays are animals."), "(subclass Bird Animal)");
+        assert_eq!(one("Rex sees a jay."), "(and (instance Seeing-1 Seeing) (experiencer Seeing-1 Rex) (instance Bird-1 Bird) (patient Seeing-1 Bird-1))");
+    }
+
+    #[test]
+    fn tag_count_prior_rejects_rare_parts_of_speech() {
+        // "part" is tagged as a verb in 5 of 239 uses: below the floor, so
+        // it is never read as one.
+        assert_eq!(one("The dog parts."), "[no-rule]");
+        assert_eq!(
+            one("Rex sees a part."),
+            "(and (instance Seeing-1 Seeing) (experiencer Seeing-1 Rex) (instance Rock-1 Rock) (patient Seeing-1 Rock-1))"
+        );
+        // Untagged words keep every WordNet part of speech.
+        assert_eq!(
+            one("Rex falls."),
+            "(and (instance Falling-1 Falling) (agent Falling-1 Rex))"
+        );
+    }
+
+    #[test]
+    fn comma_separated_adjectives() {
+        assert_eq!(
+            one("Rex is a red, young horse."),
+            "(and (instance Rex Horse) (attribute Rex Red) (attribute Rex Young))"
+        );
+        assert_eq!(one("Rex is a red, horse."), "[no-rule]");
+    }
+
+    // -- Have -----------------------------------------------------------------------------
+
+    #[test]
+    fn have_by_object_type() {
+        assert_eq!(
+            one("Birds have feathers."),
+            "(forall (?X1) (=> (instance ?X1 Bird) (exists (?X2) (and (instance ?X2 Feather) (part ?X2 ?X1)))))"
+        );
+        assert_eq!(
+            one("Rex has a tail."),
+            "(and (instance Tail-1 Tail) (part Tail-1 Rex))"
+        );
+        assert_eq!(
+            one("Bob has a book."),
+            "(and (instance Book-1 Book) (possesses Bob Book-1))"
+        );
+        assert_eq!(
+            one("A dog does not have wings."),
+            "(forall (?X1) (=> (instance ?X1 Dog) (not (exists (?X2) (and (instance ?X2 Wing) (part ?X2 ?X1))))))"
+        );
+        assert_eq!(
+            one("Rex has no tail."),
+            "(not (exists (?X1) (and (instance ?X1 Tail) (part ?X1 Rex))))"
+        );
+        assert_eq!(
+            one("Does Rex have a tail?"),
+            "(exists (?X1) (and (instance ?X1 Tail) (part ?X1 Rex)))"
+        );
+        assert_eq!(
+            refusal("Rex has fallen.").reason.code(),
+            "unsupported/perfect"
+        );
+        assert_eq!(
+            refusal("Rex had a book.").reason.code(),
+            "unsupported/past-tense"
+        );
+        assert_eq!(one("Rex have a tail."), "[no-rule]");
+    }
+
+    // -- Decomposition: coordination and relative clauses ------------------------------
+
+    #[test]
+    fn coordination_distributes_over_the_sentence() {
+        assert_eq!(
+            one("Rex and Mike are loud."),
+            "(and (attribute Rex Loud) (attribute Mike Loud))"
+        );
+        assert_eq!(
+            one("Rex is loud and Mike is red."),
+            "(and (attribute Rex Loud) (attribute Mike Red))"
+        );
+        assert_eq!(
+            one("Rex is red, young, and loud."),
+            "(and (attribute Rex Red) (attribute Rex Young) (attribute Rex Loud))"
+        );
+        assert_eq!(
+            one("Birds have feathers and wings."),
+            "(and (forall (?X1) (=> (instance ?X1 Bird) (exists (?X2) (and (instance ?X2 Feather) (part ?X2 ?X1))))) (forall (?X3) (=> (instance ?X3 Bird) (exists (?X4) (and (instance ?X4 Wing) (part ?X4 ?X3))))))"
+        );
+        // A conjunct that fails reports its own refusal, and nothing of the
+        // sentence is kept.
+        assert_eq!(
+            refusal("Rex and Zeke are loud.").reason.code(),
+            "unknown-name"
+        );
+        assert_eq!(
+            refusal("Rex is big and loud.").reason.code(),
+            "not-an-attribute"
+        );
+        // The refused sentence's referents are rolled back: the next book
+        // is still Book-1.
+        assert_eq!(
+            kif("Mike reads a book and a unicorn. Mike reads a book."),
+            vec![
+                "[term-not-in-kb]".to_string(),
+                "(and (instance Reading-1 Reading) (agent Reading-1 Mike) (instance Book-1 Book) (patient Reading-1 Book-1))".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn relative_clause_on_the_predicate_nominal() {
+        assert_eq!(
+            one("A dog is an animal that barks."),
+            "(and (subclass Dog Animal) (forall (?X1) (=> (instance ?X1 Dog) (exists (?E1) (and (instance ?E1 Barking) (agent ?E1 ?X1))))))"
+        );
+        assert_eq!(
+            one("Rex is a dog which barks."),
+            "(and (instance Rex Dog) (instance Barking-1 Barking) (agent Barking-1 Rex))"
+        );
+        assert_eq!(
+            one("A bird is an animal that has wings."),
+            "(and (subclass Bird Animal) (forall (?X1) (=> (instance ?X1 Bird) (exists (?X2) (and (instance ?X2 Wing) (part ?X2 ?X1))))))"
+        );
+        assert_eq!(
+            refusal("A dog is an animal that barks quickly.")
+                .reason
+                .code(),
+            "unsupported/adverb"
+        );
+    }
+
+    // -- Pronouns and possessives ---------------------------------------------------------
+
+    fn with(text: &str, opts: Opts) -> Vec<String> {
+        translate(&kb(), &wn(), text, &opts)
+            .sentences
+            .iter()
+            .map(|s| match &s.outcome {
+                Ok(l) => l.formula().to_string(),
+                Err(r) => format!("[{}]", r.reason.code()),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn third_person_pronouns_bind_to_discourse_referents() {
+        // "it": the most recent non-person referent.
+        assert_eq!(
+            kif("Mike reads a book. Rex sees it."),
+            vec![
+                "(and (instance Reading-1 Reading) (agent Reading-1 Mike) (instance Book-1 Book) (patient Reading-1 Book-1))",
+                "(and (instance Seeing-1 Seeing) (experiencer Seeing-1 Rex) (patient Seeing-1 Book-1))"
+            ]
+        );
+        // "she": Mary is a Woman in the KB; "he": a Human not known female.
+        assert_eq!(
+            kif("Mary sees a book. She reads the book."),
+            vec![
+                "(and (instance Seeing-1 Seeing) (experiencer Seeing-1 Mary) (instance Book-1 Book) (patient Seeing-1 Book-1))",
+                "(and (instance Reading-1 Reading) (agent Reading-1 Mary) (patient Reading-1 Book-1))"
+            ]
+        );
+        assert_eq!(
+            kif("Mary sees Mike. He reads a book.")[1],
+            "(and (instance Reading-1 Reading) (agent Reading-1 Mike) (instance Book-1 Book) (patient Reading-1 Book-1))"
+        );
+        // Gender from the name list beats the KB's silence.
+        let opts = Opts {
+            name_genders: vec![("Bob".into(), token::Gender::Male)],
+            ..Opts::default()
+        };
+        assert_eq!(
+            with("Bob sees Mary. She sees a book.", opts)[1],
+            "(and (instance Seeing-2 Seeing) (experiencer Seeing-2 Mary) (instance Book-1 Book) (patient Seeing-2 Book-1))"
+        );
+        // Two compatible referents is an ambiguity; none is a refusal.
+        assert_eq!(
+            kif("Mike reads a book. Rex sees a rock. Bob sees it.")[2],
+            "[ambiguous-reference]"
+        );
+        assert_eq!(one("Rex sees it."), "[unsupported/pronoun]");
+        assert_eq!(one("It is loud."), "[unsupported/expletive-it]");
+        // A referent of an earlier clause of the same sentence binds too,
+        // but never a co-argument of the pronoun's own clause.
+        assert_eq!(
+            one("Mike sees a book and it falls."),
+            "(and (instance Seeing-1 Seeing) (experiencer Seeing-1 Mike) (instance Book-1 Book) (patient Seeing-1 Book-1) (instance Falling-1 Falling) (patient Falling-1 Book-1))"
+        );
+        assert_eq!(
+            kif("Rex sees a rock. Rex sees it.")[1],
+            "[ambiguous-reference]"
+        );
+        assert_eq!(
+            kif("Mike reads a book. Rex sees a rock. Rex sees itself.")[2],
+            "(and (instance Seeing-2 Seeing) (experiencer Seeing-2 Rex) (patient Seeing-2 Rex))"
+        );
+    }
+
+    #[test]
+    fn deictic_pronouns_come_from_the_options() {
+        assert_eq!(one("I read a book."), "[unsupported/pronoun]");
+        assert_eq!(one("You read a book."), "[unsupported/pronoun]");
+        let speaker = Opts {
+            speaker: Some("Mike".into()),
+            addressee: Some("Bob".into()),
+            ..Opts::default()
+        };
+        assert_eq!(
+            with("I see you.", speaker),
+            vec!["(and (instance Seeing-1 Seeing) (experiencer Seeing-1 Mike) (patient Seeing-1 Bob))"]
+        );
+        // Generic "you": one universal over the whole sentence, every
+        // mention bound to the same variable, no Skolem constants inside.
+        let generic = Opts {
+            generic_you: Some("Human".into()),
+            ..Opts::default()
+        };
+        assert_eq!(
+            with("You read a book.", generic.clone()),
+            vec!["(forall (?P1) (=> (instance ?P1 Human) (exists (?E1 ?X1) (and (instance ?E1 Reading) (agent ?E1 ?P1) (instance ?X1 Book) (patient ?E1 ?X1)))))"]
+        );
+        assert_eq!(
+            with("A dog sees your book.", generic.clone()),
+            vec!["(forall (?P1) (=> (instance ?P1 Human) (exists (?X1 ?E1 ?X2) (and (instance ?X1 Dog) (instance ?E1 Seeing) (experiencer ?E1 ?X1) (instance ?X2 Book) (possesses ?P1 ?X2) (patient ?E1 ?X2)))))"]
+        );
+        // The verb's domain still gates the generic class.
+        let rock = Opts {
+            generic_you: Some("Rock".into()),
+            ..Opts::default()
+        };
+        assert_eq!(with("You read a book.", rock), vec!["[role-mismatch]"]);
+        let missing = Opts {
+            generic_you: Some("Martian".into()),
+            ..Opts::default()
+        };
+        assert_eq!(with("You read a book.", missing), vec!["[term-not-in-kb]"]);
+    }
+
+    #[test]
+    fn possessives_use_the_have_typing() {
+        assert_eq!(
+            one("Rex's tail is red."),
+            "(and (instance Tail-1 Tail) (part Tail-1 Rex) (attribute Tail-1 Red))"
+        );
+        assert_eq!(
+            one("Bob's book is red."),
+            "(and (instance Book-1 Book) (possesses Bob Book-1) (attribute Book-1 Red))"
+        );
+        assert_eq!(
+            one("Mike reads the dog's book."),
+            "(and (instance Reading-1 Reading) (agent Reading-1 Mike) (instance Dog-1 Dog) (instance Book-1 Book) (possesses Dog-1 Book-1) (patient Reading-1 Book-1))"
+        );
+        assert_eq!(
+            kif("Mary sees a book. Her book is red.")[1],
+            "(and (instance Book-2 Book) (possesses Mary Book-2) (attribute Book-2 Red))"
+        );
+        assert_eq!(one("Rex's boy is loud."), "[unsupported/possessive]");
+    }
+
+    #[test]
+    fn name_genders_csv() {
+        let rows = name_genders_from_csv(
+            "\"name\",\"gender\"\n\"Aaron\",\"M\"\n\"Abigail\",\"F\"\n\"Pat\",\"\"\n",
+        );
+        assert_eq!(rows[0], ("Aaron".to_string(), Some(token::Gender::Male)));
+        assert_eq!(rows[1].1, Some(token::Gender::Female));
+        assert_eq!(rows[2], ("Pat".to_string(), None));
+        assert_eq!(
+            names_from_csv("\"name\",\"gender\"\n\"Aaron\",\"M\"\n"),
+            vec!["Aaron"]
+        );
+    }
+
+    // -- Modals ---------------------------------------------------------------------------
+
+    #[test]
+    fn modals_scope_over_the_clause() {
+        assert_eq!(
+            one("Dogs can bark."),
+            "(forall (?X1) (=> (instance ?X1 Dog) (modalAttribute (exists (?E1) (and (instance ?E1 Barking) (agent ?E1 ?X1))) Possibility)))"
+        );
+        assert_eq!(
+            one("Rex cannot bark."),
+            "(not (modalAttribute (exists (?E1) (and (instance ?E1 Barking) (agent ?E1 Rex))) Possibility))"
+        );
+        assert_eq!(
+            one("Rex must bark."),
+            "(modalAttribute (exists (?E1) (and (instance ?E1 Barking) (agent ?E1 Rex))) Necessity)"
+        );
+        assert_eq!(
+            one("Rex should not bark."),
+            "(modalAttribute (not (exists (?E1) (and (instance ?E1 Barking) (agent ?E1 Rex)))) Obligation)"
+        );
+        assert_eq!(
+            one("Can Rex bark?"),
+            "(modalAttribute (exists (?E1) (and (instance ?E1 Barking) (agent ?E1 Rex))) Possibility)"
+        );
+        // Objects, prepositional phrases, statives, "be" and "have" are the
+        // ordinary clause rules under the modality; nothing is minted.
+        assert_eq!(
+            one("Dogs can chase cats."),
+            "(forall (?X1) (=> (instance ?X1 Dog) (modalAttribute (exists (?E1 ?X2) (and (instance ?E1 Pursuing) (agent ?E1 ?X1) (instance ?X2 Cat) (patient ?E1 ?X2))) Possibility)))"
+        );
+        assert_eq!(
+            one("Rex can fall in the garden."),
+            "(modalAttribute (exists (?E1 ?X1) (and (instance ?E1 Falling) (agent ?E1 Rex) (instance ?X1 Garden) (eventLocated ?E1 ?X1))) Possibility)"
+        );
+        assert_eq!(
+            one("Rex may own a car."),
+            "(modalAttribute (exists (?X1) (and (instance ?X1 Automobile) (possesses Rex ?X1))) Possibility)"
+        );
+        assert_eq!(
+            one("Rex can be loud."),
+            "(modalAttribute (attribute Rex Loud) Possibility)"
+        );
+        assert_eq!(
+            one("Rex must have a tail."),
+            "(modalAttribute (exists (?X1) (and (instance ?X1 Tail) (part ?X1 Rex))) Necessity)"
+        );
+        assert_eq!(one("Rex be loud."), "[no-rule]");
+        let generic = Opts {
+            generic_you: Some("Human".into()),
+            ..Opts::default()
+        };
+        assert_eq!(
+            with("You can bark.", generic),
+            vec!["(forall (?P1) (=> (instance ?P1 Human) (modalAttribute (exists (?E1) (and (instance ?E1 Barking) (agent ?E1 ?P1))) Possibility)))"]
+        );
+        // A modal anywhere else is still reported as the construct.
+        assert_eq!(
+            one("Rex sees a dog that can bark."),
+            "[unsupported/relative-clause]"
+        );
+    }
+
     // -- Refusals for recognized constructs ----------------------------------------------
 
     #[test]
     fn unsupported_constructs_name_the_construct() {
         let cases = [
             ("He is a dog.", "unsupported/pronoun"),
-            ("Rex and Mike are loud.", "unsupported/coordination"),
+            ("Mike reads their book.", "unsupported/pronoun"),
+            ("Rex is loud or red.", "unsupported/coordination"),
             ("Rex barks because Mike reads.", "unsupported/subordination"),
-            ("Rex can bark.", "unsupported/modal"),
-            ("Rex is a dog which barks.", "unsupported/relative-clause"),
-            ("Rex has a book.", "unsupported/have"),
-            ("Rex's book is red.", "unsupported/possessive"),
+            ("Rex will bark.", "unsupported/modal"),
+            ("Rex would bark.", "unsupported/modal-counterfactual"),
+            ("Dogs that bark are animals.", "unsupported/relative-clause"),
+            ("Rex has a boy.", "unsupported/have"),
+            ("Rex's boy is loud.", "unsupported/possessive"),
+            ("It is loud.", "unsupported/expletive-it"),
             ("There is a dog.", "unsupported/existential-there"),
             ("That dog is loud.", "unsupported/demonstrative"),
             ("Mike reads 5 books.", "unsupported/numeric"),
@@ -932,6 +1387,10 @@ mod tests {
             assert_eq!(r.reason.code(), code, "{text}: {r}");
             assert!(!r.reason.hint().is_empty());
         }
+        assert_eq!(
+            refusal("Mike reads their book.").reason.to_string(),
+            "unsupported pronoun at \"their (third person, plural, possessive)\""
+        );
     }
 
     #[test]

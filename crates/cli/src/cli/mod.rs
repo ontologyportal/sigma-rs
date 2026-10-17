@@ -35,7 +35,7 @@ pub mod test;
 // pub mod serve;
 
 pub use args::{Cli, Cmd, KbArgs};
-pub use celt::run_celt;
+pub use celt::{run_celt, CeltFlags};
 pub use check::{maybe_notify_stale_git, maybe_notify_stale_local, run_check};
 pub use config_cmd::{run_config, run_config_write, ConstituentEdit};
 pub use config_tui::run_config_tui;

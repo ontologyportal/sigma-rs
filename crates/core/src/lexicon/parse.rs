@@ -29,6 +29,7 @@ impl WordNet {
             lemma_index: HashMap::new(),
             sumo_index: HashMap::new(),
             exceptions: HashMap::new(),
+            tag_counts: HashMap::new(),
         };
         for (text, pos, file) in texts {
             for (line_no, line) in (1u32..).zip(text.lines()) {
@@ -51,7 +52,8 @@ impl WordNet {
         // `index.sense` is available; unranked senses keep file order after
         // the ranked ones.  Also dedup: a lemma appearing twice in one
         // synset's word list (case variants) must not list the synset twice.
-        let ranks = index_sense.map(parse_index_sense).unwrap_or_default();
+        let (ranks, tag_counts) = index_sense.map(parse_index_sense).unwrap_or_default();
+        wn.tag_counts = tag_counts;
         for (lemma, ids) in wn.lemma_index.iter_mut() {
             ids.dedup();
             ids.sort_by_key(|id| {
@@ -237,16 +239,24 @@ fn strip_adj_marker(word: &str) -> &str {
 }
 
 /// Parse `index.sense` (`sense_key offset sense_number tag_cnt`) into
-/// `(lemma, pos, offset) -> sense_number`.  The sense key's synset type digit
-/// (`lemma%D:...`) gives the POS: 1=n 2=v 3=a 4=r 5=satellite->a.
-fn parse_index_sense(text: &str) -> HashMap<(String, Pos, u32), u32> {
+/// `(lemma, pos, offset) -> sense_number` and the summed tag counts per
+/// `(lemma, pos)`.  The sense key's synset type digit (`lemma%D:...`) gives
+/// the POS: 1=n 2=v 3=a 4=r 5=satellite->a.
+type IndexSense = (
+    HashMap<(String, Pos, u32), u32>,
+    HashMap<(String, Pos), u32>,
+);
+
+fn parse_index_sense(text: &str) -> IndexSense {
     let mut out = HashMap::new();
+    let mut counts: HashMap<(String, Pos), u32> = HashMap::new();
     for line in text.lines() {
         let mut toks = line.split_whitespace();
         let (Some(key), Some(offset), Some(sense_no)) = (toks.next(), toks.next(), toks.next())
         else {
             continue;
         };
+        let tag_cnt: u32 = toks.next().and_then(|t| t.parse().ok()).unwrap_or(0);
         let Some((lemma, rest)) = key.split_once('%') else {
             continue;
         };
@@ -260,9 +270,11 @@ fn parse_index_sense(text: &str) -> HashMap<(String, Pos, u32), u32> {
         let (Ok(offset), Ok(sense_no)) = (offset.parse::<u32>(), sense_no.parse::<u32>()) else {
             continue;
         };
-        out.insert((lemma.to_lowercase(), pos, offset), sense_no);
+        let lemma = lemma.to_lowercase();
+        *counts.entry((lemma.clone(), pos)).or_default() += tag_cnt;
+        out.insert((lemma, pos, offset), sense_no);
     }
-    out
+    (out, counts)
 }
 
 #[cfg(test)]

@@ -14,7 +14,7 @@ use super::super::grammar::{attach_pp, best, Cx, Kind, Logic, Np, Pp, Scope, Sen
 use super::super::ir::{Drs, Term};
 use super::super::lookup::{Inflection, Verb};
 use super::super::refuse::{Construct, Refusal, Refused};
-use super::super::token::{Closed, Tense};
+use super::super::token::{Closed, Number, Tense};
 use super::{force, frame, generic_subject};
 use crate::lexicon::Pos;
 
@@ -31,10 +31,10 @@ impl SentenceRule for Event {
 
     fn apply(&self, cx: &mut Cx, at: usize) -> Step<Logic> {
         let mut i = at;
-        let mut aux: Option<Tense> = None;
+        let mut aux: Option<usize> = None;
         if cx.question {
-            if let Some(Closed::Aux(t, _)) = cx.tok(i).and_then(|t| t.closed()) {
-                aux = Some(t);
+            if let Some(Closed::Aux(..)) = cx.tok(i).and_then(|t| t.closed()) {
+                aux = Some(i);
                 i += 1;
             }
         }
@@ -57,21 +57,32 @@ impl SentenceRule for Event {
 }
 
 impl Event {
-    fn with_subject(
+    pub(super) fn with_subject(
         &self,
         cx: &mut Cx,
-        mut aux: Option<Tense>,
+        mut aux_at: Option<usize>,
         subject: Np,
         mut i: usize,
     ) -> Step<Logic> {
         let mut negated = false;
-        if let Some(Closed::Aux(t, _)) = cx.tok(i).and_then(|t| t.closed()) {
-            if aux.is_some() {
+        if let Some(Closed::Aux(..)) = cx.tok(i).and_then(|t| t.closed()) {
+            if aux_at.is_some() {
                 return cx.miss(i, "a verb");
             }
-            aux = Some(t);
+            aux_at = Some(i);
             i += 1;
         }
+        let aux = aux_at.and_then(|a| match cx.tok(a).and_then(|t| t.closed()) {
+            Some(Closed::Aux(tense, number)) => Some((a, tense, number)),
+            _ => None,
+        });
+        if let Some((a, Tense::Present, number)) = aux {
+            if !subject.agrees(cx, number) {
+                return cx.miss(a, "do/does agreeing with the subject in number");
+            }
+        }
+        let aux_number = aux.map(|(_, _, number)| number);
+        let aux = aux.map(|(_, tense, _)| tense);
         if cx.tok(i).is_some_and(|t| t.is(Closed::Not)) {
             if aux.is_none() {
                 return cx.miss(i, "does/did before not");
@@ -89,6 +100,13 @@ impl Event {
             Err(r) => return cx.refuse(r, i),
         };
         i += 1;
+        let plural_form =
+            aux_number == Some(Number::Plural) || (aux.is_none() && infl == Inflection::Present);
+        let subject = if plural_form {
+            subject.pluralized(cx.lex)
+        } else {
+            subject
+        };
         let tense = match (aux, infl) {
             (_, Inflection::Progressive) => {
                 return cx.refuse(
@@ -99,9 +117,14 @@ impl Event {
                     verb_at,
                 )
             }
-            (Some(t), _) => t,
+            (Some(t), Inflection::Present) => t,
+            (Some(_), _) => return cx.miss(verb_at, "the base form of the verb after do/does"),
             (None, Inflection::Past) => Tense::Past,
-            (None, Inflection::Present) => Tense::Present,
+            (None, Inflection::Present) if subject.agrees(cx, Number::Plural) => Tense::Present,
+            (None, Inflection::ThirdSingular) if subject.agrees(cx, Number::Singular) => {
+                Tense::Present
+            }
+            (None, _) => return cx.miss(verb_at, "a verb agreeing with the subject in number"),
         };
         // Object readings, longest first, then no object.
         let mut objects: Vec<(Option<Np>, usize)> = match cx.nps(i) {
@@ -163,8 +186,10 @@ impl Event {
                 );
             }
         }
-        if let Some(r) = generic_subject(cx, &subject) {
-            return Step::Refuse(r);
+        if !cx.generic_subject {
+            if let Some(r) = generic_subject(cx, &subject) {
+                return Step::Refuse(r);
+            }
         }
         if tense == Tense::Past && !cx.lex.defined("Now") {
             return cx.refuse(
@@ -180,7 +205,7 @@ impl Event {
         } else {
             Kind::Assert
         };
-        let subject_force = force(&subject, false);
+        let subject_force = force(&subject, cx.generic_subject);
         let result = frame(
             cx,
             &subject,
@@ -353,7 +378,7 @@ impl Event {
 
     /// `agent`, `experiencer` or `patient` for the subject, or the role and
     /// its required class when none fits.
-    fn subject_role(
+    pub(super) fn subject_role(
         cx: &Cx,
         subj: &Term,
         subject: &Np,
@@ -366,6 +391,11 @@ impl Event {
                 cx.lex.noun_class(word).map(|c| c.term).unwrap_or_default()
             }
             (super::super::grammar::Head::NewName(_), _) => "Human".into(),
+            (super::super::grammar::Head::Pronoun { .. }, Term::Var(_)) => cx
+                .generic_you
+                .as_ref()
+                .map(|(_, c)| c.clone())
+                .unwrap_or_default(),
             (_, Term::Const(c)) => c.clone(),
             _ => String::new(),
         };

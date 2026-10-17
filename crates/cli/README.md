@@ -311,7 +311,7 @@ sumo man SYMBOL [--lang LANG] [-P] [-f FILE]... [-d DIR]... [--db DIR]
 Translate controlled English into SUO-KIF grounded in the loaded KB. The input is a deliberately tiny fragment of English that is really a formal language: every accepted sentence has exactly one reading, and the translator never guesses -- a sentence it cannot read is refused with the word or construct at fault, a caret under it, and a hint for rewriting it. Vocabulary comes from the KB's `termFormat` labels first and the WordNet mappings second (labels outrank senses, so a wrong most-frequent sense is fixed by adding a `termFormat`), and only terms the KB actually defines are used; proper names are KB instances, or unknown capitalized words with `--assume-names`. Assertions bind indefinites to Skolem constants (`Book-1`) so each formula is independently tellable and a later "the book" refers back; questions become conjectures. Requires the WordNet lexicon (`<lexicon>` in config.xml or `<kbDir>/WordNetMappings`).
 
 ```
-sumo celt [TEXT]... [--input FILE] [--names FILE] [--assume-names] [--kif-only] [--explain] [-f FILE]... [-d DIR]... [--db DIR]
+sumo celt [TEXT]... [--input FILE] [--names FILE] [--assume-names] [--generic] [--speaker TERM] [--addressee TERM] [--you CLASS] [--kif-only] [--explain] [-f FILE]... [-d DIR]... [--db DIR]
 ```
 
 | Flag | Default | Description |
@@ -320,6 +320,10 @@ sumo celt [TEXT]... [--input FILE] [--names FILE] [--assume-names] [--kif-only] 
 | `--input FILE` | -- | Read the text from a file instead (`-f` is the KB constituent flag) |
 | `--names FILE` | `<lexicon dir>/FirstNames.csv` when present | A `FirstNames.csv` (`"name","gender"` rows) of words that always read as proper names of Humans, even where WordNet has a common-noun sense ("Mike") |
 | `--assume-names` | off | Accept an unknown capitalized word as the name of a `Human` instead of refusing the sentence (emits `(instance Mike Human)` and `(names "Mike" Mike)`) |
+| `--generic` | off | Read a bare-plural or indefinite subject of an action verb as a universal ("Dogs chase cats" -> every dog chases some cat) instead of refusing it as ambiguous between a habit and a law |
+| `--speaker TERM` | -- | The KB instance "I"/"me"/"my" refers to; without it first person is refused |
+| `--addressee TERM` | -- | The KB instance "you"/"your" refers to, for text that addresses someone in particular |
+| `--you CLASS` | -- | With no addressee, read "you" as an arbitrary instance of CLASS: "A flashlight helps you" becomes a universal over every instance, with every "you"/"your" in the sentence bound to the same variable. The verb's own role domains still apply, so a class the KB cannot use in that role is refused |
 | `--kif-only` | off | Print only the KIF formulas, one per line; refused sentences become `;;` comment lines |
 | `--explain` | off | Also print each accepted sentence's lexical choices (`word -> Term (sense) [alternatives]`) and the matching rule |
 
@@ -328,12 +332,28 @@ Exit status is success only when every sentence translated. The run ends with `N
 ```
 Rex is a dog.          (instance Rex Dog)
 A dog is an animal.    (subclass Dog Animal)
+A hut is a small, simple shelter.
+                       (subclass Hut Shelter) + one rule per adjective
 Mike reads a book.     (instance Reading-1 Reading) (agent Reading-1 Mike)
                        (instance Book-1 Book) (patient Reading-1 Book-1)
+Birds have feathers.   (forall (?X1) (=> (instance ?X1 Bird)
+                         (exists (?X2) (and (instance ?X2 Feather) (part ?X2 ?X1)))))
+Dogs and cats are animals.
+                       (subclass Dog Animal) (subclass Cat Animal)
+A bird is an animal that flies.
+                       (subclass Bird Animal) + a rule that every bird flies
 Is Rex a dog?          ?- (instance Rex Dog)
 ```
 
-Refused constructs (each names its code, e.g. `unsupported/pronoun`): pronouns, coordination ("and"/"or"), subordinate and relative clauses, modals ("can", "must"), passives, possessives, numbers, progressive and perfect aspect, adverbs, bare-plural action generics ("Dogs chase cats"), and any word the lexicon or KB has no term for.
+Modals scope over their clause, and are written the way SUMO writes modality: `(modalAttribute FORMULA Possibility)`. The clause after the modal is parsed by the ordinary rules (a copula with "be", "have", an event with its object and prepositional phrases) and bound with variables rather than Skolem constants, since nothing inside a possibility exists; a generic subject keeps its universal outside. "Dogs can chase cats" is `(forall (?X) (=> (instance ?X Dog) (modalAttribute (exists (?E ?Y) (and (instance ?E Pursuing) (agent ?E ?X) (instance ?Y Cat) (patient ?E ?Y))) Possibility)))`. can/could/may/might give `Possibility`, must `Necessity`, should/ought `Obligation`; "cannot" denies the possibility, "must not" and "should not" modalize the negated clause. "would" is refused as `modal-counterfactual`, will/shall as `unsupported/modal` (the future). The first-order prover pipeline does not yet reason inside `modalAttribute`; the sentences are stored faithfully for when it does.
+
+Prepositions map to relations through a table in the grammar (the CELT paper's Table 1, keyed by preposition and complement type; an event head takes `eventLocated`, an object `located`). WordNet has no prepositions, so the table is the one piece of English kept in code; the planned successor is a KB relation (`prepositionRole LANGUAGE "on" eventLocated Process Object`) in a constituent file, so prepositions extend the way `termFormat` labels do.
+
+Pronouns are bound, never guessed. First and second person are deictic and come only from `--speaker`, `--addressee` or `--you`. Third person is anaphoric: "he", "she", "it" and "they" bind to the most recent compatible referent of an earlier sentence or an earlier clause (never a co-argument of their own clause; a reflexive binds only there), where compatibility is read from the KB (`Man`/`Woman`/`Human`/`Collection` by default, overridable in `Opts::pronoun_classes`) and from the gender column of `FirstNames.csv`. Two candidates is `ambiguous-reference`; none is a refusal, or `expletive-it` for "It is cold". Possessives ("your tail", "Bob's car", "the dog's bed") use the same typing as "have".
+
+Words are classified in position, with three part-of-speech checks that keep a wrong reading from sliding through: the subject must agree with its verb or copula in number ("The dog bark" matches no rule), a lowercase or sentence-initial word never takes a sense WordNet lists only capitalized ("jays" is the bird, not the statesman), and a part of speech the sense-tagged corpus almost never uses for a word is not tried ("make" is a verb, not a brand; "part" is a noun). Compound sentences are decomposed before parsing: "and"/"but" between clauses or between like items ("feathers and wings", "red, young, and loud") becomes one sentence per conjunct, and a relative clause on the predicate nominal becomes a second sentence about the subject; the whole is accepted only when every part is. "Have" is read by its object: body parts and artifact parts are `part`, attribute nouns `attribute`, other objects of an agent `possesses`.
+
+Refused constructs (each names its code, e.g. `unsupported/pronoun`): unbound pronouns, "or", subordinate clauses, relative clauses on the subject, modals other than generic "can", passives, numbers, progressive and perfect aspect, adverbs, bare-plural action generics ("Dogs chase cats", unless `--generic`), and any word the lexicon or KB has no term for.
 
 ### `sumo audit`
 

@@ -56,6 +56,9 @@ pub enum Cond {
     Not(Drs),
     /// `(forall (vars of antecedent) (=> antecedent consequent))`
     Implies(Drs, Drs),
+    /// `(modalAttribute <drs> Attribute)`: the formula holds under a
+    /// modality (`Possibility`, `Necessity`, `Obligation`).
+    Modal(Drs, String),
 }
 
 /// Bound variables and conditions.
@@ -122,6 +125,7 @@ impl Cond {
                     .collect(),
             ),
             Cond::Not(d) => list(vec![op(OpKind::Not), d.to_ast()]),
+            Cond::Modal(d, attr) => list(vec![sym("modalAttribute"), d.to_ast(), sym(attr)]),
             Cond::Implies(a, c) => {
                 let imp = list(vec![op(OpKind::Implies), a.body(), c.to_ast()]);
                 if a.vars.is_empty() {
@@ -211,6 +215,22 @@ impl Discourse {
                 });
                 return name;
             }
+        }
+    }
+
+    /// Record a mention of an existing term (a proper name) as a referent
+    /// of the current sentence, for pronouns; `class` may be empty.
+    pub fn refer(&mut self, term: &str, class: &str) {
+        let already = self
+            .referents
+            .iter()
+            .any(|r| r.term == term && r.sentence == self.sentence);
+        if !already {
+            self.referents.push(Referent {
+                term: term.to_string(),
+                class: class.to_string(),
+                sentence: self.sentence,
+            });
         }
     }
 
