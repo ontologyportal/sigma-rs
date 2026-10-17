@@ -7,7 +7,8 @@
 // form into a [`DocItem`]:
 //
 //   * `(query F)`         → `DocItem::Stmt(Annotated { Conjecture })`.
-//   * `(note …)`, `(time N)`, `(answer …)`, `(file …)` → `DocItem::Meta`.
+//   * `(note ...)`, `(time N)`, `(answer ...)`, `(file ...)`, and the other
+//     `DIRECTIVES` -> `DocItem::Meta`.
 //   * everything else     → `DocItem::Stmt(Annotated { Hypothesis })`.
 //
 // [`parse_tq`] returns that `Vec<DocItem>`; [`TestCase::from_doc_items`]
@@ -24,13 +25,28 @@ use crate::{DiagResult, ToDiagnostic};
 
 /// Directive head keywords that classify a top-level `(kw …)` list as a
 /// [`MetaNode`] rather than a logical statement.  `query` is **not** here —
-/// it carries a formula, so it becomes a `Conjecture` statement.
-const DIRECTIVES: &[&str] = &["note", "time", "answer", "file", "category"];
+/// it carries a formula, so it becomes a `Conjecture` statement.  Mirrors
+/// SigmaKEE's `InferenceTest.readTestFile`: the translation/prover switches
+/// (`minLang`, `regen`, `holUseModals`, ...) have no effect here, but must
+/// still never be asserted as hypotheses.
+const DIRECTIVES: &[&str] = &[
+    "note",
+    "time",
+    "answer",
+    "file",
+    "category",
+    "minLang",
+    "regen",
+    "closedWorldAssumption",
+    "modusPonens",
+    "dropOnePremise",
+    "holUseModals",
+];
 
 /// True when `name` heads a `.kif.tq` harness form: a [`MetaNode`] directive
-/// (`note` / `time` / `answer` / `file` / `category`) or the formula-bearing `query` /
-/// `ask`.  For editor tooling -- these deserve keyword-class highlighting in
-/// test files, where the KB can never classify them.
+/// (see [`DIRECTIVES`]) or the formula-bearing `query` / `ask`.  For editor
+/// tooling -- these deserve keyword-class highlighting in test files, where
+/// the KB can never classify them.
 pub fn is_tq_directive(name: &str) -> bool {
     DIRECTIVES.contains(&name) || matches!(name, "query" | "ask")
 }
@@ -521,5 +537,25 @@ mod tests {
             .find_map(|i| i.as_meta().filter(|m| m.key == "time"))
             .unwrap();
         assert!(matches!(time.args.first(), Some(AstNode::Number { value, .. }) if value == "12"));
+    }
+
+    #[test]
+    fn sigmakee_switch_directives_are_not_hypotheses() {
+        let src = "(minLang thf) (regen true) (holUseModals true) \
+                   (closedWorldAssumption yes) (modusPonens no) (dropOnePremise no) \
+                   (modalAttribute ?B Obligation) (query (modalAttribute ?B Permission))";
+        let tc = parse_test_content(src, "T.kif.tq").unwrap();
+        assert_eq!(tc.axioms.len(), 1);
+        assert_eq!(
+            tc.axioms[0].formula().to_string(),
+            "(modalAttribute ?B Obligation)"
+        );
+        assert_eq!(tc.input_formulas, 2);
+    }
+
+    #[test]
+    fn unknown_heads_are_still_hypotheses() {
+        let tc = parse_test_content("(minLanguage thf) (query (p a))", "T.kif.tq").unwrap();
+        assert_eq!(tc.axioms.len(), 1);
     }
 }

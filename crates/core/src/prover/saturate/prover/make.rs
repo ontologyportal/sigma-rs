@@ -1417,6 +1417,18 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
         }
         self.eq_terms.entry(ka).or_insert(ta);
         self.eq_terms.entry(kb).or_insert(tb);
+        // Never fuse two classes rooted at distinct numerals (numerals are
+        // always roots, so this also covers `X = 1` then `X = 0`): the
+        // merge would rewrite the literal to `R = R` before `make` can
+        // refute it by numeric disequality.  The asserting clause stays
+        // in the search either way, so skipping only forgoes rewriting.
+        let root_num = |k: u64| match self.eq_terms.get(&self.oracle.eq_rep(k)) {
+            Some(Term::Lit(Literal::Number(n))) => crate::numeric::parse_num(n),
+            _ => None,
+        };
+        if matches!((root_num(ka), root_num(kb)), (Some(x), Some(y)) if x != y) {
+            return;
+        }
         // Root preference: number > symbol > compound.  Rewriting
         // TOWARD numbers keeps comparisons decidable; rewriting toward
         // symbols keeps terms from GROWING (a compound root would make

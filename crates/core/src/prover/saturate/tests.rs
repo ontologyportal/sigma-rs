@@ -2084,6 +2084,32 @@ fn equality_chain_bridges_subclass_gap() {
     assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
 }
 
+// NUM1 shape: the negated goal `-1 = 0` must reach `make` unmerged so
+// numeric disequality refutes it, rather than the conjecture-equality
+// pre-pass fusing the two numerals into one class first.
+#[test]
+fn distinct_numerals_are_never_merged() {
+    let mut kb = KnowledgeBase::new_native();
+    assert!(kb.tell("(equal Xn 1)", "h").ok);
+    let ask = |q: &str| kb.ask_query(q, Some("h"), SineParams::default(), fast());
+    for q in [
+        "(not (equal -1 0))",
+        "(not (equal (AdditionFn 1 2) 4))",
+        "(not (equal Xn 0))",
+    ] {
+        let res = ask(q);
+        assert_eq!(
+            res.status,
+            ProverStatus::Proved,
+            "{q} raw: {}",
+            res.raw_output
+        );
+    }
+    for q in ["(not (equal 2 2))", "(not (equal 8 8.0))", "(equal 1 0)"] {
+        assert_ne!(ask(q).status, ProverStatus::Proved, "{q}");
+    }
+}
+
 // TQG14 shape: a uniqueness axiom stated over `part`, facts given
 // via the subrelation `component`.  Proving it needs the synthesized
 // `(=> (component ?x ?y) (part ?x ?y))` rule to bind the uniqueness

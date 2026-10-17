@@ -68,7 +68,10 @@ export class Constituent {
       new Constituent("Biography.kif", GitOrigin.default()),
       new Constituent("Cars.kif", GitOrigin.default()),
       new Constituent("Catalog.kif", GitOrigin.default()),
-      new Constituent("Cellular&TelephoneArchitecture.kif", GitOrigin.default()),
+      new Constituent(
+        "Cellular&TelephoneArchitecture.kif",
+        GitOrigin.default(),
+      ),
       new Constituent("ClimateStatecraft.kif", GitOrigin.default()),
       new Constituent("Communications.kif", GitOrigin.default()),
       new Constituent("ComputerInput.kif", GitOrigin.default()),
