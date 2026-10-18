@@ -2056,13 +2056,18 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
         let mut scratch = std::mem::take(&mut self.scratch);
         let mut trail = std::mem::take(&mut self.match_trail);
         let mut unit_subsumed = false;
+        // A support unit is activated but never given, so it must not
+        // delete a goal-line clause: with neither queued the refutation
+        // through them is unreachable (TQC2 saturated after 0 steps).
+        let clauses = &self.clauses;
+        let may_subsume = |cid: u32| tier != CONJECTURE || clauses[cid as usize].tier != SUPPORT;
         'lits: for (pos, t) in &lits {
             if t.is_ground() {
                 // Hash-only probe: the ground-unit table is keyed by
                 // atom id; a dying literal never needs residency (the
                 // surviving clause interns at the accept point below).
                 let atom = atom_content_id(t);
-                if self.units.ground_unit(*pos, atom).is_some() {
+                if self.units.ground_unit(*pos, atom).is_some_and(may_subsume) {
                     self.stats.unit_subsumed += 1;
                     unit_subsumed = true;
                     break 'lits; // subsumed by an active unit
@@ -2109,6 +2114,9 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                         trail.clear();
                         if hit {
                             self.stats.open_match_hits += 1;
+                            if same_pol == *pos && !may_subsume(u.clause) {
+                                continue;
+                            }
                             if same_pol == *pos {
                                 self.stats.unit_subsumed += 1;
                                 unit_subsumed = true;

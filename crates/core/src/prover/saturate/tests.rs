@@ -2110,6 +2110,34 @@ fn distinct_numerals_are_never_merged() {
     }
 }
 
+// TQC2 shape: a support unit (here a hypothesis identical to the negated
+// goal, or one H4 strips H1 down to) must not delete the goal clause --
+// support units are activated, never given, so the search would start
+// empty and report a saturated Disproved after 0 steps.
+#[test]
+fn support_units_never_delete_the_goal_clause() {
+    let mut kb = kb_from("(=> (ma ?A Obl) (ma ?A Perm))");
+    for (hyps, q) in [
+        (&["(not (ma Foo Perm))", "(ma ?B Obl)"][..], "(ma Foo Perm)"),
+        (
+            &["(=> (ma ?A Perm) (not (ma (negFn ?A) Obl)))", "(ma ?B Obl)"][..],
+            "(ma ?B Perm)",
+        ),
+    ] {
+        let session = format!("h{}", hyps.len() + q.len());
+        for h in hyps {
+            assert!(kb.tell(h, &session).ok, "tell {h}");
+        }
+        let res = kb.ask_query(q, Some(&session), SineParams::default(), fast());
+        assert_eq!(
+            res.status,
+            ProverStatus::Proved,
+            "{hyps:?} |- {q} raw: {}",
+            res.raw_output
+        );
+    }
+}
+
 // TQG14 shape: a uniqueness axiom stated over `part`, facts given
 // via the subrelation `component`.  Proving it needs the synthesized
 // `(=> (component ?x ?y) (part ?x ?y))` rule to bind the uniqueness

@@ -2020,7 +2020,14 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
     fn push_capped(&mut self, id: Option<u32>, max_lits: usize) -> Option<u32> {
         let id = id?;
         let key = self.clauses[id as usize].key;
-        if self.seen_duplicate(key, id) {
+        // An earlier support copy was activated, not queued: dropping the
+        // goal clause as its duplicate would leave nothing to search from.
+        let goal_over_support = self.clauses[id as usize].tier == CONJECTURE
+            && self
+                .seen
+                .get(&key)
+                .is_some_and(|&first| self.clauses[first as usize].tier == SUPPORT);
+        if !goal_over_support && self.seen_duplicate(key, id) {
             return None;
         }
         if self.clauses[id as usize].lits.len() > max_lits {
