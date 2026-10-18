@@ -429,8 +429,18 @@ struct ComposeAcc {
     /// `term_skolem_apps` of the substituted conclusion — additive the
     /// same way.
     skolems: u64,
+    /// Theory-constraint literals (`clausify::is_theory_constraint`),
+    /// judged on the PARENT literal's shape: a constraint side that is a
+    /// variable bound to a theory term only by this inference is missed.
+    theory_eqs: u64,
     /// Distinct UNBOUND absolute slots seen — the conclusion's `nvars`.
     vars: SmallVec<[u64; 16]>,
+}
+
+impl ComposeAcc {
+    fn note_constraint(&mut self, pos: bool, t: &Term) {
+        self.theory_eqs += u64::from(super::clausify::is_theory_constraint(pos, t));
+    }
 }
 
 /// Walk `t` (viewed at slot offset `off`) under substitution `s`,
@@ -2206,7 +2216,8 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
         let base =
             (st.cw_lits * nlits + st.cw_size * acc.size + st.cw_vars * acc.vars.len() as u64)
                 .max(1)
-                * (1 + st.cw_skolem * acc.skolems);
+                * (1 + st.cw_skolem * acc.skolems)
+                * (1 + st.cw_purify * acc.theory_eqs);
         base * st.tier_weight[tier as usize] * self.goal_distance_factor_sig(sig, tier)
     }
 
@@ -2746,14 +2757,16 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
         } else if self.defer_recipes() && tier != CONJECTURE {
             // Composed scalars of the raw conclusion, no terms built.
             let mut acc = ComposeAcc::default();
-            for (k, (_, term)) in e_terms.iter().enumerate() {
+            for (k, (pos, term)) in e_terms.iter().enumerate() {
                 if k == e_li {
                     continue;
                 }
+                acc.note_constraint(*pos, term);
                 compose_term(term, off, &subst, &mut acc);
             }
             let path16: SmallVec<[u16; 8]> = t_path.iter().map(|&p| p as u16).collect();
-            for (k, (_, term)) in t_terms.iter().enumerate() {
+            for (k, (pos, term)) in t_terms.iter().enumerate() {
+                acc.note_constraint(*pos, term);
                 if k == t_li {
                     compose_term_at(term, 0, &path16, &t, off, &subst, &mut acc);
                 } else {
@@ -3122,10 +3135,26 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
     }
 
     pub(crate) fn pclause_terms(&self, pc: &super::clause::PClause) -> Option<Vec<(bool, Term)>> {
-        pc.lits
+        let terms: Vec<(bool, Term)> = pc
+            .lits
             .iter()
             .map(|l| slot_atom(&self.layer.atoms, self.syn(), l.atom, 0).map(|t| (l.pos, t)))
-            .collect()
+            .collect::<Option<_>>()?;
+        if !self.opts.strategy.purify {
+            return Some(terms);
+        }
+        let mut next = u64::from(pc.nvars);
+        let fresh = || {
+            (next < super::canon::MAX_CANON_SLOTS as u64).then(|| {
+                next += 1;
+                next - 1
+            })
+        };
+        Some(super::clausify::purify(
+            terms,
+            fresh,
+            self.input_width_cap(),
+        ))
     }
 
     // -- inference rules -----------------------------------------------------------
@@ -3206,13 +3235,15 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
                 // queue.
                 let tier = g.tier.min(p.tier);
                 let mut acc = ComposeAcc::default();
-                for (k, (_, t)) in g.terms.iter().enumerate() {
+                for (k, (pos, t)) in g.terms.iter().enumerate() {
                     if k != gi {
+                        acc.note_constraint(*pos, t);
                         compose_term(t, 0, &s, &mut acc);
                     }
                 }
-                for (k, (_, t)) in p.terms.iter().enumerate() {
+                for (k, (pos, t)) in p.terms.iter().enumerate() {
                     if k != pi {
+                        acc.note_constraint(*pos, t);
                         compose_term(t, off, &s, &mut acc);
                     }
                 }
@@ -3493,8 +3524,9 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
         {
             let g = &self.clauses[given as usize];
             let mut acc = ComposeAcc::default();
-            for (k, (_, t)) in g.terms.iter().enumerate() {
+            for (k, (pos, t)) in g.terms.iter().enumerate() {
                 if k != gi {
+                    acc.note_constraint(*pos, t);
                     compose_term(t, 0, &s, &mut acc);
                 }
             }

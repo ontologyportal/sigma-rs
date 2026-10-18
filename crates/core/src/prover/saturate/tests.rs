@@ -408,6 +408,118 @@ fn implication_gives_one_two_literal_clause() {
     assert_eq!(head_of(&layer, &c.lits[1]), "attribute");
 }
 
+fn pterm(head: &str, args: Vec<super::clause::Term>) -> super::clause::Term {
+    use super::clause::Term;
+    let mut elems = vec![Term::Sym(crate::types::Symbol::from(head))];
+    elems.extend(args);
+    Term::App(elems)
+}
+
+fn slots_from(start: u64) -> impl FnMut() -> Option<u64> {
+    let mut next = start;
+    move || {
+        next += 1;
+        Some(next - 1)
+    }
+}
+
+#[test]
+fn purification_lifts_non_ground_theory_terms_into_equalities() {
+    use super::clause::Term;
+    use crate::parse::OpKind;
+    let lof = pterm(
+        "ListOrderFn",
+        vec![
+            pterm("ListFn", vec![Term::Var(0), Term::Var(1)]),
+            Term::Var(2),
+        ],
+    );
+    let clause = vec![(true, pterm("instance", vec![lof.clone(), Term::Var(3)]))];
+    let out = super::clausify::purify(clause, slots_from(4), 8);
+    assert_eq!(
+        out,
+        vec![
+            (true, pterm("instance", vec![Term::Var(4), Term::Var(3)])),
+            (
+                false,
+                Term::App(vec![Term::Op(OpKind::Equal), Term::Var(4), lof])
+            ),
+        ]
+    );
+}
+
+#[test]
+fn purification_leaves_ground_terms_equalities_and_quotes_alone() {
+    use super::clause::Term;
+    use crate::parse::OpKind;
+    use crate::types::Literal;
+    let two = Term::Lit(Literal::Number("2".into()));
+    let ground = pterm(
+        "ListOrderFn",
+        vec![
+            pterm("ListFn", vec![pterm("A", vec![]), pterm("B", vec![])]),
+            two,
+        ],
+    );
+    let sum = pterm(
+        "AdditionFn",
+        vec![Term::Var(0), Term::Lit(Literal::Number("1".into()))],
+    );
+    let untouched = [
+        vec![(
+            true,
+            pterm("instance", vec![ground, pterm("Animal", vec![])]),
+        )],
+        vec![(
+            true,
+            Term::App(vec![Term::Op(OpKind::Equal), Term::Var(1), sum.clone()]),
+        )],
+        vec![(
+            true,
+            pterm(
+                "believes",
+                vec![
+                    pterm("Bill", vec![]),
+                    pterm("not_q", vec![pterm("q", vec![sum.clone()])]),
+                ],
+            ),
+        )],
+    ];
+    for clause in untouched {
+        assert_eq!(
+            super::clausify::purify(clause.clone(), slots_from(2), 8),
+            clause
+        );
+    }
+    let wide = vec![(true, pterm("p", vec![sum]))];
+    assert_eq!(
+        super::clausify::purify(wide.clone(), slots_from(2), 1),
+        wide,
+        "over max_lits"
+    );
+    assert_eq!(
+        super::clausify::purify(wide.clone(), || None, 8),
+        wide,
+        "out of slots"
+    );
+}
+
+#[test]
+fn purify_strategy_toggle_gates_list_order_typing() {
+    let kb = kb_from(
+        "(=> (and (domain ?REL ?NUMBER ?CLASS) (?REL @ROW)) \
+             (instance (ListOrderFn (ListFn @ROW) ?NUMBER) ?CLASS))\n\
+         (domain zooKeeps 2 Animal)\n\
+         (zooKeeps Zoo1 Rex)",
+    );
+    let res = kb.ask_query("(instance Rex Animal)", None, SineParams::default(), fast());
+    assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
+    let mut off = fast();
+    off.strategy.purify = false;
+    let res = kb.ask_query("(instance Rex Animal)", None, SineParams::default(), off);
+    assert_ne!(res.status, ProverStatus::Proved, "purification off");
+}
+
 #[test]
 fn iff_gives_two_clauses() {
     // The KIF parser macro-expands `<=>` into the two implications at

@@ -21,6 +21,15 @@ pub(crate) fn format_num(v: f64) -> String {
     }
 }
 
+/// SUMO's binary arithmetic functions, as evaluated by [`eval_binary_fn`].
+#[cfg(feature = "native-prover")]
+pub(crate) const BINARY_ARITH_FNS: [&str; 4] = [
+    "AdditionFn",
+    "SubtractionFn",
+    "MultiplicationFn",
+    "DivisionFn",
+];
+
 /// Evaluate one of SUMO's binary arithmetic functions over ground
 /// numeric arguments.  `None` ⇒ not an arithmetic function, division
 /// by zero, or a non-finite result — the term stays symbolic.

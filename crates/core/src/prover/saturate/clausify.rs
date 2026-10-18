@@ -1320,6 +1320,133 @@ fn lower_form(f: Form, ctx: &mut SkolemCtx, cap: usize) -> Option<Vec<Vec<(bool,
     distribute(&f, cap)
 }
 
+/// Purification (unification with abstraction, done once per clause):
+/// every non-ground theory term `t` inside a non-equality literal is
+/// replaced by a fresh variable `?V` plus the literal `(not (equal ?V t))`
+/// -- `P(t)` and `(or (not (equal ?V t)) P(?V))` are equivalent.  The
+/// literal then unifies with goals syntactic unification would reject
+/// (`Rex` vs `(ListOrderFn (ListFn ?X ?Y) ?N)`), and the equality is
+/// decided once the theory term is ground.  Equality literals already have
+/// that flat shape and are left alone, as are quoted formulas, where
+/// equality is not substitutive.  The clause is returned unchanged when the
+/// extra literals would push it past `max_lits` or `fresh` runs out of
+/// variables.  Applied at clause load (`Strategy::purify`), so `fresh`
+/// mints the clause's next free variable slots.
+pub(crate) fn purify(
+    clause: Vec<(bool, Term)>,
+    mut fresh: impl FnMut() -> Option<SymbolId>,
+    max_lits: usize,
+) -> Vec<(bool, Term)> {
+    if !clause
+        .iter()
+        .any(|(_, t)| !is_equality(t) && contains_theory_term(t))
+    {
+        return clause;
+    }
+    let mut defs: Vec<(Term, SymbolId)> = Vec::new();
+    let mut abstracted: Vec<(bool, Term)> = Vec::with_capacity(clause.len());
+    for (pos, t) in &clause {
+        if is_equality(t) {
+            abstracted.push((*pos, t.clone()));
+        } else {
+            match abstract_args(t, &mut fresh, &mut defs) {
+                Some(a) => abstracted.push((*pos, a)),
+                None => return clause,
+            }
+        }
+    }
+    if abstracted.len() + defs.len() > max_lits {
+        return clause;
+    }
+    let mut out = abstracted;
+    out.extend(defs.into_iter().map(|(t, v)| {
+        (
+            false,
+            Term::App(vec![Term::Op(OpKind::Equal), Term::Var(v), t]),
+        )
+    }));
+    out
+}
+
+fn is_equality(t: &Term) -> bool {
+    matches!(t, Term::App(e) if matches!(e.first(), Some(Term::Op(OpKind::Equal))))
+}
+
+/// A term the prover evaluates once ground: `(ListOrderFn (ListFn ..) k)`
+/// or a binary arithmetic function -- purified only while non-ground.
+fn is_theory_term(t: &Term) -> bool {
+    !t.is_ground() && has_theory_head(t)
+}
+
+/// `t`'s shape is a theory term's, ground or not.
+fn has_theory_head(t: &Term) -> bool {
+    use crate::semantics::consts::{LIST_FN, LIST_ORDER_FN};
+    let Term::App(e) = t else { return false };
+    if e.len() != 3 {
+        return false;
+    }
+    let Some(Term::Sym(head)) = e.first() else {
+        return false;
+    };
+    if head.id() == LIST_ORDER_FN.id() {
+        return matches!(&e[1], Term::App(l) if matches!(l.first(), Some(Term::Sym(s)) if s.id() == LIST_FN.id()));
+    }
+    crate::numeric::BINARY_ARITH_FNS.contains(&&*head.name())
+}
+
+/// A negative literal `(not (equal a b))` whose atom `t` equates a theory
+/// term with something: the constraint shape [`purify`] introduces, which
+/// `Strategy::cw_purify` penalizes until the theory decides it.
+pub(crate) fn is_theory_constraint(pos: bool, t: &Term) -> bool {
+    !pos && is_equality(t) && matches!(t, Term::App(e) if e[1..].iter().any(has_theory_head))
+}
+
+fn is_quote(e: &[Term]) -> bool {
+    matches!(e.first(), Some(Term::Sym(h)) if unquote_op(h).is_some())
+}
+
+fn contains_theory_term(t: &Term) -> bool {
+    let Term::App(e) = t else { return false };
+    !is_quote(e)
+        && e[1..]
+            .iter()
+            .any(|a| is_theory_term(a) || contains_theory_term(a))
+}
+
+/// `t` with each maximal theory subterm of its arguments replaced by its
+/// definition variable (one per distinct term), recorded in `defs`.
+/// `None` when `fresh` runs out of variables.
+fn abstract_args(
+    t: &Term,
+    fresh: &mut impl FnMut() -> Option<SymbolId>,
+    defs: &mut Vec<(Term, SymbolId)>,
+) -> Option<Term> {
+    let Term::App(e) = t else {
+        return Some(t.clone());
+    };
+    if is_quote(e) {
+        return Some(t.clone());
+    }
+    let mut out = Vec::with_capacity(e.len());
+    out.push(e[0].clone());
+    for a in &e[1..] {
+        if is_theory_term(a) {
+            let v = match defs.iter().find(|(d, _)| d == a) {
+                Some(&(_, v)) => v,
+                None => {
+                    let v = fresh()?;
+                    defs.push((a.clone(), v));
+                    v
+                }
+            };
+            out.push(Term::Var(v));
+        } else {
+            out.push(abstract_args(a, fresh, defs)?);
+        }
+    }
+    Some(Term::App(out))
+}
+
 /// The shared filtering tail: over-cap clause drop (the LOSS flag),
 /// in-clause literal dedup, tautology deletion, canonicalization, and
 /// clause-key dedup.

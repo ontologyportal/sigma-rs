@@ -2293,12 +2293,17 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
         // Parameterized clause-weight function (the selection genome).
         // Defaults (cw_lits=1, cw_size=1, cw_vars=2, cw_skolem=1) reproduce
         // the historical `(#lits + size + 2·#vars)·(1 + skolems)`.
+        let constraints = terms
+            .iter()
+            .filter(|(pos, t)| super::super::clausify::is_theory_constraint(*pos, t))
+            .count() as u64;
         let st = &self.opts.strategy;
         let base = (st.cw_lits * clause.lits.len() as u64
             + st.cw_size * size
             + st.cw_vars * u64::from(clause.nvars))
         .max(1)
-            * (1 + st.cw_skolem * skolems);
+            * (1 + st.cw_skolem * skolems)
+            * (1 + st.cw_purify * constraints);
         // Conjecture-distance factor: structurally goal-near clauses
         // keep their base weight; goal-far ones sink (×1..×1+W).
         let dist = self.goal_distance_factor(&clause.lits, tier);
@@ -4025,5 +4030,67 @@ mod verified_dedup_tests {
         assert!(p.seen_insert(akey, b), "collision-mate counts as new");
         assert_eq!(p.stats.dedup_collisions_detected, 1);
         assert_eq!(p.seen.get(&akey), Some(&a), "first id stays");
+    }
+}
+
+#[cfg(test)]
+mod theory_constraint_weight_tests {
+    use super::super::super::ProverLayer;
+    use super::super::NativeProver;
+    use super::{Term, SUPPORT};
+    use crate::parse::OpKind;
+    use crate::prover::saturate::prover::NativeOpts;
+    use crate::prover::saturate::strategy::Strategy;
+    use crate::semantics::caches::test_support::kif_layer;
+    use crate::semantics::types::Scope;
+    use crate::types::Symbol;
+
+    fn sym(n: &str) -> Term {
+        Term::Sym(Symbol::from(n))
+    }
+    fn app(v: Vec<Term>) -> Term {
+        Term::App(v)
+    }
+
+    /// `(or (p ?0) (not (equal ?0 (ListOrderFn (ListFn ?1 ?2) ?3))))`.
+    fn constrained() -> Vec<(bool, Term)> {
+        let lof = app(vec![
+            sym("ListOrderFn"),
+            app(vec![sym("ListFn"), Term::Var(1), Term::Var(2)]),
+            Term::Var(3),
+        ]);
+        vec![
+            (true, app(vec![sym("p"), Term::Var(0)])),
+            (false, app(vec![Term::Op(OpKind::Equal), Term::Var(0), lof])),
+        ]
+    }
+
+    fn weight_with(cw_purify: u64) -> u64 {
+        let layer = ProverLayer::new(kif_layer(""));
+        let opts = NativeOpts {
+            strategy: Strategy {
+                cw_purify,
+                ..Strategy::base()
+            },
+            ..Default::default()
+        };
+        let mut p = NativeProver::new(&layer, Scope::Base, opts);
+        let id = p
+            .make(constrained(), vec![], "test", SUPPORT, None, true)
+            .expect("kept");
+        p.clauses[id as usize].weight
+    }
+
+    #[test]
+    fn cw_purify_multiplies_the_weight_per_constraint_literal() {
+        assert!(super::super::super::clausify::is_theory_constraint(
+            false,
+            &constrained()[1].1
+        ));
+        assert!(!super::super::super::clausify::is_theory_constraint(
+            true,
+            &constrained()[1].1
+        ));
+        assert_eq!(weight_with(3), 4 * weight_with(0));
     }
 }

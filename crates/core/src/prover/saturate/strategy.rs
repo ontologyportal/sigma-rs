@@ -57,6 +57,7 @@ pub struct Strategy {
     // -- clause-selection weight FUNCTION (the E-style "genome") -------------
     // base = (cw_lits·#lits + cw_size·term-size + cw_vars·#vars)
     //        · (1 + cw_skolem·#skolem-applications),  floored at 1.
+    // then * (1 + cw_purify*#theory-constraint literals).
     // The defaults (1,1,2,1) reproduce the historical hardcoded formula.
     /// Per-literal coefficient in the clause weight.
     pub cw_lits: u64,
@@ -67,6 +68,11 @@ pub struct Strategy {
     /// Skolem-application penalty multiplier (throttles generative
     /// existentials: weight ×(1 + cw_skolem·skolems)).
     pub cw_skolem: u64,
+    /// Theory-constraint penalty multiplier: weight x (1 + cw_purify*k)
+    /// for a clause with `k` negative equalities against a theory term --
+    /// the literals [`Self::purify`] introduces -- so clauses still
+    /// carrying an undecided constraint sink below ordinary ones.
+    pub cw_purify: u64,
     /// Literal-selection rule for resolution (which literal of the given
     /// clause to resolve on): 0 = fewest index candidates (the historical
     /// default — most goal-directed), 1 = most candidates, 2 = first
@@ -415,6 +421,14 @@ pub struct Strategy {
     /// footprint on the heaviest known generator (RNG044+1 @60s, the
     /// phase-1 ~20x-RSS case): see `base()`'s note for the arithmetic.
     pub deferred_cap: u32,
+    /// Purification (unification with abstraction) at clause load: a
+    /// non-ground theory term (`ListOrderFn` over a `ListFn`, binary
+    /// arithmetic) inside a non-equality literal becomes a fresh variable
+    /// plus a `(not (equal ?V t))` literal, so goals unify with the
+    /// literal and the equality is decided once the term is ground.
+    /// Changes loaded clause content, so it separates background
+    /// snapshots.
+    pub purify: bool,
 }
 
 /// One row of the TPTP portfolio's central racing table
@@ -443,6 +457,7 @@ impl Strategy {
             cw_size: 1,
             cw_vars: 2,
             cw_skolem: 1,
+            cw_purify: 0,
             lit_select: 0,
             max_depth: 5,
             max_term_size: 64,
@@ -527,6 +542,7 @@ impl Strategy {
             deferred_passive: false,
             split_naming: false,
             split_width: 0,
+            purify: true,
             // Cap arithmetic (measured on RNG044+1 @60s, the heaviest
             // known recipe generator): the uncapped run peaks at
             // 23.4 GB max RSS (18.1 GB peak footprint) vs 0.73 GB
@@ -1029,7 +1045,9 @@ impl Strategy {
             // wide clauses split at load), so it must separate
             // snapshots — packed into the schema word's high bits so
             // the knob-off fingerprint stays bit-identical.
-            u64::from(self.schema) | (u64::from(self.split_naming) << 8),
+            u64::from(self.schema)
+                | (u64::from(self.split_naming) << 8)
+                | (u64::from(!self.purify) << 9),
             u64::from(self.goal_dist),
             self.goal_dist_w,
         ];
@@ -1086,6 +1104,8 @@ impl Strategy {
             cw_size: r.pick(&[1, 1, 2, 3]),
             cw_vars: r.pick(&[0, 1, 2, 2, 4]),
             cw_skolem: r.pick(&[0, 1, 1, 2, 4]),
+            // Not in the sweep genome (no RNG draw).
+            cw_purify: Strategy::base().cw_purify,
             lit_select: r.pick(&[0, 0, 0, 1, 2]) as u8,
             max_depth: r.pick(&[4, 5, 6, 7]) as u8,
             max_term_size: r.pick(&[48, 64, 96, 128]) as usize,
@@ -1173,6 +1193,7 @@ impl Strategy {
             // Not in the sweep genome (no RNG draw): a safety budget,
             // not a search lever — the measured default applies.
             deferred_cap: Strategy::base().deferred_cap,
+            purify: Strategy::base().purify,
         }
     }
 

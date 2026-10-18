@@ -73,7 +73,7 @@ pub(crate) fn canonical_var(k: usize) -> SymbolId {
 /// Highest canonical slot with a precomputed reverse mapping.  A clause
 /// would need >256 distinct variables to exceed it — far past every
 /// practical guard (`MAX_LITS_PER_CLAUSE` × realistic atom widths).
-const MAX_CANON_SLOTS: usize = 256;
+pub(crate) const MAX_CANON_SLOTS: usize = 256;
 
 /// [`canonical_var`] through a process-wide forward table (slot → id):
 /// the hot canonicalization/intern paths resolve a slot's canonical id
