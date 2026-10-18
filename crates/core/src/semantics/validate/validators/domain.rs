@@ -70,8 +70,24 @@ impl SentenceValidator for Domain {
 /// violate one. Asking `is_class` of a variable's scoped id (`?NUM` ->
 /// `NUM__<scope>`) would treat every edge-less symbol as a root class and fail
 /// every variable -- see `semantics/caches/is_class.rs`.
+///
+/// A sub-term headed by a variable (`(?F @ROW)`) has no statically-knowable
+/// type either, so it is typed as the root class: it satisfies an `Entity`
+/// domain and nothing narrower.
 fn arg_satisfies_domain(cx: &Cx<'_>, arg: &Element, dom: &RelationDomain) -> bool {
     match arg {
+        Element::Sub(sub_sid)
+            if cx
+                .sentence(*sub_sid)
+                .is_some_and(|s| matches!(s.elements.first(), Some(Element::Variable { .. }))) =>
+        {
+            match dom {
+                RelationDomain::Domain(dom_id) | RelationDomain::DomainSubclass(dom_id) => {
+                    *dom_id == ROOT_SYMBOL.id()
+                }
+                RelationDomain::Unknown => true,
+            }
+        }
         Element::Symbol(sym) => {
             let sym_id = sym.id();
             match dom {
@@ -214,6 +230,32 @@ mod tests {
         assert!(
             !codes.contains(&"E006"),
             "E006 must not fire on variable args; got {codes:?}"
+        );
+    }
+
+    #[test]
+    fn variable_headed_term_is_typed_as_entity() {
+        let layer = kif_layer(
+            r#"
+            (subclass Human Entity)
+            (instance Human Class)
+            (instance holdsAny UnaryPredicate)
+            (domain holdsAny 1 Entity)
+            (instance likes UnaryPredicate)
+            (domain likes 1 Human)
+            (holdsAny (?F ?X))
+            (likes (?G ?Y))
+        "#,
+        );
+        let entity = codes_in(&layer, root_by_head(&layer, "holdsAny"));
+        assert!(
+            !entity.contains(&"E006"),
+            "a variable-headed term is an Entity and satisfies an Entity domain; got {entity:?}"
+        );
+        let human = codes_in(&layer, root_by_head(&layer, "likes"));
+        assert!(
+            human.contains(&"E006"),
+            "an Entity-typed term does not satisfy a narrower domain; got {human:?}"
         );
     }
 
