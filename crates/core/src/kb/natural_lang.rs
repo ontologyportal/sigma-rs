@@ -15,7 +15,7 @@
 //! | Marker       | Meaning                                                      |
 //! |--------------|--------------------------------------------------------------|
 //! | `%1` … `%9`  | Positional argument (1-indexed) rendered recursively.        |
-//! | `%*{N-Z}[s]` | Multi-argument: arguments `N` up to (not including) `Z`, joined by `s` + a space. `{N-}` takes the rest. `\[s]` joins by `s` alone. So `%*{2-4}[,]` ≡ `%2, %3`. |
+//! | `%*{N-Z}[s]` | Multi-argument: arguments `N` up to (not including) `Z`, joined by `s` + a space. `{N-}` takes the rest; no range (`%*[s]`) takes every argument. `\[s]` joins by `s` alone. So `%*{2-4}[,]` is `%2, %3`. |
 //! | `&%Symbol`   | Cross-reference: render via `termFormat(Symbol, lang)` with a fallback to the raw name. |
 //! | `%n`         | Negation placeholder: empty in positive context, `" not "` in negative. |
 //! | `%n{TEXT}`   | Custom negation phrase: empty in positive context, `TEXT` in negative. |
@@ -166,6 +166,27 @@ mod tests {
         let f = parse_kif_formula("(listing Fido Juno Dog Animal)");
         let r = kb.render_formula(&f, "EnglishLanguage", RenderStyle::Plain);
         assert_eq!(r.rendered, "the list holds juno, dog, animal");
+    }
+
+    /// Without a range, `%*[sep]` takes every argument (SUMO's `ListFn`).
+    #[test]
+    fn multi_arg_without_range_takes_every_argument() {
+        let kb = kb_with_english_templates(
+            r#"(format EnglishLanguage ListFn "(%*[,])")
+               (format EnglishLanguage tightList "<%*\[;]>")"#,
+        );
+        let r = kb.render_formula(
+            &parse_kif_formula("(ListFn Fido Juno Dog)"),
+            "EnglishLanguage",
+            RenderStyle::Plain,
+        );
+        assert_eq!(r.rendered, "(fido, juno, dog)");
+        let r = kb.render_formula(
+            &parse_kif_formula("(tightList Fido Juno)"),
+            "EnglishLanguage",
+            RenderStyle::Plain,
+        );
+        assert_eq!(r.rendered, "<fido;juno>");
     }
 
     /// A backslash before the bracket drops the space after the separator.

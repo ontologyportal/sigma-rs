@@ -609,7 +609,7 @@ fn extract_quantifier_vars_and_body(args: &[AstNode]) -> (Vec<String>, Option<As
     (names, body)
 }
 
-/// A parsed `%*{N-Z}[sep]` multi-argument marker.
+/// A parsed `%*{N-Z}[sep]` (or range-less `%*[sep]`) multi-argument marker.
 #[cfg(any(feature = "external-prover", feature = "native-prover"))]
 struct MultiMarker {
     /// First argument token number, numbered as in `%N`.
@@ -627,7 +627,8 @@ struct MultiMarker {
 ///
 /// `{N-Z}` selects the arguments from `N` up to but **not** including `Z`;
 /// `{N-}` runs to the end. Numbers use the same 1-indexed scheme as `%N`, so
-/// `%*{2-4}[,]` is exactly `%2, %3`. The bracket body is the separator, which
+/// `%*{2-4}[,]` is exactly `%2, %3`. Without a range (`%*[,]`) every
+/// argument is taken. The bracket body is the separator, which
 /// gains a trailing space unless the bracket is preceded by a backslash —
 /// `\[,]` separates with `,` alone.
 ///
@@ -635,18 +636,19 @@ struct MultiMarker {
 #[cfg(any(feature = "external-prover", feature = "native-prover"))]
 fn parse_multi_marker(bytes: &[u8], i: usize) -> Option<MultiMarker> {
     let mut p = i + 2; // past "%*"
-    if *bytes.get(p)? != b'{' {
-        return None;
-    }
-    let close = bytes[p + 1..].iter().position(|&b| b == b'}')?;
-    let range = std::str::from_utf8(&bytes[p + 1..p + 1 + close]).ok()?;
-    p += 1 + close + 1; // past "{…}"
-
-    let (lo, hi) = range.split_once('-')?;
-    let start: usize = lo.trim().parse().ok()?;
-    let end = match hi.trim() {
-        "" => None,
-        z => Some(z.parse().ok()?),
+    let (start, end) = if *bytes.get(p)? == b'{' {
+        let close = bytes[p + 1..].iter().position(|&b| b == b'}')?;
+        let range = std::str::from_utf8(&bytes[p + 1..p + 1 + close]).ok()?;
+        p += 1 + close + 1; // past "{...}"
+        let (lo, hi) = range.split_once('-')?;
+        let start: usize = lo.trim().parse().ok()?;
+        let end = match hi.trim() {
+            "" => None,
+            z => Some(z.parse().ok()?),
+        };
+        (start, end)
+    } else {
+        (1, None)
     };
 
     // A backslash before `[` drops the space that otherwise follows the separator.
