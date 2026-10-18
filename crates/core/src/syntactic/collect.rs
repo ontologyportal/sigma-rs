@@ -42,6 +42,33 @@ impl SyntacticLayer {
         })
     }
 
+    /// `true` if `sent_id` (recursing into subs) contains a sub-sentence
+    /// headed by a variable -- `(?REL @ROW)` / `(?F ?X)`, a higher-order
+    /// predicate- or function-variable formula.  A quantifier's variable
+    /// list is not a head.
+    pub(crate) fn sentence_has_variable_head(&self, sent_id: SentenceId) -> bool {
+        let Some(sentence) = self.sentence(sent_id) else {
+            return false;
+        };
+        let quantifier = matches!(
+            sentence.elements.first(),
+            Some(Element::Op(OpKind::ForAll | OpKind::Exists))
+        );
+        if matches!(sentence.elements.first(), Some(Element::Variable { .. })) {
+            return true;
+        }
+        sentence
+            .elements
+            .iter()
+            .enumerate()
+            .any(|(i, el)| match el {
+                Element::Sub(sid) if !(quantifier && i == 1) => {
+                    self.sentence_has_variable_head(*sid)
+                }
+                _ => false,
+            })
+    }
+
     /// Resolve `TptpLang::Auto` against a sentence set: `Tff` if any
     /// sentence contains a numeric literal (see
     /// [`Self::sentence_has_numeral`]), else the untyped default `Fof`.

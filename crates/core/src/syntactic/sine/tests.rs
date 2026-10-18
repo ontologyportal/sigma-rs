@@ -1205,3 +1205,52 @@ fn pinned_budget_returns_one_wave_when_even_that_overruns() {
     let (_t, sel) = store.select_axioms_within_budget(&seed, 2, None, true);
     assert_eq!(sel, axioms[..3].iter().copied().collect());
 }
+
+const HIGHER_ORDER: &str = "(equal (?F ?X) (AssignmentFn ?F ?X))\n\
+                            (=> (and (range ?F ?C) (equal (AssignmentFn ?F ?X) ?V)) (instance ?V ?C))\n\
+                            (forall (?X) (=> (instance ?X Dog) (instance ?X Animal)))\n\
+                            (instance Rex Dog)\n\
+                            (range FooFn Dog)\n\
+                            (range BarFn Dog)\n\
+                            (range BazFn Dog)";
+
+#[test]
+fn variable_headed_axioms_are_higher_order_but_quantifier_lists_are_not() {
+    let (store, axioms) = store_and_axioms(HIGHER_ORDER);
+    assert!(store.sentence_has_variable_head(axioms[0]));
+    assert!(!store.sentence_has_variable_head(axioms[1]));
+    assert!(
+        !store.sentence_has_variable_head(axioms[2]),
+        "a quantifier's variable list is not a variable head",
+    );
+    assert!(!store.sentence_has_variable_head(axioms[3]));
+}
+
+#[test]
+fn pinned_selection_seeds_higher_order_axioms_and_their_symbols() {
+    let (mut store, axioms) = store_and_axioms(HIGHER_ORDER);
+    build_eager(&mut store, &axioms);
+    let rex = sym(&store, "Rex");
+    let unpinned = select(&store, &[rex], None, false);
+    assert!(!unpinned.contains(&axioms[0]));
+    let pinned = select(&store, &[rex], None, true);
+    assert!(
+        pinned.contains(&axioms[0]),
+        "the bridge seeds every selection"
+    );
+    assert!(
+        pinned.contains(&axioms[1]),
+        "its AssignmentFn joins the fan-out and triggers the range rule",
+    );
+}
+
+#[test]
+fn higher_order_marks_follow_removal_and_rebuild() {
+    let (mut store, axioms) = store_and_axioms(HIGHER_ORDER);
+    build_eager(&mut store, &axioms);
+    let rex = sym(&store, "Rex");
+    store.sine_rebuild();
+    assert!(select(&store, &[rex], None, true).contains(&axioms[0]));
+    store.sine_remove_axiom(axioms[0]);
+    assert!(!select(&store, &[rex], None, true).contains(&axioms[0]));
+}

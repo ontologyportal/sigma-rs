@@ -170,6 +170,15 @@ impl SineIndex {
         let mut over = false;
         let mut pin_stack: Vec<SymbolId> = Vec::new();
         let mut pin_done: HashSet<SymbolId> = HashSet::new();
+        if pinned {
+            for &sid in &self.higher_order {
+                if selected.insert(sid) {
+                    if let Some(syms) = self.axiom_syms.get(&sid) {
+                        frontier.extend(syms.iter().copied());
+                    }
+                }
+            }
+        }
 
         'bfs: while !frontier.is_empty() {
             if let Some(limit) = depth_limit {

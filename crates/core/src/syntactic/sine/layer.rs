@@ -74,10 +74,14 @@ impl SyntacticLayer {
             });
         }
         let pin = self.pinned_of(sid);
+        let higher_order = self.sentence_has_variable_head(sid);
         self.sine.modify(|idx| {
             idx.add_axiom(sid, syms);
             if let Some(pin) = pin {
                 idx.pin(sid, pin);
+            }
+            if higher_order {
+                idx.mark_higher_order(sid);
             }
         });
     }
@@ -158,10 +162,18 @@ impl SyntacticLayer {
             .iter()
             .filter_map(|(sid, _)| self.pin_for(*sid, &transitive).map(|p| (*sid, p)))
             .collect();
+        let higher_order: Vec<SentenceId> = pairs
+            .iter()
+            .map(|(sid, _)| *sid)
+            .filter(|sid| self.sentence_has_variable_head(*sid))
+            .collect();
         self.sine.modify(|idx| {
             idx.rebuild_from(pairs);
             for (sid, pin) in pins {
                 idx.pin(sid, pin);
+            }
+            for sid in higher_order {
+                idx.mark_higher_order(sid);
             }
         });
     }

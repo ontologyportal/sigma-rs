@@ -93,6 +93,9 @@ impl EagerBehavior for SineCache {
                             if let Some(pin) = pin {
                                 idx.pin(sid, pin);
                             }
+                            if parent.sentence_has_variable_head(sid) {
+                                idx.mark_higher_order(sid);
+                            }
                         }
                     }
                     Event::RootRemoved { sid, .. } => idx.remove_axiom(*sid),

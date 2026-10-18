@@ -75,6 +75,13 @@ pub struct SineIndex {
     #[serde(default)]
     pub(in crate::syntactic::sine) pinned_by_owner: HashMap<SymbolId, Vec<SentenceId>>,
 
+    /// Higher-order axioms (a variable in head position, see
+    /// `SyntacticLayer::sentence_has_variable_head`).  Under pinned selection
+    /// they seed every selection: no symbol of theirs is specific enough to
+    /// trigger them, yet they state how the language itself behaves.
+    #[serde(default)]
+    pub(in crate::syntactic::sine) higher_order: HashSet<SentenceId>,
+
     /// Relations the KB declares transitive, as last reported by the
     /// `TransitiveRelationsChanged` event.  Their ground facts are pinned
     /// like the static pinned relations.
@@ -105,6 +112,7 @@ impl Default for SineIndex {
             sym_to_owned: HashMap::new(),
             pinned_owner: HashMap::new(),
             pinned_by_owner: HashMap::new(),
+            higher_order: HashSet::new(),
             transitive: HashSet::new(),
             stats: AddAxiomStats::default(),
             pending: Vec::new(),
@@ -256,6 +264,12 @@ impl SineIndex {
         }
     }
 
+    /// Mark `sid` as a higher-order axiom (see [`Self::higher_order`]).
+    /// Idempotent.
+    pub(crate) fn mark_higher_order(&mut self, sid: SentenceId) {
+        self.higher_order.insert(sid);
+    }
+
     pub(crate) fn unpin(&mut self, sid: SentenceId) {
         if let Some(pin) = self.pinned_owner.remove(&sid) {
             self.drop_from_inverse(pin.owner, sid);
@@ -393,6 +407,7 @@ impl SineIndex {
             self.pending.retain(|(p, _)| *p != sid);
         }
         self.unpin(sid);
+        self.higher_order.remove(&sid);
         let Some(syms) = self.axiom_syms.remove(&sid) else {
             return;
         };
@@ -502,6 +517,7 @@ impl SineIndex {
         // for axioms the rebuilt index still tracks.
         let tracked = &self.axiom_syms;
         self.pinned_owner.retain(|sid, _| tracked.contains_key(sid));
+        self.higher_order.retain(|sid| tracked.contains_key(sid));
         let mut pins: Vec<(SentenceId, SymbolId)> = self
             .pinned_owner
             .iter()
@@ -534,6 +550,7 @@ impl SineIndex {
         self.sym_to_owned.clear();
         self.pinned_owner.clear();
         self.pinned_by_owner.clear();
+        self.higher_order.clear();
         self.transitive.clear();
     }
 
