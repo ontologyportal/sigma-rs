@@ -597,7 +597,8 @@ export class Session {
   matchingAxioms(formula: string): AuditFocus[];
   translate(opts?: TranslateOpts): string;
   lookup(pattern: string): string[];
-  validate(): Diagnostic[];
+  /** `showSuppressed` also reports findings silenced by `; sumo-ignore` comments. */
+  validate(opts?: { showSuppressed?: boolean }): Diagnostic[];
   validateFormula(kif: string): Diagnostic[];
   /** Ask/Tell pair validated in one scratch session against the live KB. */
   validateScratch(

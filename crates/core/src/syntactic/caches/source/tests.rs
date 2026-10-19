@@ -219,3 +219,32 @@ fn parse_error_leaves_earlier_files_intact() {
         "good file's roots disturbed by bad file's parse failure"
     );
 }
+
+// -- in-source suppressions -----------------------------------------------
+
+#[test]
+fn suppressions_bind_at_ingest_and_survive_snapshot() {
+    let mut store = SyntacticLayer::default();
+    store.load_kif(
+        "; sumo-ignore: arity-mismatch\n(subclass Human Animal)",
+        "f",
+    );
+    let form = store.source_spans(store.by_head("subclass")[0])[0].clone();
+    assert!(store.is_suppressed(&form, "arity-mismatch"));
+    assert!(!store.is_suppressed(&form, "head-not-relation"));
+
+    let snap = SourceCache.snapshot_side(store.source.side());
+    let restored = SourceSide::default();
+    SourceCache.restore_side(&restored, snap);
+    assert!(restored.is_suppressed(&form, "arity-mismatch"));
+}
+
+#[test]
+fn reingest_replaces_suppressions() {
+    let mut store = SyntacticLayer::default();
+    store.load_kif("; sumo-ignore-file\n(subclass Human Animal)", "f");
+    let form = store.source_spans(store.by_head("subclass")[0])[0].clone();
+    assert!(store.is_suppressed(&form, "anything"));
+    store.load_kif("(subclass Human Animal)", "f");
+    assert!(!store.is_suppressed(&form, "anything"));
+}

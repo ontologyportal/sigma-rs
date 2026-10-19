@@ -120,7 +120,7 @@ pub use kb::prove::{AuditBatch, AuditSample, SampledAudit};
 pub use kb::search::{
     RankComponent, SearchHit, SearchOpts, SearchSource, TaxConstraint, DEFAULT_CANDIDATE_LIMIT,
 };
-pub use kb::semantics::{ValidationTarget, VocabStats};
+pub use kb::semantics::{ValidateOpts, ValidationTarget, VocabStats};
 pub use kb::KnowledgeBase;
 pub use parse::dialect::{tptp_highlight, ConvertedStmt, EmitResult, Emitter};
 pub use parse::doc::{DocItem, MetaNode};

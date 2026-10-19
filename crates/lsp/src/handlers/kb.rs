@@ -159,6 +159,11 @@ pub struct SetIgnoredDiagnosticsParams {
     /// diagnostics.  A fresh notification replaces the server-
     /// side set entirely; to clear the list, send `{"codes": []}`.
     pub codes: Vec<String>,
+    /// Publish diagnostics that in-source `; sumo-ignore` /
+    /// `; sumo-ignore-file` comments suppress.  Omitted leaves the current
+    /// setting unchanged.
+    #[serde(default)]
+    pub show_suppressed: Option<bool>,
 }
 
 /// Apply a `sumo/setIgnoredDiagnostics` notification.
@@ -172,6 +177,11 @@ pub fn handle_set_ignored_diagnostics<L: TopLayer>(
     params: SetIgnoredDiagnosticsParams,
 ) {
     use std::collections::HashSet;
+    if let Some(show) = params.show_suppressed {
+        state
+            .show_suppressed
+            .store(show, std::sync::atomic::Ordering::SeqCst);
+    }
     let new: HashSet<String> = params.codes.into_iter().collect();
     log::info!(target: "sumo_lsp::kb",
         "setIgnoredDiagnostics: {} code(s) ignored", new.len());

@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use crate::cache::events::{Event, EventKind};
 use crate::cache::{EagerMapBehavior, EntryCache};
-use crate::parse::doc::DocItem;
+use crate::parse::doc::{DocItem, Suppressions};
 use crate::syntactic::SyntacticLayer;
 use crate::{AstNode, Diagnostic, Severity, Span};
 
@@ -245,6 +245,11 @@ impl EagerMapBehavior for SourceCache {
                 .iter()
                 .map(|e| (e.key().clone(), e.value().clone()))
                 .collect(),
+            suppressions: side
+                .suppressions
+                .iter()
+                .map(|e| (e.key().clone(), e.value().clone()))
+                .collect(),
         }
     }
 
@@ -257,6 +262,9 @@ impl EagerMapBehavior for SourceCache {
         }
         for (k, v) in snap.origins {
             side.origins.insert(k, v);
+        }
+        for (k, v) in snap.suppressions {
+            side.suppressions.insert(k, v);
         }
     }
 
@@ -294,24 +302,33 @@ impl EagerMapBehavior for SourceCache {
                         // for it is inert.
                         side.set_origin(&file_key, file.origin.clone());
                         let mut out = Vec::new();
-                        let nodes: Vec<AstNode> = if file.prebuilt.is_none() {
+                        let (nodes, comments): (Vec<AstNode>, _) = if file.prebuilt.is_none() {
                             // -- Outside the lock: parse + fingerprint + dedup ----------
-                            let (nodes, errs) = parser.parse(file.contents.as_str(), &file_key);
+                            let ((nodes, errs), comments) =
+                                parser.parse_full(file.contents.as_str(), &file_key);
                             out.extend(
                                 errs.iter()
                                     .map(|(_, e)| Event::Diagnostic(e.to_diagnostic())),
                             );
-                            nodes
+                            let nodes = nodes
                                 .into_iter()
                                 .filter_map(|doc| match doc {
                                     DocItem::Stmt(node) => Some(node),
                                     _ => None,
                                 })
-                                .collect()
+                                .collect();
+                            (nodes, comments)
                         } else {
-                            file.prebuilt.clone().unwrap()
+                            (file.prebuilt.clone().unwrap(), Vec::new())
                         };
 
+                        let suppressions = if SourceSide::is_scratch_key(&file_key) {
+                            Suppressions::default()
+                        } else {
+                            let forms: Vec<Span> = nodes.iter().map(|n| n.span().clone()).collect();
+                            Suppressions::bind(&file.contents, &forms, &comments)
+                        };
+                        side.set_suppressions(&file_key, suppressions);
                         let parsed = nodes
                             .into_iter()
                             .map(|node| {
@@ -442,6 +459,12 @@ impl SyntacticLayer {
     /// Forget all source bookkeeping for `session`.
     pub(crate) fn forget_source_session(&self, session: &str) {
         self.source.side().forget_session(session)
+    }
+
+    /// Whether a diagnostic named `name` at `range` is suppressed by an
+    /// in-source `; sumo-ignore` / `; sumo-ignore-file` directive.
+    pub(crate) fn is_suppressed(&self, range: &Span, name: &str) -> bool {
+        self.source.side().is_suppressed(range, name)
     }
 
     /// The source keys belonging to `session`.

@@ -1,6 +1,6 @@
 use log;
 use sigmakee_rs_sdk::manager::KBManager;
-use sigmakee_rs_sdk::{Diagnostic, Session};
+use sigmakee_rs_sdk::{Diagnostic, Session, ValidateOpts};
 use sigmakee_rs_sdk::{KnowledgeBase, ProvingLayer};
 
 use crate::cli::util::read_stdin;
@@ -18,6 +18,9 @@ use crate::style::*;
 /// `SemanticError` severity is no longer global mutable state.
 /// `wordnet`: also render the WordNet<->KB diagnostics report (`sumo
 /// validate --wordnet`) after the SUMO diagnostics above.
+/// `show_suppressed`: also report findings silenced by in-source
+/// `; sumo-ignore` comments (whole-KB validation only; an inline `formula`
+/// carries no file to suppress in).
 pub fn run_validate<L>(
     session: Session<L>,
     _manager: KBManager,
@@ -25,6 +28,7 @@ pub fn run_validate<L>(
     parse_only: bool,
     suppress: &[String],
     wordnet: bool,
+    show_suppressed: bool,
 ) -> bool
 where
     L: ProvingLayer,
@@ -42,7 +46,7 @@ where
         Some(text) => validate_single_formula(session, &text, parse_only, suppress, wordnet),
         None => {
             let mut diagnostics = if !parse_only {
-                session.validate()
+                session.validate(ValidateOpts { show_suppressed })
             } else {
                 vec![]
             };

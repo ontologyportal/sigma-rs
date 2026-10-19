@@ -240,7 +240,10 @@ export async function activate(context: ExtensionContext): Promise<void> {
       if (e.affectsConfiguration("sumo.activeKb")) {
         await bootstrapFromWorkspaceSettings();
       }
-      if (e.affectsConfiguration("sumo.diagnostics.ignoredCodes")) {
+      if (
+        e.affectsConfiguration("sumo.diagnostics.ignoredCodes") ||
+        e.affectsConfiguration("sumo.diagnostics.showSuppressed")
+      ) {
         await pushIgnoredDiagnosticsToServer();
       }
       if (e.affectsConfiguration("sumo.trace.server")) {
@@ -1204,8 +1207,9 @@ function enclosingTopLevelForm(
 // -- Server-side state sync (LSP) --------------------------------------------
 
 /**
- * Send the current `sumo.diagnostics.ignoredCodes` list to the
- * server via the `sumo/setIgnoredDiagnostics` notification.  The
+ * Send the current `sumo.diagnostics.ignoredCodes` list and
+ * `sumo.diagnostics.showSuppressed` flag to the server via the
+ * `sumo/setIgnoredDiagnostics` notification.  The
  * server replaces its ignore-set and re-publishes diagnostics
  * for every open document, so the change is reflected in the
  * Problems panel immediately.
@@ -1218,11 +1222,17 @@ async function pushIgnoredDiagnosticsToServer(): Promise<void> {
   if (!client) {
     return;
   }
-  const codes = workspace
-    .getConfiguration("sumo")
-    .get<string[]>("diagnostics.ignoredCodes", []);
+  const config = workspace.getConfiguration("sumo");
+  const codes = config.get<string[]>("diagnostics.ignoredCodes", []);
+  const showSuppressed = config.get<boolean>(
+    "diagnostics.showSuppressed",
+    false,
+  );
   try {
-    await client.sendNotification("sumo/setIgnoredDiagnostics", { codes });
+    await client.sendNotification("sumo/setIgnoredDiagnostics", {
+      codes,
+      showSuppressed,
+    });
     outputChannel?.appendLine(
       `[extension] setIgnoredDiagnostics: ${codes.length} code(s) ignored`,
     );

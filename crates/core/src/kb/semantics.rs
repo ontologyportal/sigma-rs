@@ -22,6 +22,14 @@ pub enum ValidationTarget<'a> {
     Session(&'a str),
 }
 
+/// Options for [`KnowledgeBase::validate_with`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ValidateOpts {
+    /// Report diagnostics that in-source `; sumo-ignore` /
+    /// `; sumo-ignore-file` directives would otherwise suppress.
+    pub show_suppressed: bool,
+}
+
 /// Aggregate vocabulary + documentation-coverage counts — see
 /// [`KnowledgeBase::vocab_stats`].
 #[derive(Debug, Clone, Default)]
@@ -332,7 +340,27 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
     /// just-typed, correctly-parented class in an editor buffer is not flagged
     /// as underived). A [`ValidationTarget::Session`] reasons in its own
     /// session's scope unless `session` names another.
+    ///
+    /// Findings suppressed by in-source directives are dropped; see
+    /// [`Self::validate_with`] to surface them.
     pub fn validate(&self, target: ValidationTarget<'_>, session: Option<&str>) -> Vec<Diagnostic> {
+        self.validate_with(target, session, ValidateOpts::default())
+    }
+
+    /// [`Self::validate`] with explicit [`ValidateOpts`].
+    ///
+    /// A `; sumo-ignore[: names]` comment directly above a top-level form
+    /// suppresses the named diagnostics (all of them when no names are given,
+    /// or `all` is named) for that occurrence of the form only; a
+    /// `; sumo-ignore-file[: names]` comment does the same for every form in
+    /// its file.  Names are diagnostic codes in kebab case (`arity-mismatch`).
+    /// `opts.show_suppressed` reports suppressed findings anyway.
+    pub fn validate_with(
+        &self,
+        target: ValidationTarget<'_>,
+        session: Option<&str>,
+        opts: ValidateOpts,
+    ) -> Vec<Diagnostic> {
         use crate::semantics::types::Scope;
         use crate::syntactic::caches::session::session_id;
         crate::with_guard!(self);
@@ -344,7 +372,11 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
             ValidationTarget::Session(name) => (self.session_sids(name), session.or(Some(name))),
         };
         let scope = session.map_or(Scope::Base, |s| Scope::Session(session_id(s)));
-        self.validate_sids(&sids, scope)
+        let mut diags = self.validate_sids(&sids, scope);
+        if !opts.show_suppressed {
+            diags.retain(|d| !syntactic.is_suppressed(&d.range, d.code));
+        }
+        diags
     }
 
     /// The single implementation behind every public validate entrypoint:
@@ -436,6 +468,106 @@ mod tests {
         assert_eq!(findings.len(), 2);
         assert_eq!(findings[0].range.file, "one.kif");
         assert_eq!(findings[1].range.file, "two.kif");
+    }
+
+    fn head_not_relation(kb: &KnowledgeBase, opts: crate::ValidateOpts) -> Vec<String> {
+        let mut files: Vec<String> = kb
+            .validate_with(crate::ValidationTarget::All, None, opts)
+            .into_iter()
+            .filter(|d| d.code == "head-not-relation")
+            .map(|d| format!("{}:{}", d.range.file, d.range.line))
+            .collect();
+        files.sort();
+        files
+    }
+
+    fn load(kb: &mut KnowledgeBase, file: &str, text: &str) {
+        let r = kb.load(SourceFile::kif(PathBuf::from(file), text.to_string()), file);
+        assert!(r.ok, "load failed: {:?}", r.diagnostics);
+    }
+
+    #[test]
+    fn ignore_directive_suppresses_only_the_next_form() {
+        let mut kb = KnowledgeBase::new();
+        load(
+            &mut kb,
+            "a.kif",
+            "; sumo-ignore: head-not-relation\n(UnknownRelation Dog)\n(OtherUnknown Cat)\n",
+        );
+        assert_eq!(head_not_relation(&kb, Default::default()), vec!["a.kif:3"]);
+    }
+
+    #[test]
+    fn ignore_directive_with_other_name_suppresses_nothing() {
+        let mut kb = KnowledgeBase::new();
+        load(
+            &mut kb,
+            "a.kif",
+            "; sumo-ignore: arity-mismatch\n(UnknownRelation Dog)\n",
+        );
+        assert_eq!(head_not_relation(&kb, Default::default()), vec!["a.kif:2"]);
+    }
+
+    #[test]
+    fn bare_ignore_directive_suppresses_every_diagnostic() {
+        let mut kb = KnowledgeBase::new();
+        load(&mut kb, "a.kif", "; sumo-ignore\n(UnknownRelation Dog)\n");
+        let diags = kb.validate(crate::ValidationTarget::All, None);
+        assert!(
+            diags.iter().all(|d| d.range.file != "a.kif"),
+            "nothing in a.kif should survive: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn ignore_directive_is_per_occurrence_not_per_sentence() {
+        let mut kb = KnowledgeBase::new();
+        load(&mut kb, "a.kif", "; sumo-ignore\n(UnknownRelation Dog)\n");
+        load(&mut kb, "b.kif", "(UnknownRelation Dog)\n");
+        assert_eq!(head_not_relation(&kb, Default::default()), vec!["b.kif:1"]);
+    }
+
+    #[test]
+    fn ignore_file_directive_suppresses_the_whole_file() {
+        let mut kb = KnowledgeBase::new();
+        load(
+            &mut kb,
+            "a.kif",
+            "(UnknownRelation Dog)\n; sumo-ignore-file: head-not-relation\n(OtherUnknown Cat)\n",
+        );
+        load(&mut kb, "b.kif", "(ThirdUnknown Cow)\n");
+        assert_eq!(head_not_relation(&kb, Default::default()), vec!["b.kif:1"]);
+    }
+
+    #[test]
+    fn show_suppressed_reports_suppressed_findings() {
+        let mut kb = KnowledgeBase::new();
+        load(
+            &mut kb,
+            "a.kif",
+            "; sumo-ignore-file\n(UnknownRelation Dog)\n",
+        );
+        let opts = crate::ValidateOpts {
+            show_suppressed: true,
+        };
+        assert_eq!(head_not_relation(&kb, opts), vec!["a.kif:2"]);
+    }
+
+    #[test]
+    fn reloading_without_the_directive_unsuppresses() {
+        let mut kb = KnowledgeBase::new();
+        load(&mut kb, "a.kif", "; sumo-ignore\n(UnknownRelation Dog)\n");
+        assert!(head_not_relation(&kb, Default::default()).is_empty());
+        load(&mut kb, "a.kif", "(UnknownRelation Dog)\n");
+        assert_eq!(head_not_relation(&kb, Default::default()), vec!["a.kif:1"]);
+    }
+
+    #[test]
+    fn ignore_directive_does_not_apply_to_tells() {
+        let mut kb = KnowledgeBase::new();
+        assert!(kb.tell("; sumo-ignore\n(UnknownRelation Dog)", "s").ok);
+        let diags = kb.validate(crate::ValidationTarget::Session("s"), None);
+        assert!(diags.iter().any(|d| d.code == "head-not-relation"));
     }
 
     #[test]

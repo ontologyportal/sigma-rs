@@ -97,6 +97,9 @@ pub struct GlobalState<L: TopLayer = TranslationLayer> {
     /// `SemanticError::code()` (e.g. `"E005"`) and `SemanticError::name()`
     /// (e.g. `"arity-mismatch"`). Empty by default.
     pub ignored_diagnostic_codes: Arc<RwLock<HashSet<String>>>,
+    /// Publish diagnostics that in-source `; sumo-ignore` comments suppress
+    /// (see `sumo/setIgnoredDiagnostics`' `showSuppressed`). Off by default.
+    pub show_suppressed: Arc<AtomicBool>,
     /// How to construct a fresh, empty session -- the capability behind
     /// `sumo/setActiveFiles`' discard-and-rebuild fast path (cheaper than
     /// per-file removal when most of the KB is being dropped).
@@ -127,6 +130,7 @@ impl<L: TopLayer> Clone for GlobalState<L> {
             docs: Arc::clone(&self.docs),
             client_manages_files: Arc::clone(&self.client_manages_files),
             ignored_diagnostic_codes: Arc::clone(&self.ignored_diagnostic_codes),
+            show_suppressed: Arc::clone(&self.show_suppressed),
             fresh_session: self.fresh_session,
             tptp_lines: Arc::clone(&self.tptp_lines),
             pending_reloads: Arc::clone(&self.pending_reloads),
@@ -145,6 +149,7 @@ impl<L: TopLayer> GlobalState<L> {
             docs: Arc::new(RwLock::new(HashMap::new())),
             client_manages_files: Arc::new(AtomicBool::new(false)),
             ignored_diagnostic_codes: Arc::new(RwLock::new(HashSet::new())),
+            show_suppressed: Arc::new(AtomicBool::new(false)),
             fresh_session: None,
             tptp_lines: Arc::new(RwLock::new(HashMap::new())),
             pending_reloads: Arc::new(RwLock::new(HashMap::new())),

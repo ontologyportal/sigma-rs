@@ -1382,4 +1382,39 @@ mod tq_session_tests {
             })
             .collect()
     }
+
+    fn published_codes(out: &[Message]) -> String {
+        out.iter()
+            .filter_map(|m| match m {
+                Message::Notification(n) if n.method == "textDocument/publishDiagnostics" => {
+                    Some(n.params.to_string())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn in_source_suppression_hides_diagnostics_until_shown() {
+        let state = GlobalState::new();
+        let uri = Url::parse("file:///tmp/suppress.kif").expect("url");
+        let out = open(&state, &uri, "; sumo-ignore\n(UnknownRelation Dog)\n");
+        assert!(!published_codes(&out).is_empty(), "didOpen must publish");
+        assert!(
+            !published_codes(&out).contains("head-not-relation"),
+            "suppressed diagnostic was published"
+        );
+
+        let out = dispatch_message(
+            &state,
+            Message::Notification(Notification {
+                method: SET_IGNORED_DIAGNOSTICS_METHOD.to_string(),
+                params: serde_json::json!({ "codes": [], "showSuppressed": true }),
+            }),
+        );
+        assert!(
+            published_codes(&out).contains("head-not-relation"),
+            "showSuppressed must republish the suppressed diagnostic"
+        );
+    }
 }

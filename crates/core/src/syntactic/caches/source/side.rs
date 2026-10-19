@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 
+use crate::parse::doc::Suppressions;
 use crate::types::FileOrigin;
 use crate::Span;
 
@@ -45,6 +46,9 @@ pub(crate) struct SourceSide {
     /// until the caller commits (`accept_kif_update`) or keeps them
     /// (`reject_kif_update`).  Only promoted axioms land here.
     pub(super) recycle: DashMap<String, HashSet<u64>>,
+    /// Per source key, the in-source `; sumo-ignore` directives bound at its
+    /// most recent ingest.  Replaced on every re-ingest; absent when empty.
+    pub(super) suppressions: DashMap<String, Suppressions>,
 }
 
 impl SourceSide {
@@ -157,6 +161,23 @@ impl SourceSide {
         now_empty
     }
 
+    /// Replace `source_key`'s suppressions with those bound at this ingest.
+    pub(crate) fn set_suppressions(&self, source_key: &str, suppressions: Suppressions) {
+        if suppressions.is_empty() {
+            self.suppressions.remove(source_key);
+        } else {
+            self.suppressions
+                .insert(source_key.to_string(), suppressions);
+        }
+    }
+
+    /// Whether a diagnostic named `name` at `range` is suppressed in-source.
+    pub(crate) fn is_suppressed(&self, range: &Span, name: &str) -> bool {
+        self.suppressions
+            .get(&range.file)
+            .is_some_and(|s| s.covers(range, name))
+    }
+
     /// Forget a session's source-group bookkeeping (the sources themselves are
     /// reconciled separately).
     pub(crate) fn forget_session(&self, session: &str) {
@@ -174,4 +195,6 @@ pub(crate) struct SourceSideSnapshot {
     /// restores cleanly (empty — the next ingest repopulates it).
     #[serde(default)]
     pub(super) origins: HashMap<String, FileOrigin>,
+    #[serde(default)]
+    pub(super) suppressions: HashMap<String, Suppressions>,
 }

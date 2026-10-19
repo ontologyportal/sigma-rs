@@ -188,7 +188,7 @@ branch, and load its files with `-f` or `-d`.
 Parse KIF files and semantically validate every formula.
 
 ```
-sumo validate [FORMULA] [--parse] [--no-kb-check] [-f FILE]... [-d DIR]... [--db DIR]
+sumo validate [FORMULA] [--parse] [--no-kb-check] [--show-suppressed] [-f FILE]... [-d DIR]... [--db DIR]
 ```
 
 - **With `-f`/`-d` files** — parse → validate.
@@ -200,6 +200,33 @@ sumo validate [FORMULA] [--parse] [--no-kb-check] [-f FILE]... [-d DIR]... [--db
 | `FORMULA` | — | Inline KIF formula to validate against the KB |
 | `--parse` | — | Parse-only validation; skip semantic checks entirely |
 | `--no-kb-check` | — | Do not semantically validate loaded KB files; only check the inline `FORMULA` (parse errors in KB files are still reported) |
+| `--show-suppressed` | - | Also report diagnostics silenced by in-source `; sumo-ignore` comments |
+
+#### In-source suppression
+
+A comment can silence semantic diagnostics (never parse errors):
+
+```
+; sumo-ignore: arity-mismatch, head-not-relation
+(foo Bar Baz)
+
+; sumo-ignore-file: no-entity-ancestor
+```
+
+- `; sumo-ignore[: names]` applies to the next top-level form only, and only
+  when nothing but whitespace (or more comment lines) separates them.  It
+  covers that occurrence of the form: the same formula in another file is
+  still reported.
+- `; sumo-ignore-file[: names]` applies to every form in its file, wherever
+  it appears.
+- Names are kebab-case diagnostic codes, separated by commas or spaces.  No
+  names, or `all`, suppresses every diagnostic of any severity.
+- Directives inside a form, or in inline `tell` text, have no effect.
+
+The LSP takes the same switch as `showSuppressed` on `sumo/setIgnoredDiagnostics`
+(VS Code: `sumo.diagnostics.showSuppressed`); the SDK as
+`ValidateOpts { show_suppressed }` on `Session::validate`, and the npm package as
+`validate({ showSuppressed: true })`.
 
 ### `sumo ask`
 

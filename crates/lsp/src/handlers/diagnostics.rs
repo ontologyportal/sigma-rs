@@ -14,8 +14,6 @@
 // published.  Semantic-error spans fall back to the sentence span
 // when the error variant itself doesn't carry one.
 
-use std::collections::HashSet;
-
 use lsp_server::{Message, Notification};
 use lsp_types::{PublishDiagnosticsParams, Url};
 use ropey::Rope;
@@ -51,18 +49,11 @@ pub fn publish_diagnostics<L: TopLayer>(
         .ok()
         .map(|g| g.clone())
         .unwrap_or_default();
-    publish_diagnostics_filtered(out, uri, rope, parsed, kb, version, &ignored)
-}
-
-fn publish_diagnostics_filtered<L: TopLayer>(
-    out: &mut Vec<Message>,
-    uri: &Url,
-    rope: &Rope,
-    parsed: &ParsedDocument,
-    kb: &KnowledgeBase<L>,
-    version: Option<i32>,
-    ignored: &HashSet<String>,
-) {
+    let opts = sigmakee_rs_sdk::ValidateOpts {
+        show_suppressed: state
+            .show_suppressed
+            .load(std::sync::atomic::Ordering::SeqCst),
+    };
     let mut diagnostics = Vec::new();
 
     // (1) Parse / tokenize diagnostics.  Convert each to LSP directly.
@@ -75,14 +66,12 @@ fn publish_diagnostics_filtered<L: TopLayer>(
     let file_tag = uri_to_tag(uri);
     let is_tq = crate::server::is_tq(&file_tag);
     // ONE bulk validation call for the whole file, not a per-sentence loop
-    let findings = if is_tq {
-        kb.validate(
-            sigmakee_rs_sdk::ValidationTarget::File(&file_tag),
-            Some(&file_tag),
-        )
-    } else {
-        kb.validate(sigmakee_rs_sdk::ValidationTarget::File(&file_tag), None)
-    };
+    let session = is_tq.then_some(file_tag.as_str());
+    let findings = kb.validate_with(
+        sigmakee_rs_sdk::ValidationTarget::File(&file_tag),
+        session,
+        opts,
+    );
     for d in findings {
         if ignored.contains(d.code) || ignored.contains(d.kind) {
             continue;

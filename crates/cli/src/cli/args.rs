@@ -181,6 +181,11 @@ pub enum Cmd {
         /// config.xml). A no-op, with a note, when no lexicon is loaded.
         #[arg(long)]
         wordnet: bool,
+
+        /// Report diagnostics that in-source `; sumo-ignore` /
+        /// `; sumo-ignore-file` comments would otherwise suppress.
+        #[arg(long)]
+        show_suppressed: bool,
     },
 
     /// Clausify the knowledge base and print its CNF form as SUO-KIF, one

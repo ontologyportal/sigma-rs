@@ -172,6 +172,11 @@
           "default": "fof",
           "description": "TPTP dialect used by 'SUMO: Generate TPTP File' — first-order (fof) or typed first-order (tff).  The kernel does not yet emit THF."
         },
+        "sumo.diagnostics.showSuppressed": {
+          "type": "boolean",
+          "default": false,
+          "description": "Also show diagnostics that in-source `; sumo-ignore` / `; sumo-ignore-file` comments suppress.  Changes take effect immediately; no restart is needed."
+        },
         "sumo.diagnostics.ignoredCodes": {
           "type": "array",
           "default": [],

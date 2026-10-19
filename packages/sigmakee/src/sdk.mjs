@@ -432,9 +432,13 @@ export class Session {
     return this.#kb.lookup(pattern);
   }
 
-  /** Semantic validation over the whole KB. Returns a `string[]` (empty ⇒ clean). */
-  validate() {
-    return this.#kb.validate();
+  /**
+   * Semantic validation over the whole KB. Returns a `Diagnostic[]` (empty means
+   * clean). `showSuppressed` also reports findings that in-source
+   * `; sumo-ignore` / `; sumo-ignore-file` comments suppress.
+   */
+  validate({ showSuppressed = false } = {}) {
+    return this.#kb.validate(showSuppressed);
   }
 
   /** Validate one inline formula without mutating the KB. Returns a `string[]`. */

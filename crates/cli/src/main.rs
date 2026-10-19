@@ -578,7 +578,16 @@ where
             formula,
             parse,
             wordnet,
-        } => run_validate(session, manager, formula, parse, suppress, wordnet),
+            show_suppressed,
+        } => run_validate(
+            session,
+            manager,
+            formula,
+            parse,
+            suppress,
+            wordnet,
+            show_suppressed,
+        ),
 
         #[cfg(feature = "ask")]
         Cmd::Ask {

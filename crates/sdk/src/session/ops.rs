@@ -8,7 +8,7 @@ use sigmakee_rs_core::DynSink;
 use sigmakee_rs_core::ExternalOpts;
 #[cfg(feature = "persist")]
 use sigmakee_rs_core::TranslationLayer;
-use sigmakee_rs_core::{Diagnostic, HasTranslation, TopLayer, TptpLang, TptpOptions};
+use sigmakee_rs_core::{Diagnostic, HasTranslation, TopLayer, TptpLang, TptpOptions, ValidateOpts};
 
 #[cfg(feature = "external-prover")]
 use crate::Source;
@@ -19,10 +19,11 @@ use super::Session;
 impl<L: TopLayer> Session<L> {
     /// Run semantic validation over the whole KB and return the findings.
     /// Available on every backend (validation is layer-agnostic).  An empty
-    /// vec means clean.
-    pub fn validate(&self) -> Vec<Diagnostic> {
+    /// vec means clean.  Findings silenced by in-source `; sumo-ignore`
+    /// directives are dropped unless `opts.show_suppressed` is set.
+    pub fn validate(&self, opts: ValidateOpts) -> Vec<Diagnostic> {
         self.kb
-            .validate(sigmakee_rs_core::ValidationTarget::All, None)
+            .validate_with(sigmakee_rs_core::ValidationTarget::All, None, opts)
     }
 
     /// Validate one inline KIF formula: parse it into a scratch session, run the
@@ -99,8 +100,13 @@ impl<L: TopLayer> Session<L> {
     /// their declarations are visible only in the file's own session overlay.
     ///
     /// Prefer [`Session::validate_formula`] for scratch input that belongs to
-    /// no file.
-    pub fn validate_buffer(&mut self, file: &str, text: &str) -> Vec<Diagnostic> {
+    /// no file.  `opts` is as for [`Session::validate`].
+    pub fn validate_buffer(
+        &mut self,
+        file: &str,
+        text: &str,
+        opts: ValidateOpts,
+    ) -> Vec<Diagnostic> {
         use sigmakee_rs_core::SourceFile;
 
         // A syntactically broken buffer must never touch the KB: it parses to
@@ -125,8 +131,11 @@ impl<L: TopLayer> Session<L> {
             return staged.diagnostics;
         }
 
-        self.kb
-            .validate(sigmakee_rs_core::ValidationTarget::File(file), Some(file))
+        self.kb.validate_with(
+            sigmakee_rs_core::ValidationTarget::File(file),
+            Some(file),
+            opts,
+        )
     }
 
     /// Cap the number of concurrent tasks the KB's reactive cache router may
@@ -250,7 +259,7 @@ impl<L: HasTranslation> Session<L> {
 mod tests {
     use super::Session;
     use crate::Source;
-    use sigmakee_rs_core::{TptpLang, TptpOptions, TranslationLayer};
+    use sigmakee_rs_core::{TptpLang, TptpOptions, TranslationLayer, ValidateOpts};
 
     fn reader(name: &str, kif: &str) -> Source {
         Source::Reader {
@@ -290,6 +299,25 @@ mod tests {
     }
 
     #[test]
+    fn validate_honours_in_source_suppressions_unless_shown() {
+        let mut s = Session::<TranslationLayer>::new("ops-suppress".into());
+        s.ingest(reader("t.kif", "; sumo-ignore\n(UnknownRelation Dog)"));
+        let unknown = |opts| {
+            s.validate(opts)
+                .into_iter()
+                .filter(|d| d.code == "head-not-relation")
+                .count()
+        };
+        assert_eq!(unknown(ValidateOpts::default()), 0);
+        assert_eq!(
+            unknown(ValidateOpts {
+                show_suppressed: true
+            }),
+            1
+        );
+    }
+
+    #[test]
     fn validate_reports_no_errors_on_clean_kb() {
         // `instance`/`subclass` are foundational SUMO primitives normally
         // pre-declared by loading Merge.kif; a synthetic single-line fixture
@@ -307,7 +335,7 @@ mod tests {
             "(subclass Dog Mammal)\n(subclass Mammal Entity)",
         ));
         let bad: Vec<_> = s
-            .validate()
+            .validate(ValidateOpts::default())
             .into_iter()
             .filter(|d| d.is_err() && (d.message.contains("Dog") || d.message.contains("Mammal")))
             .collect();

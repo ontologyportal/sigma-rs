@@ -3,7 +3,7 @@
 // Non-proving ops: validation, TPTP translation, snapshot/restore, and the
 // thread-pool knob -- the wasm face of the SDK's `session/ops.rs`.
 
-use sigmakee_rs_sdk::{DiagnosticView, ScratchValidationView, TptpLang, TptpOptions};
+use sigmakee_rs_sdk::{DiagnosticView, ScratchValidationView, TptpLang, TptpOptions, ValidateOpts};
 use wasm_bindgen::prelude::*;
 
 use crate::types::to_js;
@@ -52,11 +52,15 @@ impl Session {
     }
 
     /// Run semantic validation over the whole KB. Returns a JS array of
-    /// structured diagnostics (empty means clean).
+    /// structured diagnostics (empty means clean). `show_suppressed` also
+    /// reports findings that in-source `; sumo-ignore` comments suppress.
     #[wasm_bindgen]
-    pub fn validate(&self) -> Result<JsValue, JsValue> {
+    pub fn validate(&self, show_suppressed: Option<bool>) -> Result<JsValue, JsValue> {
         let session_guard = self.session.read().expect("kb lock not poisoned");
-        to_js(&DiagnosticView::from_slice(&session_guard.validate()))
+        let opts = ValidateOpts {
+            show_suppressed: show_suppressed.unwrap_or(false),
+        };
+        to_js(&DiagnosticView::from_slice(&session_guard.validate(opts)))
     }
 
     /// Validate a single inline KIF formula without mutating the KB. Parse
