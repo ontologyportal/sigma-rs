@@ -12,7 +12,7 @@ const emit = defineEmits<{ "update:modelValue": [value: T] }>();
 </script>
 
 <template>
-  <div class="subtabs" role="tablist">
+  <div class="subtabs seg" role="tablist">
     <button
       v-for="o in options"
       :key="o.value"
@@ -22,7 +22,7 @@ const emit = defineEmits<{ "update:modelValue": [value: T] }>();
       @click="emit('update:modelValue', o.value)"
     >
       {{ o.label }}
-      <span v-if="o.count" class="hint">({{ o.count }})</span>
+      <span v-if="o.count" class="count-badge">{{ o.count }}</span>
     </button>
   </div>
 </template>
@@ -30,32 +30,11 @@ const emit = defineEmits<{ "update:modelValue": [value: T] }>();
 <style scoped>
 .subtabs {
   display: inline-flex;
-  gap: 2px;
   margin-bottom: 14px;
-  padding: 3px;
   border-radius: 999px;
-  background: var(--card);
-  border: 1px solid var(--line);
 }
 .subtabs button {
-  font: inherit;
-  font-size: 12px;
-  font-weight: 600;
-  background: none;
-  border: none;
   border-radius: 999px;
-  color: var(--muted);
-  cursor: pointer;
   padding: 5px 14px;
-}
-.subtabs button[aria-selected="true"] {
-  color: var(--bg);
-  background: var(--accent);
-}
-/* The count span (.hint) would otherwise stay --muted even inside the
-   solid-accent selected pill, which reads too low-contrast there. */
-.subtabs button[aria-selected="true"] .hint {
-  color: inherit;
-  opacity: 0.85;
 }
 </style>

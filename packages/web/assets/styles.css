@@ -8,6 +8,7 @@
   --muted: #666;
   --line: #e2e2e2;
   --card: #f7f7f8;
+  --raised: #ffffff;
   --accent: #2d6cdf;
   --ok: #1a7f37;
   --bad: #b42318;
@@ -22,6 +23,7 @@
     --muted: #9aa0a6;
     --line: #2c2e33;
     --card: #1e2024;
+    --raised: #363940;
     --accent: #6ea8ff;
     --ok: #4ac26b;
     --bad: #ff6b5e;
@@ -36,6 +38,7 @@
   --muted: #666;
   --line: #e2e2e2;
   --card: #f7f7f8;
+  --raised: #ffffff;
   --accent: #2d6cdf;
   --ok: #1a7f37;
   --bad: #b42318;
@@ -48,6 +51,7 @@
   --muted: #9aa0a6;
   --line: #2c2e33;
   --card: #1e2024;
+  --raised: #363940;
   --accent: #6ea8ff;
   --ok: #4ac26b;
   --bad: #ff6b5e;
@@ -511,4 +515,59 @@ a.sym-link.sym-dead:hover {
 .pg-node-label .pg-idx {
   color: var(--muted);
   margin-right: 4px;
+}
+/* Segmented control: a sunken track whose selected option is a raised thumb.
+   Shared by SubTabs and the Browse search-mode switch; each sets its own
+   shape (radius, padding). */
+.seg {
+  gap: 2px;
+  padding: 3px;
+  background: color-mix(in srgb, var(--fg) 6%, var(--bg));
+}
+.seg button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  transition:
+    background-color 0.15s,
+    color 0.15s,
+    box-shadow 0.15s;
+}
+.seg button:hover {
+  color: var(--fg);
+}
+.seg button[aria-selected="true"],
+.seg button[aria-checked="true"] {
+  color: var(--fg);
+  background: var(--raised);
+  box-shadow:
+    0 1px 2px rgb(0 0 0 / 0.12),
+    0 0 0 1px color-mix(in srgb, var(--fg) 8%, transparent);
+}
+.seg button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .seg button {
+    transition: none;
+  }
+}
+.count-badge {
+  min-width: 18px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+  text-align: center;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--fg) 9%, transparent);
 }

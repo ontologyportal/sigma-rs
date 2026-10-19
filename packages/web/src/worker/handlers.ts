@@ -331,6 +331,9 @@ export const handlers = {
       }),
     };
   },
+  matchingAxioms({ formula }: { formula: string }): { axioms: AuditFocus[] } {
+    return { axioms: active().matchingAxioms(formula) };
+  },
   manpage({ symbol }: { symbol: string }): { page: ManPage | null } {
     return { page: active().manpage(symbol) };
   },
