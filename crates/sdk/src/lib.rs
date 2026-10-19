@@ -199,7 +199,8 @@ pub use sigmakee_rs_core::{result_from_transcript, vampire_cli_args, ExternalOpt
 // Prover-facing types for the native-prover proving ops.
 #[cfg(feature = "native-prover")]
 pub use sigmakee_rs_core::{
-    Binding, KifProofStep, NativeOpts, ProverResult, ProverStatus, SineParams,
+    Binding, KifProofStep, MatchMode, MatchOpts, MatchPolarity, NativeOpts, ProverResult,
+    ProverStatus, SineParams,
 };
 
 // Proof-emission dialect seam — lets callers (e.g. the `--proof tptp` CLI

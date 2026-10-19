@@ -334,6 +334,33 @@ impl Session {
         };
         serde_wasm_bindgen::to_value(&clauses).map_err(|e| JsValue::from_str(&e.to_string()))
     }
+
+    /// The promoted axioms whose clauses unify with a clause of `formula`
+    /// (clausified as an axiom, polarity ignored), each as
+    /// `{ kif, file, line }`, best matches first. Throws the parse error
+    /// messages, one per line, when `formula` does not parse.
+    #[wasm_bindgen(js_name = matchingAxioms)]
+    pub fn matching_axioms(&self, formula: &str) -> Result<JsValue, JsValue> {
+        let session_guard = self.session.read().expect("kb lock not poisoned");
+        let sids = session_guard
+            .matching_axioms(formula, None)
+            .map_err(|errs| {
+                let msgs: Vec<String> = errs
+                    .iter()
+                    .map(|e| match e {
+                        sigmakee_rs_sdk::SdkError::Kb(d) => d.message.clone(),
+                        other => other.to_string(),
+                    })
+                    .collect();
+                JsValue::from_str(&msgs.join("\n"))
+            })?;
+        let kb = session_guard.kb();
+        let views: Vec<AuditFocusView> = sids
+            .into_iter()
+            .map(|sid| AuditFocusView::of(kb, sid))
+            .collect();
+        to_js(&views)
+    }
 }
 
 #[derive(serde::Deserialize)]

@@ -8,8 +8,8 @@
 use std::path::PathBuf;
 
 use sigmakee_rs_core::{
-    parse_document, AstNode, CommonProverOpts, Parser, ProverResult, ProverStatus, ProvingLayer,
-    SourceFile, TestCase,
+    parse_document, AstNode, CommonProverOpts, MatchOpts, Parser, ProverResult, ProverStatus,
+    ProvingLayer, SentenceId, SourceFile, TestCase,
 };
 
 use super::super::{SdkError, SdkResult, Source};
@@ -406,6 +406,43 @@ impl Session<sigmakee_rs_core::ProverLayer> {
             Some(kif) => self.kb.clausify_formula(kif).map_err(SdkError::from),
             None => Ok(self.kb.clausify_all()),
         }
+    }
+
+    /// The promoted axioms whose clauses relate to `formula`'s clauses
+    /// under `opts` (default: some literal unifies, polarity ignored).
+    /// `formula` is clausified as an axiom; its free variables are pattern
+    /// variables. Best matches first: most of `formula`'s symbols, then
+    /// lightest KBO weight.
+    /// A `formula` that does not parse is an error.
+    pub fn matching_axioms(
+        &self,
+        formula: &str,
+        opts: Option<MatchOpts>,
+    ) -> Result<Vec<SentenceId>, Vec<SdkError>> {
+        Ok(self
+            .kb
+            .matching_axioms(parse_formulas(formula)?, &opts.unwrap_or_default()))
+    }
+}
+
+#[cfg(feature = "external-prover")]
+impl
+    Session<
+        sigmakee_rs_core::ExternalProverLayer<
+            sigmakee_rs_core::ProverLayer<sigmakee_rs_core::TranslationLayer>,
+        >,
+    >
+{
+    /// `Session<ProverLayer>::matching_axioms`, run by the native prover
+    /// nested under the external layer.
+    pub fn matching_axioms(
+        &self,
+        formula: &str,
+        opts: Option<MatchOpts>,
+    ) -> Result<Vec<SentenceId>, Vec<SdkError>> {
+        Ok(self
+            .kb
+            .matching_axioms(parse_formulas(formula)?, &opts.unwrap_or_default()))
     }
 }
 

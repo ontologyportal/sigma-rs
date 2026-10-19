@@ -409,6 +409,17 @@ export class Session {
   }
 
   /**
+   * The promoted axioms with a clause unifying with a clause of `formula`
+   * (clausified as an axiom, polarity ignored), best matches
+   * first. Throws the parse errors when `formula` does not parse.
+   * @param {string} formula
+   * @returns {import('./sdk').AuditFocus[]}
+   */
+  matchingAxioms(formula) {
+    return this.#kb.matchingAxioms(formula);
+  }
+
+  /**
    * Render the whole KB as TPTP.
    * @param {{ lang?: "fof"|"tff", hideNumbers?: boolean }} [opts]
    */

@@ -279,6 +279,40 @@ mod tests {
     }
 
     #[test]
+    fn matching_axioms_returns_matching_axiom_ids() {
+        use sigmakee_rs_core::{MatchMode, MatchOpts, MatchPolarity, SentenceId};
+        let mut s = Session::<ProverLayer>::new(SESSION.to_string());
+        s.ingest(reader(
+            "m.kif",
+            "(instance Rex Dog) (=> (instance ?X Dog) (instance ?X Animal)) (subclass Dog Mammal)",
+        ));
+        let kifs = |sids: Vec<SentenceId>| {
+            let mut out: Vec<_> = sids
+                .into_iter()
+                .map(|sid| s.kb().sentence_kif_str(sid))
+                .collect();
+            out.sort();
+            out
+        };
+        assert_eq!(
+            kifs(s.matching_axioms("(instance ?Z Dog)", None).unwrap()),
+            vec![
+                "(=> (instance ?X Dog) (instance ?X Animal))",
+                "(instance Rex Dog)"
+            ]
+        );
+        let same = MatchOpts {
+            mode: MatchMode::Instances,
+            polarity: MatchPolarity::Same,
+        };
+        assert_eq!(
+            kifs(s.matching_axioms("(instance ?Z Dog)", Some(same)).unwrap()),
+            vec!["(instance Rex Dog)"]
+        );
+        assert!(s.matching_axioms("(instance ?Z", None).is_err());
+    }
+
+    #[test]
     fn tell_accumulates_hypotheses_then_ask() {
         // No base axioms — the chained hypotheses alone must discharge the goal.
         let mut s = Session::<ProverLayer>::new(SESSION.to_string());

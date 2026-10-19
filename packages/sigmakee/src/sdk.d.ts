@@ -591,6 +591,10 @@ export class Session {
   auditConsistency(request?: AuditRequest): AuditResult;
   /** The root sentence enclosing UTF-8 byte `offset` of loaded file `file`, or `null`. */
   sentenceAt(file: string, offset: number): AuditFocus | null;
+  /** The promoted axioms with a clause unifying with a clause of `formula`
+   *  (clausified as an axiom, polarity ignored), best matches first. Throws
+   *  on parse errors. */
+  matchingAxioms(formula: string): AuditFocus[];
   translate(opts?: TranslateOpts): string;
   lookup(pattern: string): string[];
   validate(): Diagnostic[];
