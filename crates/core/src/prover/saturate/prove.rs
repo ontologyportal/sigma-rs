@@ -637,6 +637,9 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
         };
 
         let recognize_roles = opts.strategy.recognize_roles;
+        // Set from the run: dynamic facts may be missing, so saturation
+        // proves nothing about absence.
+        let dynamic_incomplete: bool;
         let (
             verdict,
             steps,
@@ -879,10 +882,31 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
                     eprintln!("ORACLE-PROBE {p} = {known}");
                 }
             }
+            #[cfg(feature = "dynamic")]
+            if let Some(dyn_opts) = prover.opts.dynamic.clone() {
+                let registry = self.semantic().dynamic_relations();
+                let oracle = conj.dynamic.get_or_init(|| {
+                    crate::prover::dynamic::JsOracle::start(&registry, dyn_opts).map(|o| {
+                        std::sync::Arc::new(o)
+                            as std::sync::Arc<dyn crate::prover::dynamic::DynamicOracle>
+                    })
+                });
+                if let Some(oracle) = oracle {
+                    prover.enable_dynamic(std::sync::Arc::clone(oracle), registry);
+                }
+            }
             let (verdict, steps) = {
                 profile_span!(ctx, "ask.saturate");
                 prover.run()
             };
+            #[cfg(feature = "dynamic")]
+            {
+                dynamic_incomplete = prover.dynamic_incomplete();
+            }
+            #[cfg(not(feature = "dynamic"))]
+            {
+                dynamic_incomplete = false;
+            }
             // Vacuity is decided on the RAW derivation DAG (a DFS over
             // clause parents), never on rendered steps — so rendering
             // can be skipped wholesale when no one will display it.
@@ -920,7 +944,8 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
                     // `input_contradictions`: a suppressed axiom-only empty
                     // clause — the theory is UNSAT, so a saturation over
                     // the SOS remainder is meaningless as a countermodel.
-                    let no_drops = prover.stats.discarded_long == 0
+                    let no_drops = !dynamic_incomplete
+                        && prover.stats.discarded_long == 0
                         && prover.stats.discarded_deep == 0
                         && prover.stats.slot_lift_failures == 0
                         && prover.stats.input_contradictions == 0
@@ -1342,7 +1367,7 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
         let (status, termination) = super::prover::map_verdict(
             verdict,
             conjecture_used,
-            strict_saturation,
+            strict_saturation || dynamic_incomplete,
             complete_saturation,
             super::prover::VerdictMode::Ask,
         );

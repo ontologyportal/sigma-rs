@@ -9,6 +9,8 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::parse::doc::Suppressions;
+#[cfg(feature = "dynamic")]
+use crate::parse::script::Script;
 use crate::types::FileOrigin;
 use crate::Span;
 
@@ -49,6 +51,10 @@ pub(crate) struct SourceSide {
     /// Per source key, the in-source `; sumo-ignore` directives bound at its
     /// most recent ingest.  Replaced on every re-ingest; absent when empty.
     pub(super) suppressions: DashMap<String, Suppressions>,
+    /// Per source key, its embedded `#|@js |#` scripts, in source order.
+    /// Replaced on every re-ingest; absent when empty.
+    #[cfg(feature = "dynamic")]
+    pub(super) scripts: DashMap<String, Vec<Script>>,
 }
 
 impl SourceSide {
@@ -171,6 +177,41 @@ impl SourceSide {
         }
     }
 
+    /// Replace `source_key`'s scripts; `true` when they differ from before.
+    #[cfg(feature = "dynamic")]
+    pub(crate) fn set_scripts(&self, source_key: &str, scripts: Vec<Script>) -> bool {
+        let changed = self
+            .scripts
+            .get(source_key)
+            .map_or(!scripts.is_empty(), |old| *old != scripts);
+        if scripts.is_empty() {
+            self.scripts.remove(source_key);
+        } else {
+            self.scripts.insert(source_key.to_string(), scripts);
+        }
+        changed
+    }
+
+    /// Every stored script with its source key, sorted by source key then
+    /// position so callers see a deterministic order.
+    #[cfg(feature = "dynamic")]
+    pub(crate) fn all_scripts(&self) -> Vec<(String, Script)> {
+        let mut out: Vec<(String, Script)> = self
+            .scripts
+            .iter()
+            .flat_map(|e| {
+                let key = e.key().clone();
+                e.value()
+                    .iter()
+                    .cloned()
+                    .map(move |s| (key.clone(), s))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.span.offset.cmp(&b.1.span.offset)));
+        out
+    }
+
     /// Whether a diagnostic named `name` at `range` is suppressed in-source.
     pub(crate) fn is_suppressed(&self, range: &Span, name: &str) -> bool {
         self.suppressions
@@ -197,4 +238,7 @@ pub(crate) struct SourceSideSnapshot {
     pub(super) origins: HashMap<String, FileOrigin>,
     #[serde(default)]
     pub(super) suppressions: HashMap<String, Suppressions>,
+    #[cfg(feature = "dynamic")]
+    #[serde(default)]
+    pub(super) scripts: HashMap<String, Vec<Script>>,
 }

@@ -1277,6 +1277,8 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
     /// parents — so they resolve and paramodulate like any equality
     /// and the transcript shows where they came from.
     pub(crate) fn drain_fd_equalities(&mut self) {
+        #[cfg(feature = "dynamic")]
+        self.drain_dynamic();
         // Ground-list theory units → activated background facts.
         let list_units = std::mem::take(&mut self.pending_list_units);
         for term in list_units {
@@ -2029,6 +2031,8 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
         for (_, t) in &lits {
             self.collect_ground_lists(t);
         }
+        #[cfg(feature = "dynamic")]
+        self.note_demands(lits.iter().map(|(_, t)| t), rule);
 
         // Depth AND size caps for derived clauses.  Depth alone is not
         // enough: substitution duplicates subterms, and SUMO's

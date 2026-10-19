@@ -27,7 +27,7 @@ impl KifParser {
         // `)` would land in element position).  Strip them here, wholesale;
         // callers that want them use `tokenizer::comment_blocks` on the
         // original stream.
-        tokens.retain(|t| !matches!(t.kind, TokenKind::Comment(_)));
+        tokens.retain(|t| !t.kind.is_comment());
         Self {
             tokens,
             pos: 0,
@@ -282,7 +282,7 @@ impl KifParser {
                 self.advance();
                 Ok(node)
             }
-            TokenKind::Comment(_) => {
+            TokenKind::Comment(_) | TokenKind::BlockComment(_) => {
                 unreachable!("comment tokens are stripped in KifParser::new")
             }
         }

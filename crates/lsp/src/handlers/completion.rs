@@ -244,7 +244,7 @@ fn classify_cursor_context(
 
         match &tok.kind {
             // Lexical trivia: neither a head nor an argument.
-            TokenKind::Comment(_) => {}
+            TokenKind::Comment(_) | TokenKind::BlockComment(_) => {}
             TokenKind::LParen => stack.push(Frame::default()),
             TokenKind::RParen => {
                 stack.pop();

@@ -44,6 +44,8 @@ use crate::layer::TopLayer;
 use crate::semantics::SemanticLayer;
 
 mod discharge;
+#[cfg(feature = "dynamic")]
+mod dynamic;
 mod ej;
 mod forward;
 mod fvi;
@@ -198,6 +200,11 @@ pub struct NativeOpts {
     /// the portfolio's selection-diversity axis.  Equivalent to
     /// `SIGMA_LANE_BUDGETS` (comma-separated, e.g. `2000,500,8000`).
     pub lane_budgets: Vec<usize>,
+    /// Dynamic relations (`DynamicRelation` instances resolved by embedded
+    /// `#|@js |#` code): limits and library directory.  `None` disables
+    /// them for this ask.
+    #[cfg(feature = "dynamic")]
+    pub dynamic: Option<crate::prover::dynamic::DynamicOpts>,
 }
 
 impl Default for NativeOpts {
@@ -256,6 +263,8 @@ impl Default for NativeOpts {
                         .collect()
                 })
                 .unwrap_or_default(),
+            #[cfg(feature = "dynamic")]
+            dynamic: Some(crate::prover::dynamic::DynamicOpts::default()),
         }
     }
 }
@@ -732,6 +741,10 @@ pub(crate) struct NativeProver<'a, S: TopLayer + 'static = SemanticLayer> {
     /// from within make): `(inList mᵢ L)` and
     /// `(equal mᵢ (ListOrderFn L i))` per member.
     pending_list_units: Vec<Term>,
+    /// Dynamic-relation demands and their oracle; `None` until
+    /// [`Self::enable_dynamic`] (and always in non-`dynamic` builds).
+    #[cfg(feature = "dynamic")]
+    dynamic: Option<dynamic::DynamicState>,
     /// Set when any equality class contains a COMPOUND term — gates
     /// the per-App key lookup in `normalize_eq` (hashing every ground
     /// subterm of every literal is wasted work until a compound
@@ -928,6 +941,8 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
             contradiction_cap: 8,
             lists_done: Set64::default(),
             pending_list_units: Vec::new(),
+            #[cfg(feature = "dynamic")]
+            dynamic: None,
             has_compound_eqs: false,
             has_conjecture: false,
             scratch: Vec::new(),
@@ -4161,6 +4176,12 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
                 // the Saturated certificate.
                 if self.out_of_time() {
                     return (RunVerdict::TimedOut, steps);
+                }
+                // Demands queued since the loop-top drain may still add
+                // facts; the next iteration drains them.
+                #[cfg(feature = "dynamic")]
+                if self.has_pending_demands() {
+                    continue;
                 }
                 return (RunVerdict::Saturated, steps);
             };

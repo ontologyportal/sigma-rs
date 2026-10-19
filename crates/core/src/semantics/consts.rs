@@ -61,6 +61,16 @@ define_symbols_from_env! {
     #[cfg(feature = "native-prover")]
     BELIEF_RELATION              => "SUMO_BELIEF_RELATION",
 
+    // --- Dynamic Relations ---
+    #[cfg(feature = "dynamic")]
+    DYNAMIC_RELATION_CLASS         => "SUMO_DYNAMIC_RELATION_CLASS",
+    #[cfg(feature = "dynamic")]
+    PARTIAL_DYNAMIC_RELATION_CLASS => "SUMO_PARTIAL_DYNAMIC_RELATION_CLASS",
+    #[cfg(feature = "dynamic")]
+    MODED_DYNAMIC_RELATION_CLASS   => "SUMO_MODED_DYNAMIC_RELATION_CLASS",
+    #[cfg(feature = "dynamic")]
+    DYNAMIC_INPUTS_RELATION        => "SUMO_DYNAMIC_INPUTS_RELATION",
+
     // --- Root Symbol ---
     ROOT_SYMBOL           => "SUMO_ROOT_SYMBOL",
 

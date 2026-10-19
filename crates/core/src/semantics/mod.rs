@@ -27,6 +27,8 @@ use caches::disjoint::Disjoint;
 use caches::doc_coverage::DocCoverageCache;
 use caches::documentation::Documentation;
 use caches::domain::Domain;
+#[cfg(feature = "dynamic")]
+use caches::dynamic_relations::DynamicRelations;
 use caches::has_ancestor::HasAncestor;
 use caches::inferred_class::InferredClass;
 use caches::is_class::IsClass;
@@ -82,6 +84,9 @@ pub struct SemanticLayer {
     pub(crate) defining_sentences: WholeCache<DefiningSentences>,
     /// Whole-KB documentation coverage.  See [`caches::doc_coverage`].
     pub(crate) doc_coverage: WholeCache<DocCoverageCache>,
+    /// The dynamic-relation registry.  See [`caches::dynamic_relations`].
+    #[cfg(feature = "dynamic")]
+    pub(crate) dynamic_relations: WholeCache<DynamicRelations>,
     /// Memoized type inference.  See [`caches::inferred_class`].
     pub(crate) inferred_class: Cache<InferredClass>,
     /// Validation cache. See [`caches::validate`]. Disabled by default
@@ -132,6 +137,8 @@ impl SemanticLayer {
             documentation: Cache::new(cfg, Documentation),
             defining_sentences: WholeCache::new(cfg, DefiningSentences),
             doc_coverage: WholeCache::new(cfg, DocCoverageCache),
+            #[cfg(feature = "dynamic")]
+            dynamic_relations: WholeCache::new(cfg, DynamicRelations),
             inferred_class: Cache::new(cfg, InferredClass),
             subrel_lattice: Cache::new(cfg, SubrelLattice),
             trans_reach: Cache::new(cfg, TransReach),
@@ -309,6 +316,8 @@ impl Layer for SemanticLayer {
             bind(&self.documentation, self),
             bind(&self.defining_sentences, self),
             bind(&self.doc_coverage, self),
+            #[cfg(feature = "dynamic")]
+            bind(&self.dynamic_relations, self),
             bind(&self.inferred_class, self),
             bind(&self.subrel_lattice, self),
             bind(&self.trans_reach, self),

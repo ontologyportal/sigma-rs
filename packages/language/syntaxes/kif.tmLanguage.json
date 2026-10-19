@@ -13,8 +13,19 @@
     ],
     "repository": {
         "comment": {
-            "name": "comment.line.semicolon.kif",
-            "match": ";.*$"
+            "patterns": [
+                { "include": "#block-comment" },
+                {
+                    "name": "comment.line.semicolon.kif",
+                    "match": ";.*$"
+                }
+            ]
+        },
+        "block-comment": {
+            "name": "comment.block.kif",
+            "begin": "#\\|",
+            "end": "\\|#",
+            "patterns": [{ "include": "#block-comment" }]
         },
         "string": {
             "name": "string.quoted.double.kif",

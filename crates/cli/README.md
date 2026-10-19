@@ -257,6 +257,51 @@ Exits `0` if the theorem is proved, `1` otherwise.
 - `kif` — SUO-KIF pretty-print of each step's formula.
 - Any SUMO language identifier (`EnglishLanguage`, `ChineseLanguage`, …) — natural-language rendering via the KB's `format` / `termFormat` relations. Steps whose formulas reference a symbol that lacks a language spec fall back to KIF for that step only, with a warning listing the missing specifiers.
 
+#### Dynamic relations (`dynamic` build feature)
+
+Builds with the `dynamic` feature (unix only, off by default) let KIF files
+carry JavaScript in `#| |#` block comments that resolves atoms of *dynamic
+relations* while the native prover searches.  Other builds treat the blocks as
+ordinary comments.
+
+```
+(subclass ModedDynamicRelation DynamicRelation)
+(instance weather ModedDynamicRelation)
+(dynamicInputs weather 2 3)
+
+#|@js
+//@use sensor { condition(string, string) -> string }
+export function weather(_c, place, day) {
+  return [[kif[sensor.condition(place.__kif_symbol, day.__kif_symbol)], null, null]];
+}
+|#
+```
+
+- A relation is dynamic when it is an instance of `DynamicRelation` (the
+  class names are `.cargo/config.toml` constants).  An instance of
+  `PartialDynamicRelation` fires on any atom with a ground argument; an
+  instance of `ModedDynamicRelation` fires once every position named by its
+  `dynamicInputs` fact is ground.
+- The relation's function is the exported JS function of the same name.  It
+  receives one argument per position (`null` when unbound; symbols arrive as
+  `{ __kif_symbol: "Name" }`) and returns an array of solutions, one entry per
+  position: a number, a string (a KIF string literal), `kif.Name` (a symbol),
+  or `null` to keep the prover's value.  Each solution becomes a ground fact
+  in the proof, labelled `[dynamic]`.
+- Scripts run in QuickJS with only the language core and `JSON`: no
+  networking, timers, or `eval`.  Native functions are declared with
+  `//@use lib { name(int, float, string) -> type; ... }` and loaded from
+  `lib<lib>.so` / `lib<lib>.dylib` directly inside `libDir` (`--lib-dir`),
+  which must be an absolute path.  Library names are plain identifiers, and
+  a library file whose symlinks resolve outside `libDir` is refused.  A function
+  returning `string` takes two trailing arguments `char *out, size_t cap` and
+  returns `int64_t`: bytes written, or `-needed` to be retried with a larger
+  buffer.  Libraries never allocate for the caller.  See the
+  `dynamic` feature in [`crates/core/README.md`](../core/README.md) for how
+  to build one in C, C++, or Rust.
+- A call that throws, times out, or exceeds the per-ask budget turns a
+  saturated search into `Unknown` rather than `Disproved`.
+
 ### `sumo translate`
 
 Emit TPTP from the KB.

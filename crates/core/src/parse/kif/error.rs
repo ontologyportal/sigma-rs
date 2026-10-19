@@ -11,6 +11,9 @@ pub enum KifParseError {
     #[error("unterminated string literal")]
     UnterminatedString { span: Span },
 
+    #[error("unterminated block comment")]
+    UnterminatedBlockComment { span: Span },
+
     #[error("unexpected character '{ch}'")]
     UnexpectedChar { ch: char, span: Span },
 
@@ -55,6 +58,7 @@ impl ToDiagnostic for KifParseError {
     fn to_diagnostic(&self) -> Diagnostic {
         let code: &'static str = match self {
             KifParseError::UnterminatedString { .. } => "kif/unterminated-string",
+            KifParseError::UnterminatedBlockComment { .. } => "kif/unterminated-block-comment",
             KifParseError::UnexpectedChar { .. } => "kif/unexpected-char",
             KifParseError::EmptySentence { .. } => "kif/empty-sentence",
             KifParseError::UnexpectedEof { .. } => "kif/unexpected-eof",
@@ -84,6 +88,7 @@ impl ParseError for KifParseError {
     fn get_span(&self) -> Span {
         match self {
             KifParseError::UnterminatedString { span }
+            | KifParseError::UnterminatedBlockComment { span }
             | KifParseError::UnexpectedChar { span, .. }
             | KifParseError::EmptySentence { span }
             | KifParseError::UnexpectedEof { span }

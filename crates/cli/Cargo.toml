@@ -36,6 +36,11 @@ ask = ["sigmakee-rs-sdk/ask", "sigmakee-rs-sdk/native-prover"]
 # and native-proof binding extraction.
 integrated-prover = ["ask", "sigmakee-rs-sdk/integrated-vampire"]
 
+# Dynamic relations: JavaScript in KIF `#|@js |#` blocks resolves
+# `DynamicRelation` atoms during native proof search, optionally calling
+# native libraries from `libDir` / `--lib-dir`.  Unix only; off by default.
+dynamic = ["ask", "sigmakee-rs-sdk/dynamic"]
+
 # The strategy-sweep subcommand: un-migrated, still drives the core crate
 # directly (the only remaining direct core dependency).  Off by default —
 # its dispatch arm predates the Session migration.

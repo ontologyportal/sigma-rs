@@ -19,6 +19,8 @@ pub(crate) mod disjoint_classes;
 pub(crate) mod documentation;
 pub(crate) mod domain;
 pub(crate) mod duplicate_axioms;
+#[cfg(feature = "dynamic")]
+pub(crate) mod dynamic_relation;
 pub(crate) mod entity_ancestor;
 pub(crate) mod free_var_in_consequent;
 pub(crate) mod head_is_relation;
@@ -51,6 +53,8 @@ pub(super) const SENTENCE: &[&dyn SentenceValidatorDyn] = &[
     &head_is_relation::HeadIsRelation,
     &arity::RelationArity,
     &domain::Domain,
+    #[cfg(feature = "dynamic")]
+    &dynamic_relation::DynamicRelationCheck,
 ];
 
 /// Run on every operator sentence whose kind the validator claims.

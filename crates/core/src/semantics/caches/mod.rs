@@ -22,6 +22,8 @@ pub(crate) mod is_relation;
 // Relation metadata
 pub(crate) mod arity;
 pub(crate) mod domain;
+#[cfg(feature = "dynamic")]
+pub(crate) mod dynamic_relations;
 pub(crate) mod range;
 pub(crate) mod subrel_lattice;
 pub(crate) mod trans_reach;

@@ -36,6 +36,11 @@ pub(crate) enum Event {
     /// Consumers that inspect source provenance rather than normalized
     /// sentence content use this to invalidate derived views.
     SourceReferencesChanged,
+    /// A source's embedded `#|@js |#` scripts changed (added, edited, or
+    /// removed).  Script text lives in comments, so this can change with no
+    /// formula changing at all.
+    #[cfg(feature = "dynamic")]
+    ScriptsChanged,
     /// Formulas a file reconcile carried over **unchanged** (their fingerprint was
     /// present in both the prior and the new parse).  Informational: the router
     /// collects it into `emitted` so `reload_kif` can report the retained count.
@@ -174,6 +179,9 @@ pub(crate) enum EventKind {
     FormulaReferenced,
     /// Source occurrence membership changed for a formula fingerprint.
     SourceReferencesChanged,
+    /// A source's embedded scripts changed.
+    #[cfg(feature = "dynamic")]
+    ScriptsChanged,
     /// Formulas carried over unchanged by a file reconcile (informational tally).
     FormulasUnchanged,
     /// Formulas whose removal was deferred into the recycle bin by a staged reconcile.
@@ -232,6 +240,8 @@ impl Event {
             Event::FormulaAdded { .. } => EventKind::FormulaAdded,
             Event::FormulaReferenced { .. } => EventKind::FormulaReferenced,
             Event::SourceReferencesChanged => EventKind::SourceReferencesChanged,
+            #[cfg(feature = "dynamic")]
+            Event::ScriptsChanged => EventKind::ScriptsChanged,
             Event::FormulasUnchanged { .. } => EventKind::FormulasUnchanged,
             Event::FormulasRecycled { .. } => EventKind::FormulasRecycled,
             Event::FormulaRemoved { .. } => EventKind::FormulaRemoved,

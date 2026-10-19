@@ -12,6 +12,8 @@ use crate::SineParams;
 // (`saturate`) shares none of it. TSTP/SZS transcript *parsing* (regex over
 // an already-captured string, no process spawning) is NOT gated the same
 // way — see `proof::tstp` / `vampire_proof` below.
+#[cfg(feature = "dynamic")]
+pub(crate) mod dynamic;
 #[cfg(feature = "external-prover")]
 pub mod external;
 #[cfg(feature = "native-prover")]
@@ -120,6 +122,8 @@ pub trait ProvingLayer: TopLayer {
             sents,
             seed_syms,
             dropped,
+            #[cfg(feature = "dynamic")]
+            dynamic: std::sync::OnceLock::new(),
         })
     }
 
@@ -308,6 +312,11 @@ pub struct Conjecture {
     /// any confident Disproved/Satisfiable verdict (the refutation set is
     /// missing part of the goal); a Proved verdict stays sound.
     pub dropped: usize,
+    /// This ask's dynamic-relation oracle, started on first use by the
+    /// native driver and shared by every slice and portfolio lane of the
+    /// ask (one memo, one call budget).  `None` inside: nothing callable.
+    #[cfg(feature = "dynamic")]
+    pub(crate) dynamic: std::sync::OnceLock<Option<std::sync::Arc<dyn dynamic::DynamicOracle>>>,
 }
 
 #[cfg(any(feature = "external-prover", feature = "native-prover"))]

@@ -70,6 +70,11 @@ pub struct KBManager {
     pub language: String,
     /// The path to the LEO ATP
     pub leo_executable: PathBuf,
+    /// Directory the native libraries declared by embedded `#|@js |#`
+    /// scripts (`//@use lib { ... }`) are loaded from, as `lib<name>.so` /
+    /// `lib<name>.dylib`.  Empty: scripts that declare a library cannot call
+    /// it.  Only consulted by builds with the `dynamic` feature.
+    pub lib_dir: PathBuf,
     /// (audit) Stop after finding this many distinct contradictions.
     pub limit: usize,
     /// Where to store logs to automatically
@@ -151,6 +156,7 @@ impl Default for KBManager {
             kb_dir: PathBuf::new(),
             language: DEFAULT_LANGUAGE.into(),
             leo_executable: PathBuf::new(),
+            lib_dir: PathBuf::new(),
             limit: 64,
             log_dir: PathBuf::new(),
             log_level: LevelFilter::Warn,
@@ -400,6 +406,12 @@ impl KBManager {
     pub fn native_opts(&self) -> sigmakee_rs_core::NativeOpts {
         let mut o = self.native_prover.to_native_opts();
         o.selection.select_all |= self.disable_selection;
+        #[cfg(feature = "dynamic")]
+        if let Some(d) = o.dynamic.as_mut() {
+            if !self.lib_dir.as_os_str().is_empty() {
+                d.lib_dir = Some(self.lib_dir.clone());
+            }
+        }
         o
     }
 
@@ -563,6 +575,9 @@ impl KBManager {
         }
         if let Some(v) = get(SYSTEMS_DIR) {
             m.systems_dir = PathBuf::from(v);
+        }
+        if let Some(v) = get(LIB_DIR) {
+            m.lib_dir = PathBuf::from(v);
         }
         if let Some(v) = get(THOROUGHNESS) {
             if let Ok(f) = v.parse() {
@@ -1119,6 +1134,7 @@ pub(crate) mod pref_keys {
     pub const KB_DIR: &str = "kbDir";
     pub const LANGUAGE: &str = "language";
     pub const LEO_EXECUTABLE: &str = "leoExec";
+    pub const LIB_DIR: &str = "libDir";
     pub const LIMIT: &str = "limit";
     pub const LOAD_LEXICONS: &str = "loadLexicons";
     pub const LOG_DIR: &str = "logDir";
@@ -2289,6 +2305,35 @@ mod tests {
     }
 
     #[cfg(feature = "native-prover")]
+    #[test]
+    fn lib_dir_round_trips_through_config_xml() {
+        let xml = r#"<configuration>
+  <preference name="libDir" value="/opt/sigma/lib"/>
+</configuration>"#;
+        let m = KBManager::parse_config_xml_lenient(xml).expect("parse");
+        assert_eq!(m.lib_dir, PathBuf::from("/opt/sigma/lib"));
+        let back = KBManager::parse_config_xml_lenient(&m.to_config_xml()).expect("reparse");
+        assert_eq!(back.lib_dir, m.lib_dir);
+    }
+
+    #[cfg(feature = "dynamic")]
+    #[test]
+    fn lib_dir_reaches_the_dynamic_native_opts() {
+        let m = KBManager {
+            lib_dir: PathBuf::from("/opt/sigma/lib"),
+            ..KBManager::default()
+        };
+        let d = m.native_opts().dynamic.expect("dynamic on by default");
+        assert_eq!(d.lib_dir, Some(PathBuf::from("/opt/sigma/lib")));
+        assert_eq!(
+            KBManager::default()
+                .native_opts()
+                .dynamic
+                .and_then(|d| d.lib_dir),
+            None
+        );
+    }
+
     #[test]
     fn native_config_builds_native_opts() {
         let m = KBManager::from_config_xml(WITH_PROVERS).unwrap();

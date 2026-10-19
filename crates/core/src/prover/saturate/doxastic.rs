@@ -118,6 +118,8 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
                     sents,
                     seed_syms,
                     dropped,
+                    #[cfg(feature = "dynamic")]
+                    dynamic: std::sync::OnceLock::new(),
                 })
             }
         };

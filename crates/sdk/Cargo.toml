@@ -43,6 +43,9 @@ parallel           = ["sigmakee-rs-core/parallel", "dep:rayon"]
 # WordNet lexicon (`sigmakee_rs_sdk::lexicon`, re-exporting
 # `sigmakee_rs_core::lexicon`).  The sidecar's own parsing is wasm-safe
 lexicon            = ["sigmakee-rs-core/lexicon"]
+# Dynamic relations: embedded `#|@js |#` code resolves `DynamicRelation`
+# atoms during native proof search (unix only).
+dynamic            = ["native-prover", "sigmakee-rs-core/dynamic"]
 
 # Add remote file processing to the SDK
 http               = ["dep:ureq", "dep:tempfile"]

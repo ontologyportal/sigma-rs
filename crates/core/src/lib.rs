@@ -22,6 +22,9 @@ compile_error!(
      target-conditional dependency declarations."
 );
 
+#[cfg(all(feature = "dynamic", not(unix)))]
+compile_error!("The 'dynamic' feature is only supported on unix targets.");
+
 // -- Module declarations ------------------------------------------------------
 
 pub(crate) mod cache;
@@ -84,6 +87,9 @@ pub use crate::prover::ExternalProverLayer;
 #[cfg(feature = "external-prover")]
 pub use crate::prover::ExternalOpts;
 
+/// Dynamic-relation limits and library directory (`NativeOpts::dynamic`).
+#[cfg(feature = "dynamic")]
+pub use crate::prover::dynamic::DynamicOpts;
 /// Native-prover options (budget, step caps, `Strategy`).
 #[cfg(feature = "native-prover")]
 pub use crate::prover::saturate::prover::NativeOpts;

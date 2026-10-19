@@ -232,6 +232,251 @@ initial semantic pass)
 3. TPTP translation: TPTP translation occurs in parallel (after
 the initial semantic pass)
 
+### `dynamic`
+
+This is not a default feature, and it is unix only (enabling it elsewhere is
+a compile error).  Enable it with `--features "dynamic"`; it implies
+`native-prover`.
+
+KIF files can carry JavaScript in `#|@js ... |#` block comments that
+resolves atoms of *dynamic relations* (instances of `DynamicRelation`)
+while the native prover searches.  Builds without the feature parse those
+blocks as ordinary comments.  The KIF and JavaScript side is documented
+under "Dynamic relations" in the CLI README (`crates/cli/README.md`); the
+rest of this section covers the native shared libraries that the
+JavaScript can call to read a sensor, a file, or system state.
+
+#### How a library is found
+
+A script names each library and the functions it calls on a `//@use`
+line:
+
+```
+//@use sensor { condition(string, string) -> string; reading(int) -> float }
+```
+
+- The runtime loads `libsensor.dylib` (macOS) or `libsensor.so` (Linux)
+  from the configured `libDir`.  Set `libDir` in `config.xml`, with
+  `--lib-dir`, or with `SIGMA_LIB_DIR`.
+- `libDir` must be an absolute path.  The file must sit directly inside it,
+  not in a subdirectory.
+- Symlinks are followed, but the file they finally reach must still be
+  directly inside `libDir`.
+- The library name must be a plain ASCII identifier (letters, digits, `_`,
+  not starting with a digit).  The system search path
+  (`LD_LIBRARY_PATH`, `DYLD_LIBRARY_PATH`, `/usr/lib`) is never consulted.
+- The script's `//@use` line is the only source of each function's C
+  signature.  Nothing checks it against the library: if the declaration and
+  the C code disagree, the call has undefined behavior and will likely
+  crash the process.
+
+#### The C ABI
+
+Each function is looked up by its unmangled symbol name and called with the
+C calling convention.  Only three types cross the boundary:
+
+| Declared type | Parameter in C | Return type in C |
+|---|---|---|
+| `int` | `int64_t` | `int64_t` |
+| `float` | `double` | `double` |
+| `string` | `const char *` (NUL-terminated UTF-8) | see below |
+
+**String arguments** are borrowed for the duration of the call only.  Copy
+anything you need to keep.  A JavaScript string containing a NUL byte is
+refused before the call.
+
+**String returns use a caller-supplied buffer.**  Libraries never allocate
+memory for the caller.  A function declared `-> string` takes two extra
+trailing parameters and returns `int64_t`:
+
+```c
+int64_t name(/* declared params..., */ char *out, size_t cap);
+```
+
+- Write at most `cap` bytes into `out`, then return the number of bytes
+  written.  No NUL terminator is needed, and none is read.
+- If the result does not fit, write nothing and return `-needed`.  The
+  runtime retries exactly once with a buffer of `needed` bytes.  If the
+  second attempt also returns a negative value, the call fails.
+- The first buffer is 4096 bytes.
+- Bytes that are not valid UTF-8 are replaced with U+FFFD.
+- A returned count larger than `cap` is clamped to `cap`.
+
+**Numbers.**  JavaScript numbers are doubles, so `int` values outside
++/-2^53 lose precision on the way in and out.  An `int` argument must be a
+whole, finite number, or the call throws a `TypeError` in JavaScript before
+reaching your code.
+
+#### Runtime behavior to design for
+
+- **Threads.**  Each ask gets its own executor thread, and that thread
+  makes one call at a time.  Different asks, for example from the language
+  server, can run at the same time.  If the library keeps mutable global
+  state, make it thread-safe.
+- **Lifetime.**  A library is loaded when an ask starts its dynamic
+  runtime and is released when the ask ends.  Do not count on static state either
+  surviving between asks or being reset.  Library constructors run on load,
+  so keep them cheap and free of side effects.
+- **Time.**  JavaScript is interrupted at the per-call deadline (2 s by
+  default), but a native call cannot be interrupted.  A function that
+  blocks holds up the ask until it returns, so bound your own I/O with
+  timeouts.
+- **Memoization.**  Each distinct input pattern is called at most once per
+  ask.  Don't rely on a call happening more than once.
+- **Failure.**  To report failure, return a sentinel (an empty string, a
+  negative `int`) and have the script turn it into `[]` or a `throw`.  A
+  thrown error makes the ask report `Unknown` rather than `Disproved`.
+  Never call `exit`, `abort`, or raise signals.
+
+#### Example: C
+
+`sensor.c`:
+
+```c
+#include <stddef.h>
+#include <stdint.h>
+#include <string.h>
+
+int64_t condition(const char *place, const char *day, char *out, size_t cap) {
+    (void)day;
+    const char *v = strcmp(place, "Boston") == 0 ? "Rain" : "Sun";
+    size_t n = strlen(v);
+    if (n > cap) return -(int64_t)n;
+    memcpy(out, v, n);
+    return (int64_t)n;
+}
+
+double reading(int64_t channel) { return 20.0 + (double)channel / 2.0; }
+```
+
+Build:
+
+```sh
+# macOS
+cc -shared -fPIC -O2 -o libsensor.dylib sensor.c
+# Linux
+cc -shared -fPIC -O2 -o libsensor.so sensor.c
+```
+
+If you compile with `-fvisibility=hidden`, mark exported functions with
+`__attribute__((visibility("default")))`.
+
+#### Example: C++
+
+Give exported functions C linkage, or their names are mangled and the
+lookup fails.  Do not let exceptions cross the boundary.
+
+```cpp
+#include <cstdint>
+#include <cstring>
+#include <string>
+
+extern "C" int64_t condition(const char *place, const char *day, char *out, size_t cap) noexcept {
+    try {
+        std::string v = std::string(place) == "Boston" ? "Rain" : "Sun";
+        if (v.size() > cap) return -static_cast<int64_t>(v.size());
+        std::memcpy(out, v.data(), v.size());
+        return static_cast<int64_t>(v.size());
+    } catch (...) {
+        return 0;
+    }
+}
+```
+
+```sh
+c++ -std=c++17 -shared -fPIC -O2 -o libsensor.dylib sensor.cpp   # .so on Linux
+```
+
+#### Example: Rust
+
+`Cargo.toml`:
+
+```toml
+[package]
+name = "sensor"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+```
+
+`src/lib.rs`:
+
+```rust
+use std::ffi::{c_char, CStr};
+
+/// # Safety
+/// `place` and `day` are NUL-terminated; `out` is valid for `cap` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn condition(
+    place: *const c_char,
+    _day: *const c_char,
+    out: *mut u8,
+    cap: usize,
+) -> i64 {
+    let place = unsafe { CStr::from_ptr(place) }.to_bytes();
+    let v: &[u8] = if place == b"Boston" { b"Rain" } else { b"Sun" };
+    if v.len() > cap {
+        return -(v.len() as i64);
+    }
+    unsafe { std::ptr::copy_nonoverlapping(v.as_ptr(), out, v.len()) };
+    v.len() as i64
+}
+```
+
+On edition 2024, write `#[unsafe(no_mangle)]`.  Build with
+`cargo build --release`.  The library lands in `target/release/` as
+`libsensor.dylib` or `libsensor.so`.  Panics must not unwind across
+`extern "C"`: catch them with `std::panic::catch_unwind`, or set
+`panic = "abort"` in the release profile.
+
+#### Install and try it
+
+```sh
+mkdir -p /opt/sigma/lib
+cp libsensor.dylib /opt/sigma/lib/          # or libsensor.so
+
+cargo build --release -p sigmakee --features dynamic
+target/release/sumo ask --no-db -f weather.kif --backend native \
+    --lib-dir /opt/sigma/lib --want-proof true "(wet Boston Today)"
+```
+
+`weather.kif`:
+
+```
+(subclass DynamicRelation Relation)
+(subclass ModedDynamicRelation DynamicRelation)
+(instance weather ModedDynamicRelation)
+(instance weather TernaryPredicate)
+(dynamicInputs weather 2 3)
+(=> (weather Rain ?place ?day) (wet ?place ?day))
+
+#|@js
+//@use sensor { condition(string, string) -> string }
+export function weather(_c, place, day) {
+  return [[kif[sensor.condition(place.__kif_symbol, day.__kif_symbol)], null, null]];
+}
+|#
+```
+
+The answer should be `Proved`, with a proof step labelled `[dynamic]`.
+`(wet Paris Today)` is not proved.  If the library cannot be loaded, the
+call fails with the reason (a missing file, a relative `libDir`, a symlink
+leaving `libDir`, a missing symbol), and the ask reports `Unknown`.
+
+#### Troubleshooting
+
+| Symptom | Cause |
+|---|---|
+| `no symbol `name`` | The function is not exported: missing `extern "C"` / `#[no_mangle]`, hidden visibility, or a misspelled name.  Check with `nm -gU libsensor.dylib` (macOS) or `nm -D libsensor.so` (Linux). |
+| `libDir ... must be an absolute path` | Pass an absolute `--lib-dir`. |
+| `resolves outside libDir` | The library file is a symlink to somewhere else.  Copy the file into `libDir` instead. |
+| `cannot load ...: ... wrong architecture` / `wrong ELF class` | The library was built for a different CPU than `sumo`. |
+| `no libDir configured` | Neither `libDir`, `--lib-dir`, nor `SIGMA_LIB_DIR` is set. |
+| `expected an integer, got 1.5` | The script passed a non-whole number to an `int` parameter. |
+| The process crashes during a call | The `//@use` signature does not match the C function, or a string function wrote more than `cap` bytes. |
+
 ## Knowledge Base API
 
 The `KnowledgeBase` struct is the public API for this library.

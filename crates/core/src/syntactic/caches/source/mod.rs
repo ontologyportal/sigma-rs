@@ -202,6 +202,35 @@ fn apply_source(
     evs
 }
 
+/// Warning events for a script's malformed `//@use` lines.
+#[cfg(feature = "dynamic")]
+fn script_warnings(script: &crate::parse::script::Script) -> Vec<Event> {
+    script
+        .errors
+        .iter()
+        .map(|(line, message)| {
+            let line = script.span.line + *line as u32;
+            Event::Diagnostic(Diagnostic {
+                kind: "parse",
+                range: Span {
+                    line,
+                    col: 1,
+                    end_line: line,
+                    end_col: 1,
+                    ..script.span.clone()
+                },
+                severity: Severity::Warning,
+                code: "kif/bad-script-use",
+                message: format!("malformed //@use declaration: {message}"),
+                related: Vec::new(),
+                sids: Vec::new(),
+                highlight_arg: -1,
+                highlight_var: None,
+            })
+        })
+        .collect()
+}
+
 /// Behavior for the `syntactic::source` AST store / reactor.
 #[derive(Debug, Default)]
 pub(crate) struct SourceCache;
@@ -225,6 +254,8 @@ impl EagerMapBehavior for SourceCache {
             EventKind::FormulaRemoved,
             EventKind::FormulaReferenced,
             EventKind::SourceReferencesChanged,
+            #[cfg(feature = "dynamic")]
+            EventKind::ScriptsChanged,
         ]
     }
 
@@ -250,6 +281,12 @@ impl EagerMapBehavior for SourceCache {
                 .iter()
                 .map(|e| (e.key().clone(), e.value().clone()))
                 .collect(),
+            #[cfg(feature = "dynamic")]
+            scripts: side
+                .scripts
+                .iter()
+                .map(|e| (e.key().clone(), e.value().clone()))
+                .collect(),
         }
     }
 
@@ -265,6 +302,10 @@ impl EagerMapBehavior for SourceCache {
         }
         for (k, v) in snap.suppressions {
             side.suppressions.insert(k, v);
+        }
+        #[cfg(feature = "dynamic")]
+        for (k, v) in snap.scripts {
+            side.scripts.insert(k, v);
         }
     }
 
@@ -329,6 +370,22 @@ impl EagerMapBehavior for SourceCache {
                             Suppressions::bind(&file.contents, &forms, &comments)
                         };
                         side.set_suppressions(&file_key, suppressions);
+                        #[cfg(feature = "dynamic")]
+                        {
+                            let scripts: Vec<crate::parse::script::Script> =
+                                if SourceSide::is_scratch_key(&file_key) {
+                                    Vec::new()
+                                } else {
+                                    comments
+                                        .iter()
+                                        .filter_map(crate::parse::script::Script::parse)
+                                        .collect()
+                                };
+                            out.extend(scripts.iter().flat_map(script_warnings));
+                            if side.set_scripts(&file_key, scripts) {
+                                out.push(Event::ScriptsChanged);
+                            }
+                        }
                         let parsed = nodes
                             .into_iter()
                             .map(|node| {
@@ -465,6 +522,13 @@ impl SyntacticLayer {
     /// in-source `; sumo-ignore` / `; sumo-ignore-file` directive.
     pub(crate) fn is_suppressed(&self, range: &Span, name: &str) -> bool {
         self.source.side().is_suppressed(range, name)
+    }
+
+    /// Every embedded script in the KB with its source key, in a
+    /// deterministic order.
+    #[cfg(feature = "dynamic")]
+    pub(crate) fn scripts(&self) -> Vec<(String, crate::parse::script::Script)> {
+        self.source.side().all_scripts()
     }
 
     /// The source keys belonging to `session`.

@@ -71,6 +71,16 @@ pub enum TokenKind {
     Operator(OpTok),
     /// A KIF source comment
     Comment(String),
+    /// A Common Lisp style `#| ... |#` block comment (nestable), holding the
+    /// raw text between the outermost markers.
+    BlockComment(String),
+}
+
+impl TokenKind {
+    /// Whether this token is lexical trivia (a line or block comment).
+    pub fn is_comment(&self) -> bool {
+        matches!(self, TokenKind::Comment(_) | TokenKind::BlockComment(_))
+    }
 }
 
 impl Default for TokenKind {
@@ -104,6 +114,7 @@ impl Display for TokenKind {
             TokenKind::Number(num) => write!(f, "{}", num),
             TokenKind::Operator(op_tok) => write!(f, "{}", op_tok),
             TokenKind::Comment(comm) => write!(f, "; {}", comm),
+            TokenKind::BlockComment(comm) => write!(f, "#|{}|#", comm),
         }
     }
 }
@@ -209,6 +220,38 @@ impl<'src> Tokenizer<'src> {
             kind: TokenKind::Comment(comm.trim().to_string()),
             span,
         }
+    }
+
+    /// Read a `#| ... |#` block comment; the opening `#` is already consumed.
+    /// Inner `#| |#` pairs nest, as in Common Lisp.
+    fn read_block_comment(&mut self, start_span: Span) -> Result<Token, KifParseError> {
+        self.advance();
+        let mut comm = String::new();
+        let mut depth = 1usize;
+        loop {
+            match self.advance() {
+                None => return Err(KifParseError::UnterminatedBlockComment { span: start_span }),
+                Some('#') if self.peek() == Some('|') => {
+                    self.advance();
+                    depth += 1;
+                    comm.push_str("#|");
+                }
+                Some('|') if self.peek() == Some('#') => {
+                    self.advance();
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                    comm.push_str("|#");
+                }
+                Some(ch) => comm.push(ch),
+            }
+        }
+        let span = self.seal(start_span);
+        Ok(Token {
+            kind: TokenKind::BlockComment(comm),
+            span,
+        })
     }
 
     fn read_string(&mut self, start_span: Span) -> Result<Token, KifParseError> {
@@ -318,6 +361,7 @@ impl<'src> Tokenizer<'src> {
         };
         match ch {
             ';' => Ok(Some(self.read_line_comment(start))),
+            '#' if self.peek() == Some('|') => Ok(Some(self.read_block_comment(start)?)),
             '(' => {
                 let span = self.seal(start);
                 Ok(Some(Token {
@@ -420,7 +464,7 @@ pub fn tokenize(src: &str, file: &str) -> (Vec<Token>, Vec<KifParseError>) {
 /// are unaffected; only the comment tokens are omitted.
 pub fn tokenize_without_comments(src: &str, file: &str) -> (Vec<Token>, Vec<KifParseError>) {
     let (mut tokens, errors) = tokenize(src, file);
-    tokens.retain(|t| !matches!(t.kind, TokenKind::Comment(_)));
+    tokens.retain(|t| !t.kind.is_comment());
     (tokens, errors)
 }
 
@@ -430,7 +474,8 @@ pub fn tokenize_without_comments(src: &str, file: &str) -> (Vec<Token>, Vec<KifP
 /// Consecutive comments merge into one block when the next comment starts on
 /// the line immediately after the block's last line AND no significant
 /// (non-comment) token appeared between them in the stream.  A blank line or
-/// any intervening code starts a new block.
+/// any intervening code starts a new block.  A `#| |#` block comment is
+/// always a block of its own, marked [`CommentBlock::verbatim`].
 pub fn comment_blocks(tokens: &[Token]) -> Vec<CommentBlock> {
     let mut blocks: Vec<CommentBlock> = Vec::new();
     // True while the last token seen was the tail of the open block -- any
@@ -441,9 +486,21 @@ pub fn comment_blocks(tokens: &[Token]) -> Vec<CommentBlock> {
     // terminating newline, so its end position sits on the following line.
     let mut last_line = 0u32;
     for tok in tokens {
-        let TokenKind::Comment(text) = &tok.kind else {
-            run_open = false;
-            continue;
+        let text = match &tok.kind {
+            TokenKind::Comment(text) => text,
+            TokenKind::BlockComment(text) => {
+                blocks.push(CommentBlock {
+                    text: text.clone(),
+                    span: tok.span.clone(),
+                    verbatim: true,
+                });
+                run_open = false;
+                continue;
+            }
+            _ => {
+                run_open = false;
+                continue;
+            }
         };
         match blocks.last_mut() {
             Some(block) if run_open && tok.span.line == last_line + 1 => {
@@ -456,6 +513,7 @@ pub fn comment_blocks(tokens: &[Token]) -> Vec<CommentBlock> {
             _ => blocks.push(CommentBlock {
                 text: text.clone(),
                 span: tok.span.clone(),
+                verbatim: false,
             }),
         }
         run_open = true;
@@ -679,5 +737,44 @@ mod tests {
         assert_eq!(tokens[2].span.line, 2); // `b` on line 2
         assert_eq!(tokens[2].span.end_line, 2);
         assert_eq!(tokens[2].span.col, 3); // indented 2 cols
+    }
+
+    #[test]
+    fn block_comment_nests_and_keeps_raw_text() {
+        let kinds = toks("#| a #| b |# c |# (p)");
+        assert!(
+            matches!(&kinds[0], TokenKind::BlockComment(s) if s == " a #| b |# c "),
+            "{kinds:?}"
+        );
+        assert!(matches!(kinds[1], TokenKind::LParen));
+    }
+
+    #[test]
+    fn unterminated_block_comment_is_an_error() {
+        let (_, errors) = tokenize("#| never closed (p)", "test");
+        assert!(matches!(
+            errors.as_slice(),
+            [KifParseError::UnterminatedBlockComment { .. }]
+        ));
+    }
+
+    #[test]
+    fn bare_hash_is_still_unexpected() {
+        let (_, errors) = tokenize("#foo", "test");
+        assert!(!errors.is_empty());
+    }
+
+    #[test]
+    fn block_comment_never_merges_with_line_comments() {
+        let (tokens, _) = tokenize("; one\n#| two |#\n; three\n", "test");
+        let blocks = comment_blocks(&tokens);
+        let shape: Vec<(&str, bool)> = blocks
+            .iter()
+            .map(|b| (b.text.as_str(), b.verbatim))
+            .collect();
+        assert_eq!(
+            shape,
+            vec![("one", false), (" two ", true), ("three", false)]
+        );
     }
 }

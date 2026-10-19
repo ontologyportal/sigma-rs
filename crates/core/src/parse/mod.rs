@@ -11,6 +11,8 @@ pub mod error;
 pub mod fingerprint;
 pub mod kif;
 pub mod macros;
+#[cfg(feature = "dynamic")]
+pub(crate) mod script;
 pub mod span;
 #[cfg(any(feature = "external-prover", feature = "native-prover"))]
 #[cfg(feature = "external-prover")]

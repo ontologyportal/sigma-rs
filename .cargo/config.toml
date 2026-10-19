@@ -82,6 +82,17 @@ SUMO_FORMAT_RELATION   = "format"
 SUMO_PROPOSITIONAL_ATTITUDE_CLASS = "PropositionalAttitude"
 SUMO_BELIEF_RELATION              = "believes"
 
+# ----------------------------------------------------------------------------
+# Dynamic relations (`dynamic` feature): instances of the base class are
+# resolved during native proof search by embedded `#|@js |#` code.  A
+# Partial relation fires on any atom with a ground argument; a Moded one once
+# every position its `dynamicInputs` fact names is ground.
+# ----------------------------------------------------------------------------
+SUMO_DYNAMIC_RELATION_CLASS         = "DynamicRelation"
+SUMO_PARTIAL_DYNAMIC_RELATION_CLASS = "PartialDynamicRelation"
+SUMO_MODED_DYNAMIC_RELATION_CLASS   = "ModedDynamicRelation"
+SUMO_DYNAMIC_INPUTS_RELATION        = "dynamicInputs"
+
 SUMO_SUBCLASS_RELATION    = "subclass"
 SUMO_SUBRELATION_RELATION = "subrelation"
 SUMO_SUBATTRIBUTE_RELATION = "subAttribute"

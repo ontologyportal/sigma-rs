@@ -61,6 +61,10 @@ pub struct CommentBlock {
     /// Source span covering the whole block, from the first `;` through the
     /// end of the last comment line.
     pub span: Span,
+    /// A KIF `#| |#` block comment: `text` is the raw content between the
+    /// markers, and formatters must re-emit it unchanged rather than reflow
+    /// it.
+    pub verbatim: bool,
 }
 
 /// One top-level item of a parsed document: a logical statement (an
@@ -296,6 +300,12 @@ mod tests {
     fn trailing_directive_at_end_of_file_binds_nothing() {
         let (s, _) = bound("(a b)\n; sumo-ignore\n");
         assert!(s.is_empty());
+    }
+
+    #[test]
+    fn directive_inside_a_block_comment_binds() {
+        let (s, forms) = bound("#| sumo-ignore: arity-mismatch |#\n(a b)\n");
+        assert!(s.covers(&forms[0], "arity-mismatch"));
     }
 
     #[test]

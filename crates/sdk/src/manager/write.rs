@@ -77,6 +77,9 @@ fn write_preferences(w: &mut W, m: &KBManager) {
     pref(w, KB_DIR, &m.kb_dir.display().to_string());
     pref(w, LANGUAGE, &m.language);
     pref(w, LEO_EXECUTABLE, &m.leo_executable.display().to_string());
+    if !m.lib_dir.as_os_str().is_empty() {
+        pref(w, LIB_DIR, &m.lib_dir.display().to_string());
+    }
     pref(w, LIMIT, &m.limit.to_string());
     pref(w, LOAD_LEXICONS, yn(m.load_lexicons));
     pref(w, LOG_DIR, &m.log_dir.display().to_string());

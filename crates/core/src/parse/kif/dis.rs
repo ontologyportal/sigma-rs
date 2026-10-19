@@ -252,23 +252,40 @@ fn emit_interior_comment(
         lo <= hi && !src[lo..hi].contains('\n')
     });
     match body.last_mut() {
+        Some(last) if trails_prev && block.verbatim => {
+            last.push(' ');
+            last.push_str(&verbatim_comment(block));
+        }
         Some(last) if trails_prev => append_comment_to_line(last, pad.len(), &block.text),
+        _ if block.verbatim => body.push(format!("{pad}{}", verbatim_comment(block))),
         _ => body.push(wrap_comment(&block.text, pad.len())),
     }
+}
+
+/// A `#| |#` block comment exactly as written.
+fn verbatim_comment(block: &CommentBlock) -> String {
+    format!("#|{}|#", block.text)
 }
 
 /// Append comment blocks after a rendered form: filled onto the closing line
 /// (`...) ; comment`) up to the width budget, overflow wrapping at `indent`.
 fn append_trailing_comments(out: &mut String, indent: usize, blocks: Vec<CommentBlock>) {
-    if blocks.is_empty() {
-        return;
+    let mut line: Vec<&str> = Vec::new();
+    for block in &blocks {
+        if block.verbatim {
+            if !line.is_empty() {
+                append_comment_to_line(out, indent, &line.join(" "));
+                line.clear();
+            }
+            out.push(' ');
+            out.push_str(&verbatim_comment(block));
+        } else {
+            line.push(&block.text);
+        }
     }
-    let joined = blocks
-        .iter()
-        .map(|b| b.text.as_str())
-        .collect::<Vec<_>>()
-        .join(" ");
-    append_comment_to_line(out, indent, &joined);
+    if !line.is_empty() {
+        append_comment_to_line(out, indent, &line.join(" "));
+    }
 }
 
 // -- Document-level formatting (comment-preserving) ---------------------------
@@ -395,6 +412,15 @@ pub fn format_forms(text: &str, items: &[&DocItem], comments: &[CommentBlock]) -
                 out.push_str(&styled_c(node, 0, false, text, &mut rem));
                 debug_assert!(rem.is_empty(), "interior comments not fully drained");
                 (node.span().end_offset, false)
+            }
+            Item::Comment(c) if c.verbatim => {
+                if separation == Some(0) {
+                    out.push(' ');
+                }
+                out.push_str(&verbatim_comment(c));
+                // Unlike `;`, a block comment's span ends at `|#`, not past a
+                // newline, so separation is measured like a form's.
+                (c.span.end_offset, false)
             }
             Item::Comment(c) => {
                 if separation == Some(0) {
@@ -525,6 +551,21 @@ mod format_document_tests {
         let doc = parse_document("t", src, Parser::Kif { options: None });
         assert!(!doc.has_errors(), "errors: {:?}", doc.parse_errors);
         format_document(&doc).expect("clean doc formats")
+    }
+
+    #[test]
+    fn block_comment_is_reemitted_verbatim() {
+        let code = "#|@js\nexport function f(x) {\n  return [[x; (y)]];\n}\n|#";
+        let src = format!("{code}\n(subclass Dog Animal)\n");
+        let out = assert_roundtrip(&src);
+        assert!(out.contains(code), "block comment altered:\n{out}");
+    }
+
+    #[test]
+    fn block_comment_inside_and_after_a_form_survives() {
+        let out = assert_roundtrip("(subclass #| why |# Dog Animal) #| tail |#\n");
+        assert!(out.contains("#| why |#"), "{out}");
+        assert!(out.contains("#| tail |#"), "{out}");
     }
 
     /// Formatting must be a true round trip: same fingerprints, same comments.

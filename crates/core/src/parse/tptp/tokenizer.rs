@@ -822,6 +822,7 @@ pub fn comment_blocks(tokens: &[Token]) -> Vec<CommentBlock> {
             _ => blocks.push(CommentBlock {
                 text: text.clone(),
                 span: tok.span.clone(),
+                verbatim: false,
             }),
         }
         run_open = true;

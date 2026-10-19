@@ -100,8 +100,12 @@ pub fn handle_semantic_tokens_full<L: TopLayer>(
                 depth = depth.saturating_sub(1);
                 head_pending = false;
             }
-            TokenKind::Comment(_) => {}
+            TokenKind::Comment(_) | TokenKind::BlockComment(_) => {}
             _ => head_pending = false,
+        }
+        if matches!(tok.kind, TokenKind::BlockComment(_)) {
+            classified.extend(line_segments(rope, tok.span.offset, tok.span.end_offset));
+            continue;
         }
         if let Some(mut ct) = classify_token(tok, kb) {
             if directive_head {
@@ -128,6 +132,34 @@ struct ClassifiedToken {
     type_idx: u32,
 }
 
+/// Split the comment byte range `start..end` into one token per source line:
+/// LSP semantic tokens cannot span lines.
+fn line_segments(rope: &Rope, start: usize, end: usize) -> Vec<ClassifiedToken> {
+    let end = end.min(rope.len_bytes());
+    let mut out = Vec::new();
+    let mut seg_start = start;
+    while seg_start < end {
+        let line = rope.byte_to_line(seg_start);
+        let next = rope
+            .try_line_to_byte(line + 1)
+            .unwrap_or(rope.len_bytes())
+            .min(end);
+        let mut seg_end = next;
+        while seg_end > seg_start && matches!(rope.byte(seg_end - 1), b'\n' | b'\r') {
+            seg_end -= 1;
+        }
+        if seg_end > seg_start {
+            out.push(ClassifiedToken {
+                start_offset: seg_start,
+                end_offset: seg_end,
+                type_idx: T_COMMENT,
+            });
+        }
+        seg_start = next;
+    }
+    out
+}
+
 fn classify_token<L: TopLayer>(
     tok: &sigmakee_rs_sdk::Token,
     kb: &KnowledgeBase<L>,
@@ -139,7 +171,7 @@ fn classify_token<L: TopLayer>(
         TokenKind::Number(_) => T_NUMBER,
         TokenKind::Variable(_) | TokenKind::RowVariable(_) => T_VARIABLE,
         TokenKind::Symbol(name) => classify_symbol(name, kb),
-        TokenKind::Comment(_) => T_COMMENT,
+        TokenKind::Comment(_) | TokenKind::BlockComment(_) => T_COMMENT,
     };
     Some(ClassifiedToken {
         start_offset: tok.span.offset,
@@ -244,6 +276,17 @@ mod tests {
     fn tokens_for(text: &str, file: &str) -> Vec<sigmakee_rs_sdk::Token> {
         let (toks, _errs) = tokenize_kif(text, file);
         toks
+    }
+
+    #[test]
+    fn multi_line_block_comment_splits_per_line() {
+        let src = "#| one\ntwo\r\n|#\n(P a)";
+        let rope = Rope::from_str(src);
+        let segs: Vec<&str> = line_segments(&rope, 0, 15)
+            .iter()
+            .map(|c| &src[c.start_offset..c.end_offset])
+            .collect();
+        assert_eq!(segs, vec!["#| one", "two", "|#"]);
     }
 
     #[test]

@@ -144,6 +144,14 @@ impl<'a> Cx<'a> {
         self.layer.doc_coverage()
     }
 
+    /// The dynamic-relation registry.
+    #[cfg(feature = "dynamic")]
+    pub(crate) fn dynamic_relations(
+        &self,
+    ) -> Arc<crate::semantics::caches::dynamic_relations::DynamicRegistry> {
+        self.layer.dynamic_relations()
+    }
+
     /// Whether `sym` is a CNF skolem constant rather than KB vocabulary.
     pub(crate) fn is_skolem(&self, sym: SymbolId) -> bool {
         self.layer.syntactic.is_skolem(sym)

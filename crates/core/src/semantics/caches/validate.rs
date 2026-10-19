@@ -57,6 +57,8 @@ impl CacheBehavior for Validate {
             EventKind::SessionReferenced,
             EventKind::SessionRetracted,
             EventKind::SourceReferencesChanged,
+            #[cfg(feature = "dynamic")]
+            EventKind::ScriptsChanged,
         ]
     }
 
@@ -99,6 +101,10 @@ impl CacheBehavior for Validate {
                     | Event::SourceReferencesChanged
             )
         }) {
+            store.clear();
+        }
+        #[cfg(feature = "dynamic")]
+        if events.iter().any(|e| matches!(e, Event::ScriptsChanged)) {
             store.clear();
         }
         for event in events {
