@@ -4901,7 +4901,11 @@ pub(crate) struct SubsScratch {
 /// per-candidate allocation once the buffers are warm.  Backtracking is
 /// trail-based — a failed branch rolls back exactly its own bindings —
 /// instead of the reference's clone/restore of the whole substitution.
-fn clause_subsumes_in(sub: &[(bool, Term)], sup: &[(bool, Term)], scr: &mut SubsScratch) -> bool {
+pub(crate) fn clause_subsumes_in(
+    sub: &[(bool, Term)],
+    sup: &[(bool, Term)],
+    scr: &mut SubsScratch,
+) -> bool {
     if sub.len() > sup.len() {
         return false;
     }

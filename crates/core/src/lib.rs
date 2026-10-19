@@ -111,6 +111,8 @@ pub use semantics::types::DocEntry;
 pub use semantics::types::{TaxDirection, TaxRelation};
 
 pub use cache::CacheConfig;
+#[cfg(feature = "native-prover")]
+pub use kb::clausify::{MatchMode, MatchOpts, MatchPolarity};
 pub use kb::dis::SentenceForm;
 pub use kb::man::{ManKind, ManPage, ParentEdge, SentenceRef, SortSig};
 #[cfg(any(feature = "external-prover", feature = "native-prover"))]
