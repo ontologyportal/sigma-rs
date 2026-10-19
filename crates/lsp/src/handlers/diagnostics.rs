@@ -53,6 +53,7 @@ pub fn publish_diagnostics<L: TopLayer>(
         show_suppressed: state
             .show_suppressed
             .load(std::sync::atomic::Ordering::SeqCst),
+        ..Default::default()
     };
     let mut diagnostics = Vec::new();
 

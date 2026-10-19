@@ -22,6 +22,8 @@ use crate::semantics::caches::dynamic_relations::DynamicRegistry;
 mod js;
 mod native;
 
+pub(crate) use native::library_path;
+
 /// A ground KIF value passed to or returned by a dynamic function.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum DynValue {
@@ -66,6 +68,11 @@ pub(crate) trait DynamicOracle: Send + Sync + std::fmt::Debug {
     /// Whether any call so far failed, timed out, or was refused by the
     /// budget -- i.e. whether the dynamic facts seen are possibly incomplete.
     fn incomplete(&self) -> bool;
+
+    /// The distinct problems met so far, in order: why calls failed, and
+    /// libraries of called scripts that could not be loaded (even when the
+    /// script caught the error).
+    fn problems(&self) -> Vec<String>;
 }
 
 /// Limits and library location for a [`JsOracle`].
@@ -96,6 +103,7 @@ pub(crate) struct JsOracle {
     memo: Mutex<HashMap<String, DynOutcome>>,
     calls: AtomicUsize,
     incomplete: AtomicBool,
+    problems: Mutex<Vec<String>>,
     opts: DynamicOpts,
 }
 
@@ -127,13 +135,26 @@ impl JsOracle {
             memo: Mutex::new(HashMap::new()),
             calls: AtomicUsize::new(0),
             incomplete: AtomicBool::new(false),
+            problems: Mutex::new(Vec::new()),
             opts,
         })
     }
 
     fn fail(&self, why: impl Into<String>) -> DynOutcome {
+        let why = why.into();
         self.incomplete.store(true, Ordering::Relaxed);
-        DynOutcome::Failed(why.into())
+        self.note(std::slice::from_ref(&why));
+        DynOutcome::Failed(why)
+    }
+
+    fn note(&self, problems: &[String]) {
+        if let Ok(mut seen) = self.problems.lock() {
+            for p in problems {
+                if !seen.contains(p) {
+                    seen.push(p.clone());
+                }
+            }
+        }
     }
 }
 
@@ -167,11 +188,25 @@ impl DynamicOracle for JsOracle {
             return self.fail("dynamic executor is not running");
         }
         let outcome = match answer.recv_timeout(deadline + Duration::from_millis(50)) {
-            Ok(outcome) => outcome,
+            Ok(reply) => {
+                // A failure caused by a load error already names it.
+                let why = match &reply.outcome {
+                    DynOutcome::Failed(why) => why.as_str(),
+                    DynOutcome::Answers(_) => "",
+                };
+                let fresh: Vec<String> = reply
+                    .warnings
+                    .into_iter()
+                    .filter(|w| !why.contains(w.as_str()))
+                    .collect();
+                self.note(&fresh);
+                reply.outcome
+            }
             Err(_) => DynOutcome::Failed(format!("{function}: timed out")),
         };
-        if matches!(outcome, DynOutcome::Failed(_)) {
+        if let DynOutcome::Failed(why) = &outcome {
             self.incomplete.store(true, Ordering::Relaxed);
+            self.note(std::slice::from_ref(why));
         }
         if let Ok(mut memo) = self.memo.lock() {
             memo.insert(key, outcome.clone());
@@ -181,6 +216,10 @@ impl DynamicOracle for JsOracle {
 
     fn incomplete(&self) -> bool {
         self.incomplete.load(Ordering::Relaxed)
+    }
+
+    fn problems(&self) -> Vec<String> {
+        self.problems.lock().map(|p| p.clone()).unwrap_or_default()
     }
 }
 
@@ -415,6 +454,30 @@ mod tests {
             panic!("expected answers");
         };
         assert!(matches!(&rows[0][0], Some(DynValue::Str(m)) if m.contains("expected an integer")));
+    }
+
+    #[test]
+    fn failures_and_caught_library_errors_are_reported_once() {
+        let o = oracle(
+            r#"//@use nowhere { f() -> int }
+               export function weather(a, b, c) {
+                 if (b.__kif_symbol === "Boston") throw new Error("sensor offline");
+                 try { nowhere.f(); } catch (e) {}
+                 return [];
+               }"#,
+            DynamicOpts::default(),
+        );
+        o.call("weather", &[None, sym("Paris"), None]);
+        o.call("weather", &[None, sym("Lima"), None]);
+        o.call("weather", &[None, sym("Boston"), None]);
+        o.call("weather", &[None, sym("Boston"), sym("Today")]);
+        assert_eq!(
+            o.problems(),
+            vec![
+                "library `nowhere`: no libDir configured".to_string(),
+                "weather: sensor offline".to_string(),
+            ]
+        );
     }
 
     #[test]

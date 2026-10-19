@@ -462,8 +462,12 @@ export function weather(_c, place, day) {
 
 The answer should be `Proved`, with a proof step labelled `[dynamic]`.
 `(wet Paris Today)` is not proved.  If the library cannot be loaded, the
-call fails with the reason (a missing file, a relative `libDir`, a symlink
-leaving `libDir`, a missing symbol), and the ask reports `Unknown`.
+call fails, the ask reports `Unknown`, and the reason (a missing file, a
+relative `libDir`, a symlink leaving `libDir`, a missing symbol) is printed
+as a warning and listed in `ProverResult::warnings`.  `sumo validate
+--lib-dir /opt/sigma/lib` reports a missing or misplaced library before any
+ask (`dynamic-library-unavailable`); missing symbols are only found at ask
+time, since validation never opens the library.
 
 #### Troubleshooting
 

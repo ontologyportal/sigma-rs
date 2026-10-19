@@ -62,6 +62,11 @@ pub struct ProverResult {
     pub given_steps: Option<usize>,
     pub status: ProverStatus,
     pub raw_output: String,
+    /// Problems the run hit that did not stop it, e.g. dynamic-relation
+    /// calls that failed or libraries that could not be loaded.  Each is
+    /// also a line of `raw_output`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
     /// Why the prover stopped, when no definitive verdict was reached.
     /// `None` for definitive Proved/Disproved/Consistent/Inconsistent
     /// results and for backends that don't report a reason.

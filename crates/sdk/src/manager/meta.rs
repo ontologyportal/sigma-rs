@@ -354,8 +354,8 @@ const OPTIONS: &[OptionMeta] = &[
         help: "Drive prover-feedback autoscaling: the axiom budget is widened when the conjecture isn't entailed and narrowed on timeout. The CLI exposes the inverse `--no-autoscale`." },
 
     OptionMeta { field: "lib_dir", json_paths: &["lib_dir"], long: "lib-dir", short: None,
-        env: Some("SIGMA_LIB_DIR"), scope: Scope::Subsystems(NATIVE), kind: Kind::Path,
-        help: "Directory native libraries declared by embedded #|@js |# scripts load from (`dynamic` builds)." },
+        env: Some("SIGMA_LIB_DIR"), scope: Scope::Subsystems(&[Validate, Ask, Test, Audit, Sweep]), kind: Kind::Path,
+        help: "Absolute directory native libraries declared by embedded #|@js |# scripts load from (`dynamic` builds). Validation reports libraries missing from it." },
 
     // -- Config-only (no SDK operation consumes these → no CLI flag) ---------
     OptionMeta { field: "graphviz_dir", json_paths: &["graphviz_dir"], long: "graphviz-dir", short: None,

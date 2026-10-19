@@ -299,8 +299,18 @@ export function weather(_c, place, day) {
   buffer.  Libraries never allocate for the caller.  See the
   `dynamic` feature in [`crates/core/README.md`](../core/README.md) for how
   to build one in C, C++, or Rust.
-- A call that throws, times out, or exceeds the per-ask budget turns a
-  saturated search into `Unknown` rather than `Disproved`.
+- A call that throws, times out, or exceeds the per-ask budget adds no
+  facts; the search continues with the relation as an ordinary predicate
+  (the KB's own facts and rules about it still apply), but a saturated
+  search reports `Unknown` rather than `Disproved`.  Each distinct failure
+  is printed as a warning, listed in `ProverResult::warnings`, and appended
+  to the raw prover output as a `dynamic:` line.
+- `sumo validate` warns about scripts without running them: malformed
+  `//@use` lines (`bad-script-use`), code that does not compile
+  (`script-syntax`), relations that can never fire
+  (`dynamic-relation-unusable`), and, given a `libDir`, libraries that
+  cannot be loaded from it (`dynamic-library-unavailable`).
+  `ValidateOpts::lib_dir` does the same for SDK callers.
 
 ### `sumo translate`
 

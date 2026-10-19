@@ -236,6 +236,14 @@ impl<S: TopLayer + 'static> NativeProver<'_, S> {
         self.dynamic.as_ref().is_some_and(|s| !s.pending.is_empty())
     }
 
+    /// The distinct problems dynamic calls met this run.
+    pub(crate) fn dynamic_problems(&self) -> Vec<String> {
+        self.dynamic
+            .as_ref()
+            .map(|s| s.oracle.problems())
+            .unwrap_or_default()
+    }
+
     /// Whether the dynamic facts this run saw may be incomplete: a call
     /// failed, timed out, or hit the budget, or demands were left
     /// unresolved.
@@ -261,8 +269,12 @@ mod tests {
     ";
 
     fn kb(script: &str) -> KnowledgeBase<ProverLayer> {
+        kb_with("", script)
+    }
+
+    fn kb_with(facts: &str, script: &str) -> KnowledgeBase<ProverLayer> {
         let mut kb = KnowledgeBase::new_native();
-        let text = format!("{KB}\n#|@js\n{script}\n|#\n");
+        let text = format!("{KB}\n{facts}\n#|@js\n{script}\n|#\n");
         let r = kb.reload_kif(&text, &std::path::PathBuf::from("dyn.kif"), "dyn.kif");
         assert!(r.ok, "load failed: {:?}", r.diagnostics);
         kb.make_session_axiomatic("dyn.kif").expect("promote");
@@ -318,6 +330,22 @@ mod tests {
         let kb = kb("export function weather(a, b, c) { throw new Error('sensor offline'); }");
         let r = ask(&kb, "(wet Paris Today)", &opts());
         assert_eq!(r.status, ProverStatus::Unknown, "{}", r.raw_output);
+    }
+
+    #[test]
+    fn a_failing_function_falls_back_to_ordinary_facts() {
+        let kb = kb_with(
+            "(weather Rain Boston Today)",
+            "export function weather(a, b, c) { throw new Error('sensor offline'); }",
+        );
+        let r = ask(&kb, "(wet Boston Today)", &opts());
+        assert_eq!(r.status, ProverStatus::Proved, "{}", r.raw_output);
+        assert_eq!(r.warnings, vec!["weather: sensor offline".to_string()]);
+        assert!(
+            r.raw_output.contains("\ndynamic: weather: sensor offline"),
+            "{}",
+            r.raw_output
+        );
     }
 
     #[test]

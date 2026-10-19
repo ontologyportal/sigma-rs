@@ -44,7 +44,14 @@ pub(super) struct Request {
     pub(super) function: String,
     pub(super) args: Vec<Option<DynValue>>,
     pub(super) timeout: Duration,
-    pub(super) reply: mpsc::Sender<DynOutcome>,
+    pub(super) reply: mpsc::Sender<Reply>,
+}
+
+/// The executor's answer to a [`Request`].
+pub(super) struct Reply {
+    pub(super) outcome: DynOutcome,
+    /// Library load errors of the called script, sent with its first call.
+    pub(super) warnings: Vec<String>,
 }
 
 /// Start the executor thread; dropping every sender stops it.
@@ -71,9 +78,10 @@ fn run(
         Ok(rt) => rt,
         Err(e) => {
             for req in rx {
-                let _ = req
-                    .reply
-                    .send(DynOutcome::Failed(format!("QuickJS runtime: {e}")));
+                let _ = req.reply.send(Reply {
+                    outcome: DynOutcome::Failed(format!("QuickJS runtime: {e}")),
+                    warnings: Vec::new(),
+                });
             }
             return;
         }
@@ -92,18 +100,23 @@ fn run(
         .map(|(i, s)| Loaded::new(&runtime, i, s, lib_dir))
         .collect();
 
+    let mut warned = vec![false; loaded.len()];
     for req in rx {
-        let outcome = match functions.get(&req.function).map(|&i| &loaded[i]) {
+        let mut warnings = Vec::new();
+        let outcome = match functions.get(&req.function).map(|&i| (i, &loaded[i])) {
             None => DynOutcome::Failed(format!("no function `{}`", req.function)),
-            Some(Err(e)) => DynOutcome::Failed(e.clone()),
-            Some(Ok(script)) => {
+            Some((_, Err(e))) => DynOutcome::Failed(e.clone()),
+            Some((i, Ok(script))) => {
+                if !std::mem::replace(&mut warned[i], true) {
+                    warnings.clone_from(&script.lib_errors);
+                }
                 deadline.set(Some(Instant::now() + req.timeout));
                 let out = script.call(&req.function, &req.args);
                 deadline.set(None);
                 out
             }
         };
-        let _ = req.reply.send(outcome);
+        let _ = req.reply.send(Reply { outcome, warnings });
     }
 }
 
@@ -111,6 +124,8 @@ fn run(
 struct Loaded {
     context: Context,
     exports: HashMap<String, Persistent<Function<'static>>>,
+    /// Why declared libraries could not be loaded.
+    lib_errors: Vec<String>,
 }
 
 impl Loaded {
@@ -127,11 +142,12 @@ impl Loaded {
             intrinsic::Promise,
         )>(runtime)
         .map_err(|e| format!("script {index}: {e}"))?;
+        let mut lib_errors = Vec::new();
         let exports = context.with(|ctx| -> Result<_, String> {
             let err = |e: rquickjs::Error| format!("script {index}: {}", describe(&ctx, e));
             ctx.eval::<(), _>(PRELUDE).map_err(err)?;
             for decl in &script.libs {
-                install_library(&ctx, decl, lib_dir).map_err(err)?;
+                lib_errors.extend(install_library(&ctx, decl, lib_dir).map_err(err)?);
             }
             let module =
                 Module::declare(ctx.clone(), format!("script{index}"), script.code.clone())
@@ -145,7 +161,11 @@ impl Loaded {
             }
             Ok(exports)
         })?;
-        Ok(Self { context, exports })
+        Ok(Self {
+            context,
+            exports,
+            lib_errors,
+        })
     }
 
     fn call(&self, function: &str, args: &[Option<DynValue>]) -> DynOutcome {
@@ -187,16 +207,18 @@ fn describe(ctx: &Ctx<'_>, e: rquickjs::Error) -> String {
 
 /// Define `globalThis[decl.name]` with one JS function per declared native
 /// function.  A library that cannot be loaded still defines its functions;
-/// calling one throws the load error.
+/// calling one throws the load error, which is also returned.
 fn install_library<'js>(
     ctx: &Ctx<'js>,
     decl: &LibDecl,
     lib_dir: Option<&Path>,
-) -> rquickjs::Result<()> {
+) -> rquickjs::Result<Option<String>> {
     let lib: Result<Rc<NativeLib>, String> = match lib_dir {
         Some(dir) => NativeLib::load(dir, decl).map(Rc::new),
-        None => Err(format!("library `{}`: no libDir configured", decl.name)),
-    };
+        None => Err("no libDir configured".to_string()),
+    }
+    .map_err(|e| format!("library `{}`: {e}", decl.name));
+    let load_error = lib.as_ref().err().cloned();
     let object = Object::new(ctx.clone())?;
     for (i, sig) in decl.functions.iter().enumerate() {
         let lib = lib.clone();
@@ -235,7 +257,8 @@ fn install_library<'js>(
         )?;
         object.set(sig.name.as_str(), f)?;
     }
-    ctx.globals().set(decl.name.as_str(), object)
+    ctx.globals().set(decl.name.as_str(), object)?;
+    Ok(load_error)
 }
 
 /// Convert a JS argument to the declared native type.

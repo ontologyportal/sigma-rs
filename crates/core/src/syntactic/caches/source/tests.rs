@@ -248,20 +248,3 @@ fn reingest_replaces_suppressions() {
     store.load_kif("(subclass Human Animal)", "f");
     assert!(!store.is_suppressed(&form, "anything"));
 }
-
-#[cfg(feature = "dynamic")]
-#[test]
-fn malformed_script_use_lines_warn_at_ingest() {
-    let mut store = SyntacticLayer::default();
-    let diags = store.load_kif(
-        "(subclass Human Animal)\n#|@js\n//@use lib { f(bool) -> int }\nexport function f() {}\n|#",
-        "f",
-    );
-    let warn = diags
-        .iter()
-        .find(|d| d.code == "kif/bad-script-use")
-        .expect("bad-script-use warning");
-    assert_eq!(warn.severity, Severity::Warning);
-    assert_eq!(warn.range.line, 3);
-    assert_eq!(store.scripts().len(), 1);
-}

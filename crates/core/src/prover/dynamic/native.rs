@@ -57,7 +57,7 @@ fn library_file(name: &str) -> String {
 /// `dir` must be absolute, `name` a plain ASCII identifier, and the
 /// canonical file (symlinks followed) must sit directly in the canonical
 /// `dir`.  Never falls back to the loader's search path.
-fn library_path(dir: &Path, name: &str) -> Result<PathBuf, String> {
+pub(crate) fn library_path(dir: &Path, name: &str) -> Result<PathBuf, String> {
     let plain = name
         .bytes()
         .next()

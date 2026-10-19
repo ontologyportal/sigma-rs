@@ -263,6 +263,9 @@ fn render_result(conjecture: &str, result: &ProverResult) -> String {
     for b in &result.bindings {
         out.push_str(&format!("\n  {b}"));
     }
+    for w in &result.warnings {
+        out.push_str(&format!("\n  warning: {w}"));
+    }
     if !result.proof_kif.is_empty() {
         out.push_str("\n\nProof:");
         for step in &result.proof_kif {

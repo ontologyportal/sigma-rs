@@ -311,7 +311,8 @@ mod tests {
         assert_eq!(unknown(ValidateOpts::default()), 0);
         assert_eq!(
             unknown(ValidateOpts {
-                show_suppressed: true
+                show_suppressed: true,
+                ..Default::default()
             }),
             1
         );

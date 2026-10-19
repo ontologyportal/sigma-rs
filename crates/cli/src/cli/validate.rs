@@ -23,7 +23,7 @@ use crate::style::*;
 /// carries no file to suppress in).
 pub fn run_validate<L>(
     session: Session<L>,
-    _manager: KBManager,
+    manager: KBManager,
     formula: Option<String>,
     parse_only: bool,
     suppress: &[String],
@@ -46,7 +46,11 @@ where
         Some(text) => validate_single_formula(session, &text, parse_only, suppress, wordnet),
         None => {
             let mut diagnostics = if !parse_only {
-                session.validate(ValidateOpts { show_suppressed })
+                session.validate(ValidateOpts {
+                    show_suppressed,
+                    lib_dir: (!manager.lib_dir.as_os_str().is_empty())
+                        .then(|| manager.lib_dir.clone()),
+                })
             } else {
                 vec![]
             };

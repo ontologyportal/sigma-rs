@@ -105,6 +105,9 @@ where
             }
         }
     }
+    for w in &result.warnings {
+        log::warn!("{w}");
+    }
 
     if format != "none" {
         if format != "tptp"

@@ -136,6 +136,7 @@ pub fn result_from_transcript(
         contradiction_proofs: Vec::new(),
         status,
         raw_output: combined,
+        warnings: Vec::new(),
         termination,
         bindings,
         proof_kif,

@@ -202,35 +202,6 @@ fn apply_source(
     evs
 }
 
-/// Warning events for a script's malformed `//@use` lines.
-#[cfg(feature = "dynamic")]
-fn script_warnings(script: &crate::parse::script::Script) -> Vec<Event> {
-    script
-        .errors
-        .iter()
-        .map(|(line, message)| {
-            let line = script.span.line + *line as u32;
-            Event::Diagnostic(Diagnostic {
-                kind: "parse",
-                range: Span {
-                    line,
-                    col: 1,
-                    end_line: line,
-                    end_col: 1,
-                    ..script.span.clone()
-                },
-                severity: Severity::Warning,
-                code: "kif/bad-script-use",
-                message: format!("malformed //@use declaration: {message}"),
-                related: Vec::new(),
-                sids: Vec::new(),
-                highlight_arg: -1,
-                highlight_var: None,
-            })
-        })
-        .collect()
-}
-
 /// Behavior for the `syntactic::source` AST store / reactor.
 #[derive(Debug, Default)]
 pub(crate) struct SourceCache;
@@ -381,7 +352,6 @@ impl EagerMapBehavior for SourceCache {
                                         .filter_map(crate::parse::script::Script::parse)
                                         .collect()
                                 };
-                            out.extend(scripts.iter().flat_map(script_warnings));
                             if side.set_scripts(&file_key, scripts) {
                                 out.push(Event::ScriptsChanged);
                             }

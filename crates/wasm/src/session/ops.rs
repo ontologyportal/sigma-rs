@@ -59,6 +59,7 @@ impl Session {
         let session_guard = self.session.read().expect("kb lock not poisoned");
         let opts = ValidateOpts {
             show_suppressed: show_suppressed.unwrap_or(false),
+            ..Default::default()
         };
         to_js(&DiagnosticView::from_slice(&session_guard.validate(opts)))
     }

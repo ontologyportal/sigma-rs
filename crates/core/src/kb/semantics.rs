@@ -23,11 +23,16 @@ pub enum ValidationTarget<'a> {
 }
 
 /// Options for [`KnowledgeBase::validate_with`].
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ValidateOpts {
     /// Report diagnostics that in-source `; sumo-ignore` /
     /// `; sumo-ignore-file` directives would otherwise suppress.
     pub show_suppressed: bool,
+    /// The `libDir` dynamic-relation libraries load from.  With the
+    /// `dynamic` feature, every `//@use` library of a validated file is
+    /// checked against it (`dynamic-library-unavailable`); `None` skips the
+    /// check.  Ignored without the feature.
+    pub lib_dir: Option<std::path::PathBuf>,
 }
 
 /// Aggregate vocabulary + documentation-coverage counts — see
@@ -373,10 +378,79 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
         };
         let scope = session.map_or(Scope::Base, |s| Scope::Session(session_id(s)));
         let mut diags = self.validate_sids(&sids, scope);
+        #[cfg(feature = "dynamic")]
+        diags.extend(self.script_findings(target, opts.lib_dir.as_deref()));
         if !opts.show_suppressed {
             diags.retain(|d| !syntactic.is_suppressed(&d.range, d.code));
         }
         diags
+    }
+
+    /// Warnings for the embedded scripts in `target`: problems found without
+    /// running them (`bad-script-use`, `script-syntax`) and, with `lib_dir`,
+    /// each `//@use` library that cannot be loaded from it
+    /// (`dynamic-library-unavailable`).  Only the library's path is checked;
+    /// it is not opened.
+    #[cfg(feature = "dynamic")]
+    fn script_findings(
+        &self,
+        target: ValidationTarget<'_>,
+        lib_dir: Option<&std::path::Path>,
+    ) -> Vec<Diagnostic> {
+        use crate::parse::script::ProblemKind;
+        let file = match target {
+            ValidationTarget::All => None,
+            ValidationTarget::File(tag) => Some(tag),
+            ValidationTarget::Sentence(_) | ValidationTarget::Session(_) => return Vec::new(),
+        };
+        let warning = |script: &crate::parse::script::Script, line: usize, code, message| {
+            let line = script.span.line + line as u32;
+            Diagnostic {
+                kind: "semantic",
+                range: crate::Span {
+                    line,
+                    col: 1,
+                    end_line: line,
+                    end_col: 1,
+                    ..script.span.clone()
+                },
+                severity: crate::Severity::Warning,
+                code,
+                message,
+                related: Vec::new(),
+                sids: Vec::new(),
+                highlight_arg: -1,
+                highlight_var: None,
+            }
+        };
+        let mut out = Vec::new();
+        for (key, script) in self.layer.semantic().syntactic.scripts() {
+            if file.is_some_and(|f| f != key) {
+                continue;
+            }
+            for problem in &script.errors {
+                let message = match problem.kind {
+                    ProblemKind::BadUse => {
+                        format!("malformed //@use declaration: {}", problem.message)
+                    }
+                    ProblemKind::Syntax => format!("script does not compile: {}", problem.message),
+                };
+                out.push(warning(&script, problem.line, problem.kind.code(), message));
+            }
+            let Some(dir) = lib_dir else { continue };
+            for lib in &script.libs {
+                if let Err(why) = crate::prover::dynamic::library_path(dir, &lib.name) {
+                    let message = format!("library `{}`: {why}", lib.name);
+                    out.push(warning(
+                        &script,
+                        lib.line,
+                        "dynamic-library-unavailable",
+                        message,
+                    ));
+                }
+            }
+        }
+        out
     }
 
     /// The single implementation behind every public validate entrypoint:
@@ -549,8 +623,93 @@ mod tests {
         );
         let opts = crate::ValidateOpts {
             show_suppressed: true,
+            ..Default::default()
         };
         assert_eq!(head_not_relation(&kb, opts), vec!["a.kif:2"]);
+    }
+
+    #[cfg(feature = "dynamic")]
+    fn codes_at(kb: &KnowledgeBase, target: crate::ValidationTarget<'_>, code: &str) -> Vec<u32> {
+        kb.validate_with(target, None, Default::default())
+            .into_iter()
+            .filter(|d| d.code == code)
+            .map(|d| d.range.line)
+            .collect()
+    }
+
+    #[cfg(feature = "dynamic")]
+    #[test]
+    fn script_problems_are_validation_warnings() {
+        let mut kb = KnowledgeBase::new();
+        load(
+            &mut kb,
+            "a.kif",
+            "(subclass A B)\n#|@js\n//@use lib { f(bool) -> int }\nexport function f() {\n  return [[;\n}\n|#\n",
+        );
+        let all = crate::ValidationTarget::All;
+        assert_eq!(codes_at(&kb, all, "bad-script-use"), vec![3]);
+        assert_eq!(codes_at(&kb, all, "script-syntax"), vec![5]);
+        assert!(codes_at(&kb, crate::ValidationTarget::File("b.kif"), "script-syntax").is_empty());
+        let r = kb.load(
+            SourceFile::kif(PathBuf::from("b.kif"), "(subclass C D)\n".to_string()),
+            "b.kif",
+        );
+        assert!(r.ok);
+        assert_eq!(
+            codes_at(&kb, crate::ValidationTarget::File("a.kif"), "script-syntax"),
+            vec![5]
+        );
+    }
+
+    #[cfg(feature = "dynamic")]
+    #[test]
+    fn suppressed_script_problems_stay_hidden() {
+        let mut kb = KnowledgeBase::new();
+        load(
+            &mut kb,
+            "a.kif",
+            "; sumo-ignore-file\n#|@js\nexport function f() {\n  return [[;\n}\n|#\n",
+        );
+        assert!(codes_at(&kb, crate::ValidationTarget::All, "script-syntax").is_empty());
+    }
+
+    #[cfg(feature = "dynamic")]
+    #[test]
+    fn unavailable_libraries_are_reported_against_lib_dir() {
+        let mut kb = KnowledgeBase::new();
+        load(
+            &mut kb,
+            "a.kif",
+            "(subclass A B)\n#|@js\n//@use sensor { f() -> int }\nexport function f() { return []; }\n|#\n",
+        );
+        let dir = tempfile::tempdir().expect("tempdir");
+        let lines = |target, lib_dir: Option<PathBuf>| -> Vec<u32> {
+            let opts = crate::ValidateOpts {
+                lib_dir,
+                ..Default::default()
+            };
+            kb.validate_with(target, None, opts)
+                .into_iter()
+                .filter(|d| d.code == "dynamic-library-unavailable")
+                .map(|d| d.range.line)
+                .collect()
+        };
+        let all = crate::ValidationTarget::All;
+        assert!(lines(all, None).is_empty());
+        assert_eq!(lines(all, Some(dir.path().to_path_buf())), vec![3]);
+        assert_eq!(lines(all, Some(PathBuf::from("relative"))), vec![3]);
+        assert!(lines(
+            crate::ValidationTarget::File("b.kif"),
+            Some(dir.path().to_path_buf())
+        )
+        .is_empty());
+        let file = if cfg!(target_os = "macos") {
+            "libsensor.dylib"
+        } else {
+            "libsensor.so"
+        };
+        std::fs::write(dir.path().join(file), b"").expect("write");
+        assert!(lines(all, Some(dir.path().to_path_buf())).is_empty());
     }
 
     #[test]

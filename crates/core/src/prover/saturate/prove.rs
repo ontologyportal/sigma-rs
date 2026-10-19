@@ -640,6 +640,7 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
         // Set from the run: dynamic facts may be missing, so saturation
         // proves nothing about absence.
         let dynamic_incomplete: bool;
+        let dynamic_problems: Vec<String>;
         let (
             verdict,
             steps,
@@ -902,10 +903,12 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
             #[cfg(feature = "dynamic")]
             {
                 dynamic_incomplete = prover.dynamic_incomplete();
+                dynamic_problems = prover.dynamic_problems();
             }
             #[cfg(not(feature = "dynamic"))]
             {
                 dynamic_incomplete = false;
+                dynamic_problems = Vec::new();
             }
             // Vacuity is decided on the RAW derivation DAG (a DFS over
             // clause parents), never on rendered steps — so rendering
@@ -1319,6 +1322,9 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
                     prover.stats.dedup_collisions_detected
                 ));
             }
+            for problem in &dynamic_problems {
+                raw.push_str(&format!("\ndynamic: {problem}"));
+            }
             if std::env::var_os("SIGMA_STATS").is_some() {
                 eprintln!("{raw}");
             }
@@ -1378,6 +1384,7 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
             complete_saturation,
             given_steps: Some(steps),
             raw_output: raw,
+            warnings: dynamic_problems,
             proof_kif,
             phase_profile,
             contradiction_proofs,

@@ -3,7 +3,8 @@
 // Embedded `#|@js ... |#` code blocks: the lexical half of dynamic relations.
 // A block is recognized from a verbatim `CommentBlock` whose text opens with
 // the `@js` tag; its `//@use` lines declare the native library functions the
-// code may call.  Parsing here is purely textual -- nothing is evaluated.
+// code may call.  Nothing is evaluated: the code is only compiled, to report
+// syntax errors.
 
 use serde::{Deserialize, Serialize};
 
@@ -14,6 +15,8 @@ use crate::parse::Span;
 const JS_TAG: &str = "@js";
 /// Prefix of a library declaration line inside a block.
 const USE_PREFIX: &str = "//@use";
+/// The global holding KIF symbols (`kif.Name`); no library may take it.
+const KIF_GLOBAL: &str = "kif";
 
 /// A value type crossing the native-library boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -52,6 +55,37 @@ pub(crate) struct LibDecl {
     /// Library name: resolved as `lib<name>.so` / `lib<name>.dylib`.
     pub(crate) name: String,
     pub(crate) functions: Vec<LibFn>,
+    /// Line of the declaration within the block (1-based, after the tag).
+    #[serde(default)]
+    pub(crate) line: usize,
+}
+
+/// What is wrong with a script, found without running it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum ProblemKind {
+    /// A malformed or conflicting `//@use` line.
+    BadUse,
+    /// The code does not compile.
+    Syntax,
+}
+
+impl ProblemKind {
+    /// The diagnostic code reported for this kind.
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Self::BadUse => "bad-script-use",
+            Self::Syntax => "script-syntax",
+        }
+    }
+}
+
+/// One problem in a script, at a line within the block (1-based, after the
+/// tag).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct ScriptProblem {
+    pub(crate) line: usize,
+    pub(crate) kind: ProblemKind,
+    pub(crate) message: String,
 }
 
 /// A parsed `#|@js ... |#` block.
@@ -65,8 +99,8 @@ pub(crate) struct Script {
     pub(crate) libs: Vec<LibDecl>,
     /// Names of the `export function`s, in source order.
     pub(crate) exports: Vec<String>,
-    /// Malformed `//@use` lines, as `(line within the block, message)`.
-    pub(crate) errors: Vec<(usize, String)>,
+    /// Problems found without running the code.
+    pub(crate) errors: Vec<ScriptProblem>,
 }
 
 impl Script {
@@ -80,16 +114,36 @@ impl Script {
         if !tag_tail.trim().is_empty() {
             return None;
         }
-        let mut libs = Vec::new();
+        let mut libs: Vec<LibDecl> = Vec::new();
         let mut errors = Vec::new();
+        let bad_use = |line, message| ScriptProblem {
+            line,
+            kind: ProblemKind::BadUse,
+            message,
+        };
         for (i, line) in code.lines().enumerate() {
             let Some(decl) = line.trim().strip_prefix(USE_PREFIX) else {
                 continue;
             };
             match parse_use(decl) {
-                Ok(lib) => libs.push(lib),
-                Err(msg) => errors.push((i + 1, msg)),
+                Ok(lib) if lib.name == KIF_GLOBAL => errors.push(bad_use(
+                    i + 1,
+                    format!("library name `{KIF_GLOBAL}` is reserved"),
+                )),
+                Ok(lib) if libs.iter().any(|l| l.name == lib.name) => errors.push(bad_use(
+                    i + 1,
+                    format!("library `{}` is declared twice", lib.name),
+                )),
+                Ok(lib) => libs.push(LibDecl { line: i + 1, ..lib }),
+                Err(msg) => errors.push(bad_use(i + 1, msg)),
             }
+        }
+        if let Some((line, message)) = syntax_error(code) {
+            errors.push(ScriptProblem {
+                line,
+                kind: ProblemKind::Syntax,
+                message,
+            });
         }
         Some(Self {
             span: block.span.clone(),
@@ -123,6 +177,7 @@ fn parse_use(decl: &str) -> Result<LibDecl, String> {
     Ok(LibDecl {
         name: name.to_string(),
         functions,
+        line: 0,
     })
 }
 
@@ -147,6 +202,37 @@ fn parse_fn(sig: &str) -> Result<LibFn, String> {
         name: name.to_string(),
         params,
         ret: ty(ret)?,
+    })
+}
+
+/// The first compile error in `code` as an ES module, with its line
+/// (1-based), or `None` when it compiles.  The module is never evaluated.
+fn syntax_error(code: &str) -> Option<(usize, String)> {
+    use rquickjs::{context::intrinsic, Context, Module, Runtime};
+    let runtime = match Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => return Some((1, format!("QuickJS runtime: {e}"))),
+    };
+    let context = match Context::custom::<intrinsic::Eval>(&runtime) {
+        Ok(cx) => cx,
+        Err(e) => return Some((1, format!("QuickJS context: {e}"))),
+    };
+    context.with(|ctx| {
+        let err = Module::declare(ctx.clone(), "script", code.to_string()).err()?;
+        let caught = ctx.catch();
+        let Some(ex) = caught.as_exception() else {
+            return Some((1, err.to_string()));
+        };
+        // QuickJS reports the position only in the stack: `at script:LINE:COL`.
+        let line = ex
+            .stack()
+            .and_then(|st| {
+                let at = st.split("script:").nth(1)?;
+                at.split(':').next()?.parse::<usize>().ok()
+            })
+            .filter(|n| *n >= 1)
+            .unwrap_or(1);
+        Some((line, ex.message().unwrap_or_else(|| err.to_string())))
     })
 }
 
@@ -205,6 +291,7 @@ mod tests {
         assert_eq!(
             s.libs,
             vec![LibDecl {
+                line: 1,
                 name: "weatherlib".into(),
                 functions: vec![
                     LibFn {
@@ -237,9 +324,43 @@ mod tests {
             true,
         ))
         .expect("script");
-        let lines: Vec<usize> = s.errors.iter().map(|(l, _)| *l).collect();
+        let lines: Vec<usize> = s.errors.iter().map(|p| p.line).collect();
         assert_eq!(lines, vec![2, 3, 4]);
         assert!(s.libs.is_empty());
+    }
+
+    #[test]
+    fn syntax_errors_are_reported_with_their_line() {
+        let s = Script::parse(&block(
+            "@js\nexport function weather(a) {\n  return [[;\n}\n",
+            true,
+        ))
+        .expect("script");
+        assert_eq!(s.errors.len(), 1, "{:?}", s.errors);
+        assert_eq!(s.errors[0].kind, ProblemKind::Syntax);
+        assert_eq!(s.errors[0].line, 2, "{:?}", s.errors);
+    }
+
+    #[test]
+    fn valid_code_is_compiled_but_not_run() {
+        let s = Script::parse(&block(
+            "@js\nthrow new Error('ran');\nexport function f() { return []; }\n",
+            true,
+        ))
+        .expect("script");
+        assert!(s.errors.is_empty(), "{:?}", s.errors);
+    }
+
+    #[test]
+    fn duplicate_and_reserved_libraries_are_rejected() {
+        let s = Script::parse(&block(
+            "@js\n//@use a { f() -> int }\n//@use a { g() -> int }\n//@use kif { h() -> int }\n",
+            true,
+        ))
+        .expect("script");
+        let lines: Vec<usize> = s.errors.iter().map(|p| p.line).collect();
+        assert_eq!(lines, vec![2, 3]);
+        assert_eq!(s.libs.len(), 1);
     }
 
     #[test]
