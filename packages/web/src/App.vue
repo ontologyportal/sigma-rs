@@ -21,6 +21,10 @@ const kb = useKBStore();
 const boot = useBootStore();
 const shell = useShellStore();
 const auth = useAuthStore();
+const logoSrc = computed(
+  () =>
+    `${import.meta.env.BASE_URL}${shell.isDark ? "logo-darkmode.png" : "logo.png"}`,
+);
 const route = useRoute();
 
 const currentTab = computed(() => (route.name as TabName) ?? "browse");
@@ -107,7 +111,7 @@ onBeforeUnmount(() => {
           class="brand"
           aria-label="Go to home page"
         >
-          <img src="/logo.png" alt="SigmaKEE logo" />
+          <img :src="logoSrc" alt="SigmaKEE logo" />
           <div class="brand-text">
             <h1>SigmaKEE</h1>
             <p class="sub">

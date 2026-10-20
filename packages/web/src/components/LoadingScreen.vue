@@ -5,7 +5,10 @@ import { useShellStore } from "../stores/shell";
 
 const boot = useBootStore();
 const shell = useShellStore();
-const staticMascotSrc = `${import.meta.env.BASE_URL}logo.png`;
+const staticMascotSrc = computed(
+  () =>
+    `${import.meta.env.BASE_URL}${shell.isDark ? "logo-darkmode.png" : "logo.png"}`,
+);
 const mascotSrc = computed(
   () =>
     `${import.meta.env.BASE_URL}mascot-stomp-${shell.isDark ? "darkmode" : "lightmode"}.gif`,
