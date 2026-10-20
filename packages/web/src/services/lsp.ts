@@ -66,6 +66,7 @@ let lastSyncedDiags: Diagnostic[] = [];
 // Whether the last sync forced the server's reconcile of that text (a
 // completion-triggered sync leaves it pending -- see `lspSyncDocument`).
 let lastSyncReconciled = false;
+let syncQueue: Promise<unknown> = Promise.resolve();
 
 /** KB file tag -> `kif:` scheme URI (the server derives the tag back). */
 export function tagToUri(tag: string): string {
@@ -174,10 +175,21 @@ async function flush(force: boolean): Promise<ServerMessage[]> {
  * sync), the previous diagnostics are returned rather than an empty list --
  * the markers must not vanish between edits.
  */
-export async function lspSyncDocument(
+export function lspSyncDocument(
   tag: string,
   text: string,
   opts: { reconcile?: boolean } = {},
+): Promise<Diagnostic[]> {
+  // Completion and validation share document state across worker round-trips.
+  const result = syncQueue.then(() => syncDocument(tag, text, opts));
+  syncQueue = result.catch(() => {});
+  return result;
+}
+
+async function syncDocument(
+  tag: string,
+  text: string,
+  opts: { reconcile?: boolean },
 ): Promise<Diagnostic[]> {
   const reconcile = opts.reconcile !== false;
   await ensureInitialized();
@@ -234,7 +246,8 @@ export async function lspSyncDocument(
     .find(
       (m) =>
         m.method === "textDocument/publishDiagnostics" &&
-        (m.params as PublishDiagnosticsParams | undefined)?.uri === uri,
+        (m.params as PublishDiagnosticsParams | undefined)?.uri === uri &&
+        (m.params as PublishDiagnosticsParams).version === openVersion,
     );
   lastSyncedText = text;
   lastSyncReconciled = reconcile;
