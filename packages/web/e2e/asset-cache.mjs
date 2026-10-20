@@ -384,7 +384,7 @@ try {
   page.once("dialog", (dialog) => dialog.accept("disconnect.kif"));
   await page
     .getByRole("button", {
-      name: "Save to the in-browser knowledge base",
+      name: "Save As",
       exact: true,
     })
     .click();

@@ -325,9 +325,7 @@ await step("15-problems", async () => {
   );
   await page.getByRole("link", { name: "Edit raw", exact: true }).click();
   await page.waitForURL(/\/edit\?file=/, { timeout: 10_000 });
-  await page
-    .getByRole("button", { name: "Save inference test", exact: true })
-    .waitFor();
+  await page.getByRole("button", { name: "Save As", exact: true }).waitFor();
   await page.waitForFunction(
     () =>
       document
@@ -466,7 +464,9 @@ await step("71-backup-data", async () => {
   }).split("\n");
 
   if (!listing.includes("localStorage.json"))
-    throw new Error("backup has no localStorage.json — it cannot be restored");
+    throw new Error(
+      "backup has no localStorage.json â€” it cannot be restored",
+    );
   // The boot snapshot cache is the one directory guaranteed to exist by now.
   if (!listing.some((f) => f.startsWith("sumo-cache/")))
     throw new Error("backup contains no OPFS files: " + listing.join(", "));

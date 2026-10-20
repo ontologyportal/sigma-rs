@@ -258,7 +258,7 @@ function expectMarkers(text, { has, lacks }, label) {
 }
 
 /**
- * Make a real edit through the UI and save it, so the case exercises the same
+ * Make a real edit through the UI and wait for autosave, so the case exercises the same
  * write path a user does rather than a pre-seeded fixture. The marker is a KIF
  * COMMENT on purpose: Monaco auto-closes brackets, so typing `(instance ...)`
  * would land a stray `)` in the buffer.
@@ -271,12 +271,6 @@ async function editAndSave(page, name) {
   );
   await page.keyboard.press("Enter");
   await page.keyboard.type(`;; ${LOCAL_MARKER}`);
-  await page
-    .getByRole("button", {
-      name: "Save to the in-browser knowledge base",
-      exact: true,
-    })
-    .click();
   await page.locator("text=/Saved /").first().waitFor({ timeout: 30_000 });
 }
 
@@ -552,7 +546,7 @@ await runCase("sumo-edit-survives-refresh", {
 
 // -- 2b. A url-sourced edit survives a plain refresh -------------------------
 // Made through the UI rather than seeded, so this also covers the write half:
-// that Save is offered for a url buffer at all, and that it persists.
+// that a url buffer autosaves and its local edit persists.
 await runCase("url-edit-survives-refresh", {
   routes: (page) => urlRoutes(page, { v: 1 }), // upstream does NOT move here
   seed: (page) =>
@@ -875,23 +869,36 @@ await runCase("url-edit-not-taken-as-baseline", {
         `url-baseline: recorded ${baseline}, not the hash of what the URL serves`,
       );
 
-    // Save the buffer exactly as it is.
+    // Autosave a change, then restore the seeded text. The second save must
+    // retain the local edit rather than mistake it for a return to upstream.
     expectMarkers(
       await editorText(page, "Extra.kif"),
       { has: LOCAL_MARKER },
       "url-baseline/open",
     );
-    if (await page.locator("text=/not saved or submitted/").count())
-      throw new Error(
-        "url-baseline: the editor still says a URL file can't be saved",
+    await page.locator(".edit-tab .view-lines").first().click();
+    await page.keyboard.press(
+      process.platform === "darwin" ? "Meta+ArrowDown" : "Control+End",
+    );
+    for (const [key, text] of [
+      ["Space", EXTRA_SEEDED_EDIT + " "],
+      ["Backspace", EXTRA_SEEDED_EDIT],
+    ]) {
+      await page.keyboard.press(key);
+      await page.waitForFunction(
+        ([key, sha]) => {
+          const record = JSON.parse(localStorage.getItem(key) || "{}")[
+            "url:Extra.kif"
+          ];
+          const saveAs = document.querySelector(
+            '.edit-tab button[aria-label="Save As"]',
+          );
+          return record?.savedBlobSha === sha && saveAs && !saveAs.disabled;
+        },
+        [EDITS_KEY, blobSha(text)],
+        { timeout: 30_000 },
       );
-    await page
-      .getByRole("button", {
-        name: "Save to the in-browser knowledge base",
-        exact: true,
-      })
-      .click();
-    await page.locator("text=/Saved /").first().waitFor({ timeout: 30_000 });
+    }
     await expectOpfsContent(
       page,
       "edits",

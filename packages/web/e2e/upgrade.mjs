@@ -269,12 +269,12 @@ async function editAndSave(page, name, marker) {
   );
   await page.keyboard.press("Enter");
   await page.keyboard.type(`;; ${marker}`);
-  await page
-    .getByRole("button", {
-      name: "Save to the in-browser knowledge base",
-      exact: true,
-    })
-    .click();
+  // The old build may still require manual saving; the new build autosaves.
+  const manualSave = page.getByRole("button", {
+    name: "Save to the in-browser knowledge base",
+    exact: true,
+  });
+  if (await manualSave.count()) await manualSave.click();
   await page.locator("text=/Saved /").first().waitFor({ timeout: 30_000 });
 }
 
