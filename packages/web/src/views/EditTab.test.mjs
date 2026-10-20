@@ -497,7 +497,7 @@ test("edits during an autosave wait for their own idle delay", async () => {
   }
 });
 
-test("unnamed buffers need an explicit first save and cannot be silently discarded", async () => {
+test("unnamed buffers use Save As for their first save and cannot be silently discarded", async () => {
   const f = fixture();
   try {
     await f.editor.openFile(null);
@@ -510,7 +510,7 @@ test("unnamed buffers need an explicit first save and cannot be silently discard
     );
     assert.equal(await f.editor.openFile(f.files.get("original.kif")), false);
     assert.equal(f.editor.text.value, "new unnamed work");
-    await f.editor.onSave();
+    await f.editor.onSaveAs();
     assert.equal(f.files.get("copy.kif").text, "new unnamed work");
   } finally {
     f.scope.stop();
@@ -608,7 +608,7 @@ test("edits during an unnamed file's first save are subsequently autosaved", asy
       f.kb.updateConstituentText = update;
       return update(...args);
     };
-    const saving = f.editor.onSave();
+    const saving = f.editor.onSaveAs();
     f.editor.text.value = "newer unnamed edits";
     finish();
     await saving;

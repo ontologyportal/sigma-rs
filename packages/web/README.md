@@ -11,7 +11,7 @@ including edits made while a save is running; a failed save keeps the buffer ope
 Save errors appear below the toolbar. Imported files keep local edits until you
 explicitly push them; autosave does not publish changes.
 
-New unnamed files need an explicit first save. Switching away asks before
+New unnamed files need **Save As** once to choose a filename; later edits autosave. Switching away asks before
 discarding their text. Closing or reloading the page warns while edits remain
 unsaved or a save is still running. Browser shutdown and crashes can still
 interrupt a save; the idle delay is not a crash recovery guarantee.

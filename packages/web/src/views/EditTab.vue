@@ -306,7 +306,7 @@ const dirty = computed(() => {
 
 const fileLabel = computed(() => {
   const name = current.value ? current.value.name : "new file (unsaved)";
-  return dirty.value ? `${name} •` : name;
+  return dirty.value ? `${name} \u2022` : name;
 });
 
 const rowKey = (r: { name: string; origin: string }) => `${r.origin}:${r.name}`;
@@ -345,7 +345,7 @@ async function openFile(c: OpenedFile | null) {
   if (!current.value && !saving.value && text.value !== loadedText) {
     if (
       !window.confirm(
-        "Discard this unnamed file's unsaved changes? Save it first to keep them.",
+        "Discard this unnamed file's unsaved changes? Use Save As first to keep them.",
       )
     ) {
       updateParams({});
@@ -511,30 +511,6 @@ function onVisibilityChange() {
   if (document.visibilityState === "hidden") void flushAutosave();
 }
 
-async function onSave() {
-  if (saving.value) return;
-  let name: string;
-  let origin: Origin;
-  if (current.value) {
-    ({ name, origin } = current.value);
-  } else {
-    // A file created via "+ New file" has no name yet -- ask for one now.
-    const entered = window.prompt(
-      "Filename for this new file:",
-      "untitled.kif",
-    );
-    if (entered === null) return; // cancelled -- leave the buffer as-is, no status change
-    name = entered.trim();
-    if (!name) {
-      saveStatus.set("Enter a filename to save.", true);
-      return;
-    }
-    origin = new LocalOrigin();
-  }
-
-  await saveTo(name, origin);
-}
-
 async function onSaveAs() {
   await saveWithName(false);
 }
@@ -657,9 +633,9 @@ async function writeTo(
     scheduleValidate();
     const saved =
       origin.kind === "sumo"
-        ? `Saved ${name} locally — it stays here until you push it to GitHub.`
+        ? `Saved ${name} locally - it stays here until you push it to GitHub.`
         : origin.kind === "url"
-          ? `Saved ${name} locally — the copy at the source URL is unchanged.`
+          ? `Saved ${name} locally - the copy at the source URL is unchanged.`
           : `Saved ${name}.`;
     saveStatus.set(
       renamed
@@ -715,7 +691,7 @@ function onDownloadKif() {
 async function onDownloadTptp() {
   downloadMenuOpen.value = false;
   const prior = { text: status.value, link: statusLink.value };
-  status.value = "generating TPTP…";
+  status.value = "generating TPTP...";
   statusLink.value = null;
   try {
     const r = await lspRequest<{ tptp: string }>("sumo/toTptp", {});
@@ -811,7 +787,7 @@ const ghStale = computed(() => changes.rows.some((r) => r.stale));
 const ghTitle = computed(() => {
   const n = ghCount.value;
   return n
-    ? `GitHub — ${n} file${n === 1 ? "" : "s"} changed and not yet pushed`
+    ? `GitHub - ${n} file${n === 1 ? "" : "s"} changed and not yet pushed`
     : "Push changes or create a pull request";
 });
 
@@ -869,7 +845,7 @@ function onJump({ line, col }: { line: number; col: number }) {
           </button>
           <button
             type="button"
-            title="New file (Save asks for a filename)"
+            title="New file (use Save As to choose a filename)"
             aria-label="New file"
             @click="onCreate"
           >
@@ -883,37 +859,6 @@ function onJump({ line, col }: { line: number; col: number }) {
               <path
                 d="M7.25 2a.75.75 0 0 1 1.5 0v5.25H14a.75.75 0 0 1 0 1.5H8.75V14a.75.75 0 0 1-1.5 0V8.75H2a.75.75 0 0 1 0-1.5h5.25V2Z"
               />
-            </svg>
-          </button>
-          <button
-            type="button"
-            :title="
-              editingTest
-                ? 'Save inference test'
-                : 'Save to the in-browser knowledge base'
-            "
-            :aria-label="
-              editingTest
-                ? 'Save inference test'
-                : 'Save to the in-browser knowledge base'
-            "
-            :disabled="saving"
-            @click="onSave"
-          >
-            <svg
-              viewBox="0 0 16 16"
-              width="16"
-              height="16"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.5"
-              stroke-linejoin="round"
-              aria-hidden="true"
-            >
-              <path
-                d="M2.75 2.75h8.19a1 1 0 0 1 .7.3l1.31 1.3a1 1 0 0 1 .3.71v8.19h-10.5z"
-              />
-              <path d="M5 2.75V6.25h5V2.75M5 13.25V9.25h6v4" />
             </svg>
           </button>
           <button
@@ -991,7 +936,7 @@ function onJump({ line, col }: { line: number; col: number }) {
             type="button"
             aria-haspopup="menu"
             :aria-expanded="downloadMenuOpen"
-            title="Download…"
+            title="Download..."
             aria-label="Download this file or the TPTP translation"
             @click="downloadMenuOpen = !downloadMenuOpen"
           >
@@ -1062,7 +1007,7 @@ function onJump({ line, col }: { line: number; col: number }) {
             :aria-pressed="tptpOpen"
             aria-haspopup="menu"
             :aria-expanded="splitMenuOpen"
-            title="Split-screen views…"
+            title="Split-screen views..."
             aria-label="Split-screen views"
             @click="onSplitClick"
           >
@@ -1116,9 +1061,7 @@ function onJump({ line, col }: { line: number; col: number }) {
           <template v-else>{{ status }}</template>
         </span>
       </div>
-      <!-- Save feedback (success/error) lives right under the toolbar, not
-         buried below the editor -- the one place a user glances after
-         clicking Save. -->
+      <!-- Local save status and errors stay visible under the toolbar. -->
       <StatusLine :text="saveStatus.text" :error="saveStatus.error" />
 
       <!-- Push selected changes or propose them upstream. -->
@@ -1147,7 +1090,7 @@ function onJump({ line, col }: { line: number; col: number }) {
           v-model="text"
           :language="language"
           :lsp="!editingTest"
-          placeholder="Loading editor…"
+          placeholder="Loading editor..."
           @cursor="onCursor"
           @ready="onReady"
           @failed="onFailed"
@@ -1204,7 +1147,7 @@ function onJump({ line, col }: { line: number; col: number }) {
   font-family: var(--mono);
   font-size: 13px;
 }
-/* Joined icon button group (open - save - download - GitHub). */
+/* Joined icon button group (open - save as - download - GitHub). */
 .btn-group {
   display: inline-flex;
   border: 1px solid var(--line);
