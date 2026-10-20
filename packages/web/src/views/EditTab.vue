@@ -306,7 +306,7 @@ const dirty = computed(() => {
 
 const fileLabel = computed(() => {
   const name = current.value ? current.value.name : "new file (unsaved)";
-  return dirty.value ? `${name} •` : name;
+  return dirty.value ? `${name} \u2022` : name;
 });
 
 const rowKey = (r: { name: string; origin: string }) => `${r.origin}:${r.name}`;
@@ -338,7 +338,33 @@ function checkStaleOnOpen() {
   openDiff(row);
 }
 
-function openFile(c: OpenedFile | null) {
+let openRequest = 0;
+
+async function openFile(c: OpenedFile | null) {
+  const request = ++openRequest;
+  if (!current.value && !saving.value && text.value !== loadedText) {
+    if (
+      !window.confirm(
+        "Discard this unnamed file's unsaved changes? Use Save As first to keep them.",
+      )
+    ) {
+      updateParams({});
+      return false;
+    }
+  } else if ((text.value !== loadedText && dirty.value) || saving.value) {
+    if (!(await flushAutosave())) {
+      if (request === openRequest && current.value)
+        updateParams({ file: fileParam(current.value) });
+      return false;
+    }
+  }
+  if (request !== openRequest) return false;
+  clearTimeout(autosaveTimer);
+  if (c)
+    c =
+      (isTestFile(c.name)
+        ? tests.find(c.name)
+        : kb.find(c.name, c.origin.kind)) ?? c;
   current.value = c ? { name: c.name, origin: c.origin } : null;
   text.value = c ? c.text : NEW_FILE_TEXT;
   loadedText = text.value;
@@ -349,6 +375,7 @@ function openFile(c: OpenedFile | null) {
   log.set("");
   scheduleValidate();
   checkStaleOnOpen();
+  return true;
 }
 
 onActivated(() => {
@@ -357,9 +384,8 @@ onActivated(() => {
   if (t && text.value === loadedText && t.text !== loadedText) openFile(t);
 });
 
-function onCreate() {
-  openFile(null);
-  updateParams({});
+async function onCreate() {
+  if (await openFile(null)) updateParams({});
 }
 
 // -- Deep links -----------------------------------------------------------------
@@ -409,8 +435,8 @@ onQuery(async (q) => {
         .then(() => tests.ensure(file))
         .catch(() => undefined);
     if (c) {
-      openFile(c);
-      if (fromStore) updateParams({ ...q, file });
+      const opened = await openFile(c);
+      if (opened && fromStore) updateParams({ ...q, file });
     } else if (fromStore) {
       try {
         localStorage.removeItem(EDIT_LAST_FILE_KEY);
@@ -429,28 +455,60 @@ onQuery(async (q) => {
 
 // -- Save -------------------------------------------------------------------------
 
-async function onSave() {
-  if (saving.value) return;
-  let name: string;
-  let origin: Origin;
-  if (current.value) {
-    ({ name, origin } = current.value);
-  } else {
-    // A file created via "+ New file" has no name yet -- ask for one now.
-    const entered = window.prompt(
-      "Filename for this new file:",
-      "untitled.kif",
-    );
-    if (entered === null) return; // cancelled -- leave the buffer as-is, no status change
-    name = entered.trim();
-    if (!name) {
-      saveStatus.set("Enter a filename to save.", true);
-      return;
-    }
-    origin = new LocalOrigin();
-  }
+const AUTOSAVE_DELAY_MS = 5000;
+let autosaveTimer: ReturnType<typeof setTimeout> | undefined;
+let saveTask: Promise<boolean> | null = null;
+let disposed = false;
 
-  await saveTo(name, origin);
+function scheduleAutosave() {
+  clearTimeout(autosaveTimer);
+  if (
+    disposed ||
+    !current.value ||
+    (!saving.value && (!dirty.value || text.value === loadedText))
+  )
+    return;
+  autosaveTimer = setTimeout(() => {
+    void flushAutosave(false);
+  }, AUTOSAVE_DELAY_MS);
+}
+
+async function flushAutosave(drain = true): Promise<boolean> {
+  clearTimeout(autosaveTimer);
+  while (
+    saveTask ||
+    (current.value && dirty.value && text.value !== loadedText)
+  ) {
+    if (saveTask) {
+      if (!(await saveTask)) return false;
+      if (!drain) {
+        scheduleAutosave();
+        return true;
+      }
+    } else {
+      const file = current.value!;
+      if (!(await saveTo(file.name, file.origin))) return false;
+      if (!drain) return true;
+    }
+  }
+  return true;
+}
+
+watch(text, scheduleAutosave, { flush: "sync" });
+
+function onBeforeUnload(event: BeforeUnloadEvent) {
+  if (
+    dirty.value ||
+    saving.value ||
+    (!current.value && text.value !== loadedText)
+  ) {
+    event.preventDefault();
+    event.returnValue = "";
+  }
+}
+
+function onVisibilityChange() {
+  if (document.visibilityState === "hidden") void flushAutosave();
 }
 
 async function onSaveAs() {
@@ -509,7 +567,21 @@ async function saveWithName(rename: boolean) {
   await saveTo(name, new LocalOrigin(), rename ? source : null);
 }
 
-async function saveTo(
+function saveTo(
+  name: string,
+  origin: Origin,
+  renamed: { name: string; origin: Origin } | null = null,
+): Promise<boolean> {
+  clearTimeout(autosaveTimer);
+  const task = writeTo(name, origin, renamed);
+  saveTask = task;
+  void task.finally(() => {
+    if (saveTask === task) saveTask = null;
+  });
+  return task;
+}
+
+async function writeTo(
   name: string,
   origin: Origin,
   renamed: { name: string; origin: Origin } | null = null,
@@ -518,6 +590,7 @@ async function saveTo(
   const source = current.value;
   let written = false;
   saving.value = true;
+  saveStatus.set(`Saving ${name} locally...`);
   try {
     if (isTestFile(name)) {
       const r = await tests.saveCurrent(buffer, testDialect(name), {
@@ -525,8 +598,11 @@ async function saveTo(
         origin: serializeOrigin(origin),
       });
       if (!r.saved) {
-        if (r.notices?.length) saveStatus.set(r.notices.join(" | "), true);
-        return;
+        saveStatus.set(
+          r.notices?.join(" | ") || `Could not save ${name}.`,
+          true,
+        );
+        return false;
       }
     } else {
       const r = await kb.updateConstituentText(name, buffer, origin);
@@ -535,9 +611,16 @@ async function saveTo(
     }
     written = true;
     if (current.value === source) {
-      current.value = { name, origin };
+      if (
+        !source ||
+        source.name !== name ||
+        originId(source.origin) !== originId(origin)
+      ) {
+        current.value = { name, origin };
+        updateParams({ file: fileParam({ name, origin }) });
+      }
       loadedText = buffer;
-      updateParams({ file: fileParam({ name, origin }) });
+      if (!source && text.value !== buffer) scheduleAutosave();
     }
     if (renamed) {
       if (isTestFile(renamed.name)) {
@@ -550,9 +633,9 @@ async function saveTo(
     scheduleValidate();
     const saved =
       origin.kind === "sumo"
-        ? `Saved ${name} locally — it stays here until you push it to GitHub.`
+        ? `Saved ${name} locally - it stays here until you push it to GitHub.`
         : origin.kind === "url"
-          ? `Saved ${name} locally — the copy at the source URL is unchanged.`
+          ? `Saved ${name} locally - the copy at the source URL is unchanged.`
           : `Saved ${name}.`;
     saveStatus.set(
       renamed
@@ -562,13 +645,23 @@ async function saveTo(
               : "")
         : saved,
     );
+    return true;
   } catch (e) {
+    const stored =
+      source &&
+      (isTestFile(source.name)
+        ? tests.find(source.name)
+        : kb.find(source.name, source.origin.kind));
+    // Local persistence can succeed before KB postprocessing fails.
+    if (current.value === source && stored?.text === buffer)
+      loadedText = buffer;
     if (renamed && written)
       saveStatus.set(
         `Saved ${name}, but could not finish removing ${renamed.name}: ${errMsg(e)}`,
         true,
       );
     else saveStatus.fail(e);
+    return false;
   } finally {
     saving.value = false;
   }
@@ -598,7 +691,7 @@ function onDownloadKif() {
 async function onDownloadTptp() {
   downloadMenuOpen.value = false;
   const prior = { text: status.value, link: statusLink.value };
-  status.value = "generating TPTP…";
+  status.value = "generating TPTP...";
   statusLink.value = null;
   try {
     const r = await lspRequest<{ tptp: string }>("sumo/toTptp", {});
@@ -666,12 +759,22 @@ function onKeydown(e: KeyboardEvent) {
   if (e.key === "Escape" && fullscreen.value) setFullscreen(false);
 }
 
-onActivated(() => document.addEventListener("keydown", onKeydown));
+onActivated(() => {
+  document.addEventListener("keydown", onKeydown);
+  document.addEventListener("visibilitychange", onVisibilityChange);
+  window.addEventListener("beforeunload", onBeforeUnload);
+});
 onDeactivated(() => {
+  void flushAutosave();
   document.removeEventListener("keydown", onKeydown);
   setFullscreen(false);
 });
 onBeforeUnmount(() => {
+  disposed = true;
+  void flushAutosave();
+  clearTimeout(autosaveTimer);
+  document.removeEventListener("visibilitychange", onVisibilityChange);
+  window.removeEventListener("beforeunload", onBeforeUnload);
   document.removeEventListener("keydown", onKeydown);
   clearTimeout(validateTimer);
   setFullscreen(false);
@@ -684,7 +787,7 @@ const ghStale = computed(() => changes.rows.some((r) => r.stale));
 const ghTitle = computed(() => {
   const n = ghCount.value;
   return n
-    ? `GitHub — ${n} file${n === 1 ? "" : "s"} changed and not yet pushed`
+    ? `GitHub - ${n} file${n === 1 ? "" : "s"} changed and not yet pushed`
     : "Push changes or create a pull request";
 });
 
@@ -742,7 +845,7 @@ function onJump({ line, col }: { line: number; col: number }) {
           </button>
           <button
             type="button"
-            title="New file (Save asks for a filename)"
+            title="New file (use Save As to choose a filename)"
             aria-label="New file"
             @click="onCreate"
           >
@@ -756,37 +859,6 @@ function onJump({ line, col }: { line: number; col: number }) {
               <path
                 d="M7.25 2a.75.75 0 0 1 1.5 0v5.25H14a.75.75 0 0 1 0 1.5H8.75V14a.75.75 0 0 1-1.5 0V8.75H2a.75.75 0 0 1 0-1.5h5.25V2Z"
               />
-            </svg>
-          </button>
-          <button
-            type="button"
-            :title="
-              editingTest
-                ? 'Save inference test'
-                : 'Save to the in-browser knowledge base'
-            "
-            :aria-label="
-              editingTest
-                ? 'Save inference test'
-                : 'Save to the in-browser knowledge base'
-            "
-            :disabled="saving"
-            @click="onSave"
-          >
-            <svg
-              viewBox="0 0 16 16"
-              width="16"
-              height="16"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.5"
-              stroke-linejoin="round"
-              aria-hidden="true"
-            >
-              <path
-                d="M2.75 2.75h8.19a1 1 0 0 1 .7.3l1.31 1.3a1 1 0 0 1 .3.71v8.19h-10.5z"
-              />
-              <path d="M5 2.75V6.25h5V2.75M5 13.25V9.25h6v4" />
             </svg>
           </button>
           <button
@@ -864,7 +936,7 @@ function onJump({ line, col }: { line: number; col: number }) {
             type="button"
             aria-haspopup="menu"
             :aria-expanded="downloadMenuOpen"
-            title="Download…"
+            title="Download..."
             aria-label="Download this file or the TPTP translation"
             @click="downloadMenuOpen = !downloadMenuOpen"
           >
@@ -935,7 +1007,7 @@ function onJump({ line, col }: { line: number; col: number }) {
             :aria-pressed="tptpOpen"
             aria-haspopup="menu"
             :aria-expanded="splitMenuOpen"
-            title="Split-screen views…"
+            title="Split-screen views..."
             aria-label="Split-screen views"
             @click="onSplitClick"
           >
@@ -963,9 +1035,15 @@ function onJump({ line, col }: { line: number; col: number }) {
             &#9432;
           </button>
         </div>
-        <span class="file-name" :title="dirty ? 'Unsaved changes' : ''">{{
-          fileLabel
-        }}</span>
+        <span
+          class="file-name"
+          :title="
+            dirty
+              ? 'Unsaved changes; autosaves after 5 seconds of inactivity'
+              : 'Changes save locally after 5 seconds of inactivity'
+          "
+          >{{ fileLabel }}</span
+        >
         <span class="spacer"></span>
         <span class="edit-status hint">
           <a
@@ -983,9 +1061,7 @@ function onJump({ line, col }: { line: number; col: number }) {
           <template v-else>{{ status }}</template>
         </span>
       </div>
-      <!-- Save feedback (success/error) lives right under the toolbar, not
-         buried below the editor -- the one place a user glances after
-         clicking Save. -->
+      <!-- Local save status and errors stay visible under the toolbar. -->
       <StatusLine :text="saveStatus.text" :error="saveStatus.error" />
 
       <!-- Push selected changes or propose them upstream. -->
@@ -1014,7 +1090,7 @@ function onJump({ line, col }: { line: number; col: number }) {
           v-model="text"
           :language="language"
           :lsp="!editingTest"
-          placeholder="Loading editor…"
+          placeholder="Loading editor..."
           @cursor="onCursor"
           @ready="onReady"
           @failed="onFailed"
@@ -1071,7 +1147,7 @@ function onJump({ line, col }: { line: number; col: number }) {
   font-family: var(--mono);
   font-size: 13px;
 }
-/* Joined icon button group (open - save - download - GitHub). */
+/* Joined icon button group (open - save as - download - GitHub). */
 .btn-group {
   display: inline-flex;
   border: 1px solid var(--line);
@@ -1141,7 +1217,7 @@ a.jump-diag:hover {
 
 .card.edit-pane {
   padding: 0;
-  overflow: hidden;
+  overflow: visible;
 }
 .editor-container {
   height: 520px;

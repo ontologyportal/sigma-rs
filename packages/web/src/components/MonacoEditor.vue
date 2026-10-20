@@ -286,4 +286,9 @@ defineExpose({
   font-size: 13px;
   padding: 6px 8px;
 }
+/* Monaco sets an inline auto width after measuring; near the editor edge
+   that shrinks tooltips and changes their height after positioning. */
+.mount :deep(.context-view:has(> .workbench-hover-container)) {
+  width: max-content !important;
+}
 </style>

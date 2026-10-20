@@ -2,6 +2,20 @@
 
 **COMING SOON**
 
+## Editor autosave
+
+Named files save locally after 5 seconds without typing. Each edit restarts
+that delay, and unchanged text is not saved again. Switching files or leaving
+the Edit tab saves pending edits immediately. File switching waits for the save,
+including edits made while a save is running; a failed save keeps the buffer open.
+Save errors appear below the toolbar. Imported files keep local edits until you
+explicitly push them; autosave does not publish changes.
+
+New unnamed files need **Save As** once to choose a filename; later edits autosave. Switching away asks before
+discarding their text. Closing or reloading the page warns while edits remain
+unsaved or a save is still running. Browser shutdown and crashes can still
+interrupt a save; the idle delay is not a crash recovery guarantee.
+
 ## Deployment disconnection
 
 Production builds cache tab code, styles, the editor, and core engine assets

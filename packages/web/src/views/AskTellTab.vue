@@ -569,7 +569,7 @@ async function saveTest() {
   height: 96px;
   border: 1px solid var(--line);
   border-radius: 7px;
-  overflow: hidden;
+  overflow: visible;
 }
 .test-outcome {
   font-size: 12px;
