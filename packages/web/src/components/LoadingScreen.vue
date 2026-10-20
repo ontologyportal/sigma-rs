@@ -1,8 +1,18 @@
 <script setup lang="ts">
 import { computed, onMounted } from "vue";
 import { useBootStore } from "../stores/boot";
+import { useShellStore } from "../stores/shell";
 
 const boot = useBootStore();
+const shell = useShellStore();
+const staticMascotSrc = computed(
+  () =>
+    `${import.meta.env.BASE_URL}${shell.isDark ? "logo-darkmode.png" : "logo.png"}`,
+);
+const mascotSrc = computed(
+  () =>
+    `${import.meta.env.BASE_URL}mascot-stomp-${shell.isDark ? "darkmode" : "lightmode"}.gif`,
+);
 
 const pct = computed(() =>
   Math.min(100, Math.round((boot.step / boot.total) * 100)),
@@ -19,14 +29,11 @@ onMounted(() => {
       <!-- Static mascot for prefers-reduced-motion -- GIF animation has no
            CSS pause/play, so swapping the whole source is the only way to
            honor it without JS. -->
-      <source media="(prefers-reduced-motion: reduce)" srcset="/logo.png" />
-      <img
-        id="mascot"
-        src="/mascot-stomp.gif"
-        alt=""
-        width="180"
-        height="180"
+      <source
+        media="(prefers-reduced-motion: reduce)"
+        :srcset="staticMascotSrc"
       />
+      <img id="mascot" :src="mascotSrc" alt="" width="180" height="180" />
     </picture>
     <div id="overlayTitle">
       {{ boot.failed ? "Failed to load SUMO" : "Loading SUMO" }}
