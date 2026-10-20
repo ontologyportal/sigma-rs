@@ -31,7 +31,12 @@ import { engineFile, type Constituent } from "../models/Constituent";
 
 /** A KB constituent or a test file -- anything the editor can open. */
 type OpenedFile = Pick<Constituent, "name" | "origin" | "text">;
-import { LocalOrigin, serializeOrigin, type Origin } from "../models/Origin";
+import {
+  LocalOrigin,
+  originId,
+  serializeOrigin,
+  type Origin,
+} from "../models/Origin";
 import { navigate, updateParams } from "../router";
 import { lspRequest, lspSyncDocument } from "../services/lsp";
 import type { MonacoNs } from "../services/monaco";
@@ -39,6 +44,7 @@ import { call } from "../services/sigma";
 import { useAuthStore } from "../stores/auth";
 import { useChangesStore, type ChangeRow } from "../stores/changes";
 import { useKBStore } from "../stores/kb";
+import { useLibraryStore } from "../stores/library";
 import { isTestFile, testDialect, useTestsStore } from "../stores/tests";
 import { downloadText, errMsg } from "../utils/format";
 import type { Diagnostic } from "../stores/kb";
@@ -58,6 +64,7 @@ const kb = useKBStore();
 const tests = useTestsStore();
 const changes = useChangesStore();
 const auth = useAuthStore();
+const library = useLibraryStore();
 
 const ed = ref<InstanceType<typeof MonacoEditor> | null>(null);
 const tptpPane = ref<InstanceType<typeof TptpPane> | null>(null);
@@ -423,6 +430,7 @@ onQuery(async (q) => {
 // -- Save -------------------------------------------------------------------------
 
 async function onSave() {
+  if (saving.value) return;
   let name: string;
   let origin: Origin;
   if (current.value) {
@@ -442,10 +450,77 @@ async function onSave() {
     origin = new LocalOrigin();
   }
 
-  saving.value = true; // icon-only button: disable, don't swap the label
+  await saveTo(name, origin);
+}
+
+async function onSaveAs() {
+  await saveWithName(false);
+}
+
+async function onRename() {
+  await saveWithName(true);
+}
+
+async function saveWithName(rename: boolean) {
+  if (saving.value) return;
+  const source = current.value;
+  if (rename && !source) return;
+  const entered = window.prompt(
+    rename
+      ? source?.origin.kind === "file"
+        ? "Rename file to:"
+        : "Rename locally to (the original source stays unchanged):"
+      : "Save As:",
+    source?.name.split("/").pop() ?? "untitled.kif",
+  );
+  if (entered === null) return;
+  const name = entered.trim();
+  if (
+    !name ||
+    /[\\/:]/.test(name) ||
+    [...name].some((c) => c.charCodeAt(0) < 32) ||
+    name === "." ||
+    name === ".."
+  ) {
+    saveStatus.set("Enter a filename without path separators.", true);
+    return;
+  }
+  if (rename && name === source?.name) return;
+  if (
+    source &&
+    (isTestFile(name) !== isTestFile(source.name) ||
+      (isTestFile(name) && testDialect(name) !== testDialect(source.name)))
+  ) {
+    saveStatus.set("Keep the same file type when choosing a new name.", true);
+    return;
+  }
+  if (
+    kb.find(name, "file") ||
+    library.entry(name, "file") ||
+    tests.available.some((t) => t.name === name) ||
+    tests.find(name)
+  ) {
+    saveStatus.set(
+      `${name} already exists. Choose a different filename.`,
+      true,
+    );
+    return;
+  }
+  await saveTo(name, new LocalOrigin(), rename ? source : null);
+}
+
+async function saveTo(
+  name: string,
+  origin: Origin,
+  renamed: { name: string; origin: Origin } | null = null,
+) {
+  const buffer = text.value;
+  const source = current.value;
+  let written = false;
+  saving.value = true;
   try {
     if (isTestFile(name)) {
-      const r = await tests.saveCurrent(text.value, testDialect(name), {
+      const r = await tests.saveCurrent(buffer, testDialect(name), {
         name,
         origin: serializeOrigin(origin),
       });
@@ -453,21 +528,25 @@ async function onSave() {
         if (r.notices?.length) saveStatus.set(r.notices.join(" | "), true);
         return;
       }
-      const saved = tests.find(r.name!);
-      if (saved) current.value = { name: saved.name, origin: saved.origin };
-      loadedText = text.value;
-      updateParams({ file: r.name! });
-      saveStatus.set(
-        saved && saved.origin.kind !== "file"
-          ? `Saved ${r.name} locally; the copy at its source is unchanged.`
-          : `Saved ${r.name}.`,
-      );
-      scheduleValidate();
-      return;
+    } else {
+      const r = await kb.updateConstituentText(name, buffer, origin);
+      if (r.notices.length) log.set(r.notices.join(" | "));
+      else log.clear();
     }
-    const r = await kb.updateConstituentText(name, text.value, origin);
-    current.value = { name, origin };
-    log.clear();
+    written = true;
+    if (current.value === source) {
+      current.value = { name, origin };
+      loadedText = buffer;
+      updateParams({ file: fileParam({ name, origin }) });
+    }
+    if (renamed) {
+      if (isTestFile(renamed.name)) {
+        await tests.remove(renamed.name, originId(renamed.origin));
+        await changes.forget(renamed.name, renamed.origin.kind);
+      } else await kb.remove(renamed.name, renamed.origin.kind);
+      if (renamed.origin.kind === "file")
+        await library.deleteEntry(renamed.name, "file");
+    }
     scheduleValidate();
     const saved =
       origin.kind === "sumo"
@@ -475,9 +554,21 @@ async function onSave() {
         : origin.kind === "url"
           ? `Saved ${name} locally — the copy at the source URL is unchanged.`
           : `Saved ${name}.`;
-    saveStatus.set(r.notices.length ? r.notices.join(" | ") : saved);
+    saveStatus.set(
+      renamed
+        ? `Renamed ${renamed.name} to ${name}.` +
+            (renamed.origin.kind !== "file"
+              ? " Saved locally; the original source is unchanged."
+              : "")
+        : saved,
+    );
   } catch (e) {
-    saveStatus.fail(e);
+    if (renamed && written)
+      saveStatus.set(
+        `Saved ${name}, but could not finish removing ${renamed.name}: ${errMsg(e)}`,
+        true,
+      );
+    else saveStatus.fail(e);
   } finally {
     saving.value = false;
   }
@@ -696,6 +787,57 @@ function onJump({ line, col }: { line: number; col: number }) {
                 d="M2.75 2.75h8.19a1 1 0 0 1 .7.3l1.31 1.3a1 1 0 0 1 .3.71v8.19h-10.5z"
               />
               <path d="M5 2.75V6.25h5V2.75M5 13.25V9.25h6v4" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            title="Save As a new local file"
+            aria-label="Save As"
+            :disabled="saving"
+            @click="onSaveAs"
+          >
+            <svg
+              viewBox="0 0 16 16"
+              width="16"
+              height="16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path
+                d="M8.5 13.25H2.75V2.75h8.5l2 2V8M5 2.75v3.5h5v-3.5M5 13.25v-4h3"
+              />
+              <path d="M12 9.5v5M9.5 12h5" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            :title="
+              current && current.origin.kind !== 'file'
+                ? 'Rename locally (the original source stays unchanged)'
+                : 'Rename this file'
+            "
+            aria-label="Rename"
+            :disabled="saving || !current"
+            @click="onRename"
+          >
+            <svg
+              viewBox="0 0 16 16"
+              width="16"
+              height="16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path
+                d="m10.5 2.5 3 3M2 14l3.5-1 8-8a2.12 2.12 0 0 0-3-3l-8 8L2 14Z"
+              />
             </svg>
           </button>
           <button
