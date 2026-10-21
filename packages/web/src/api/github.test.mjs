@@ -76,3 +76,44 @@ test("branch listing reads every page and preserves slash names", async () => {
   assert.equal(names[100], "work/ontology");
   assert.match(requests[1], /branches\?per_page=100&page=2$/);
 });
+
+test("proof sharing reads branch refs afresh and encodes slash-containing branch names", async () => {
+  const source = ts.transpileModule(
+    readFileSync(new URL("./github.ts", import.meta.url), "utf8"),
+    {
+      compilerOptions: {
+        module: ts.ModuleKind.CommonJS,
+        target: ts.ScriptTarget.ES2022,
+      },
+    },
+  ).outputText;
+  const requests = [];
+  const exports = {};
+  vm.runInNewContext(source, {
+    exports,
+    require: () => ({ useAuthStore: () => ({ token: null }) }),
+    fetch: async (url, options) => {
+      requests.push({ url, options });
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          object: { sha: String(requests.length).repeat(40) },
+        }),
+      };
+    },
+  });
+  assert.equal(
+    await exports.fetchBranchHead("alice", "sumo", "work/ontology"),
+    "1".repeat(40),
+  );
+  assert.equal(
+    await exports.fetchBranchHead("alice", "sumo", "work/ontology"),
+    "2".repeat(40),
+  );
+  assert.equal(
+    requests[0].url,
+    "https://api.github.com/repos/alice/sumo/git/ref/heads/work%2Fontology",
+  );
+  assert.ok(requests.every((r) => r.options.cache === "no-store"));
+});

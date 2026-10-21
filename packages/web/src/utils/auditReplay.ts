@@ -293,30 +293,19 @@ export function assertReplayCompatible(
 const hex = (bytes: Uint8Array) =>
   Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 
-/** Hash original UTF-8 bytes in manifest order, using the nightly runner's algorithm. */
-export async function verifyReplayFiles(
-  replay: AuditReplay,
+/** Build the nightly runner's ordered SHA-256 manifest from original bytes. */
+export async function replayFileManifest(
   files: { name: string; bytes: Uint8Array<ArrayBuffer> }[],
-): Promise<string[]> {
-  if (files.length !== replay.constituents.length)
-    throw new Error("Replay constituent count mismatch.");
+) {
   const encoder = new TextEncoder();
   const parts: Uint8Array[] = [];
-  const texts: string[] = [];
-  for (let i = 0; i < files.length; i++) {
-    const file = files[i];
-    const expected = replay.constituents[i];
+  const constituents = [];
+  for (const file of files) {
     const hash = new Uint8Array(
       await crypto.subtle.digest("SHA-256", file.bytes),
     );
-    if (file.name !== expected.name || hex(hash) !== expected.sha256)
-      throw new Error(`Replay file mismatch: ${expected.name}.`);
+    constituents.push({ name: file.name, sha256: hex(hash) });
     parts.push(encoder.encode(file.name + "\0"), hash);
-    texts.push(
-      new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
-        file.bytes,
-      ),
-    );
   }
   const all = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
   let offset = 0;
@@ -324,12 +313,39 @@ export async function verifyReplayFiles(
     all.set(part, offset);
     offset += part.length;
   }
-  if (
-    hex(new Uint8Array(await crypto.subtle.digest("SHA-256", all))) !==
-    replay.fingerprint
-  )
+  return {
+    constituents,
+    fingerprint: hex(
+      new Uint8Array(await crypto.subtle.digest("SHA-256", all)),
+    ),
+  };
+}
+
+/** Verify file bytes and ordering before replacing a workspace. */
+export async function verifyReplayFiles(
+  replay: Pick<AuditReplay, "constituents" | "fingerprint">,
+  files: { name: string; bytes: Uint8Array<ArrayBuffer> }[],
+): Promise<string[]> {
+  if (files.length !== replay.constituents.length)
+    throw new Error(
+      `Replay constituent count mismatch: expected ${replay.constituents.length}, received ${files.length}.`,
+    );
+  const actual = await replayFileManifest(files);
+  for (let i = 0; i < files.length; i++) {
+    const expected = replay.constituents[i];
+    if (
+      actual.constituents[i].name !== expected.name ||
+      actual.constituents[i].sha256 !== expected.sha256
+    )
+      throw new Error(`Replay file mismatch: ${expected.name}.`);
+  }
+  if (actual.fingerprint !== replay.fingerprint)
     throw new Error("Replay KB fingerprint mismatch.");
-  return texts;
+  return files.map((file) =>
+    new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
+      file.bytes,
+    ),
+  );
 }
 
 /** One call for each reported sweep position, without visiting the gaps. */
@@ -365,4 +381,41 @@ export function replayAxiomKey(axioms: ReplayAxiom[]): string {
       ),
     ].sort(),
   );
+}
+
+export interface ReportFile {
+  name: string;
+  text: string;
+  source?: {
+    repository: string;
+    branch: string;
+    path: string;
+  } | null;
+}
+
+/** Verify supplied text describes every live source before running the prover. */
+export function verifyReportSources(
+  files: ReportFile[],
+  sources: { file: string; keys: string[] }[],
+  parse: (file: string, text: string) => string[],
+): void {
+  const actual = new Map(sources.map((s) => [s.file, new Set(s.keys)]));
+  if (new Set(files.map((f) => f.name)).size !== files.length)
+    throw new Error("Duplicate report constituents.");
+  for (const file of files) {
+    const keys = new Set(parse(file.name, file.text));
+    const live = actual.get(file.name);
+    if (
+      (!live && keys.size) ||
+      (live && (live.size !== keys.size || [...keys].some((k) => !live.has(k))))
+    )
+      throw new Error(
+        `Live KB differs from report constituent ${file.name}. Save or apply edits and run again.`,
+      );
+    actual.delete(file.name);
+  }
+  if ([...actual.values()].some((keys) => keys.size))
+    throw new Error(
+      "The live KB contains additional sources. Reload the KB and run again.",
+    );
 }

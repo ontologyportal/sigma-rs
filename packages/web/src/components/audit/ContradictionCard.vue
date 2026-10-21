@@ -2,6 +2,7 @@
 import type { Contradiction } from "../../composables/useAuditRun";
 import { proofSummary } from "../../utils/contradictionReport";
 import { fmtTime } from "../../utils/format";
+import ShareProof from "../ShareProof.vue";
 import Card from "../Card.vue";
 import ProofView from "../ProofView.vue";
 import DiagnoseContradiction from "./DiagnoseContradiction.vue";
@@ -48,6 +49,10 @@ const emit = defineEmits<{ "update:collapsed": [collapsed: boolean] }>();
       @steps-toggle="emit('update:collapsed', !$event)"
     />
     <div class="contradiction-actions">
+      <ShareProof
+        v-if="contradiction.shareReport"
+        :report="contradiction.shareReport"
+      />
       <DiagnoseContradiction :steps="contradiction.steps" />
       <ReportContradiction
         :steps="contradiction.steps"

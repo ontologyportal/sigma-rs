@@ -843,6 +843,19 @@ export async function fetchLatestMasterAudit() {
   return run;
 }
 
+/** Read a live branch tip, independently of commit-history caches. */
+export async function fetchBranchHead(
+  owner: string,
+  repo: string,
+  branch: string,
+): Promise<string> {
+  const ref = await githubApi<GitRef>(
+    `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/ref/heads/${encodeURIComponent(branch)}`,
+    { cache: "no-store" },
+  );
+  return ref.object.sha;
+}
+
 /** A live master ref read for replay validity, independent of commit-history caches. */
 export async function fetchAuditMasterSha(): Promise<string> {
   const ref = await githubApi<GitRef>(
