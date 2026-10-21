@@ -31,6 +31,10 @@ declare const __AUDIT_ENGINE__: { commit: string; fingerprint: string } | null;
 /** Source identity of the bundled WASM, absent for legacy engine builds. */
 export const AUDIT_ENGINE = __AUDIT_ENGINE__;
 
+declare const __PROVER_BUILDS__: Record<string, string | null>;
+/** SHA-256 identities of the external prover binaries shipped with this build. */
+export const PROVER_BUILDS = __PROVER_BUILDS__;
+
 export const SUMO_FILE_SETTING = "sumoFiles";
 /** The constituent library: registered repos + local/URL entries. */
 export const LIBRARY_KEY = "sumoLibrary";

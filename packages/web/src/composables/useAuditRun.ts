@@ -8,7 +8,9 @@
 
 import { computed, reactive, ref, shallowRef } from "vue";
 import type { AuditBatch, AuditFocus, AuditResult } from "sigmakee/sdk";
-import { call, isWasmAbort } from "../services/sigma";
+import { runWithReport } from "../services/proof-report";
+import type { ProofReport } from "../utils/proofReport";
+import { isWasmAbort } from "../services/sigma";
 import { useBootStore } from "../stores/boot";
 import { useProverStore } from "../stores/prover";
 import { errMsg } from "../utils/format";
@@ -27,6 +29,7 @@ import { useElapsed } from "./useElapsed";
 /** A contradiction the engine reported, stamped (epoch ms) when it arrived. */
 export type Contradiction = AuditResult["contradictions"][number] & {
   foundAt: number;
+  shareReport?: ProofReport;
 };
 /** A subproblem that crashed the engine: logged by its sweep range, since it
  *  never returned a result. */
@@ -114,7 +117,11 @@ export function useAuditRun(form: AuditSweep, onClear: () => void = () => {}) {
   }
 
   /** Add `result`'s subproblems and new contradictions to the log. */
-  function record(result: AuditResult, seen: Set<string>, budget?: number) {
+  function record(
+    result: AuditResult & { shareReport?: ProofReport },
+    seen: Set<string>,
+    budget?: number,
+  ) {
     const foundAt = Date.now();
     const fresh = result.contradictions
       .filter((c) => {
@@ -123,7 +130,13 @@ export function useAuditRun(form: AuditSweep, onClear: () => void = () => {}) {
         seen.add(key);
         return true;
       })
-      .map((c) => ({ ...c, foundAt }));
+      .map((c) => ({
+        ...c,
+        foundAt,
+        shareReport: result.shareReport
+          ? { ...result.shareReport, result: c }
+          : undefined,
+      }));
     if (fresh.length)
       contradictions.value = [...contradictions.value, ...fresh];
     batches.value = [
@@ -177,7 +190,7 @@ export function useAuditRun(form: AuditSweep, onClear: () => void = () => {}) {
         const started = performance.now();
         let result: AuditResult;
         try {
-          ({ result } = await call("audit", {
+          ({ result } = await runWithReport("audit", {
             config,
             request: {
               seed,
@@ -248,7 +261,7 @@ export function useAuditRun(form: AuditSweep, onClear: () => void = () => {}) {
                 FOCUS_BUDGETS.length - i,
               );
         if (deadline != null && secs === 0) break;
-        const { result } = await call("audit", {
+        const { result } = await runWithReport("audit", {
           config: prover.config("audit", { timeLimitSecs: secs }),
           request: {
             at: { file: t.file, offset: t.offset },

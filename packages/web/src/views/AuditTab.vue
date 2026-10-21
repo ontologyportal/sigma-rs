@@ -3,6 +3,7 @@
  *  and replays the nightly master-branch report. The form, the runs and the
  *  replay each live in a composable; this view wires them together and
  *  presents the results. */
+import ImportProofReport from "../components/ImportProofReport.vue";
 import { computed, provide, ref, watch } from "vue";
 import { call } from "../services/sigma";
 import { errMsg, fmtNum } from "../utils/format";
@@ -112,6 +113,7 @@ const {
 } = runs;
 
 const {
+  replayProofReport,
   reportOpen,
   reportLoading,
   report,
@@ -125,6 +127,17 @@ const {
   confirmReplay,
   recheckContradictions,
 } = useAuditReplay(runs, form);
+
+watch(
+  () => shell.auditReportRequest,
+  (shared) => {
+    if (!shared) return;
+    shell.auditReportRequest = null;
+    clearFocus();
+    void replayProofReport(shared);
+  },
+  { immediate: true },
+);
 
 const optionsOpen = ref(false);
 watch(
@@ -236,6 +249,7 @@ function setAllCollapsed(fold: boolean) {
         description="Checks axioms' neighbourhoods (the axioms selected for each, as for a query) for contradictions. Any contradiction found is real, but finding none doesn't prove the KB consistent."
       >
         <template #header>
+          <ImportProofReport :disabled="auditing || replayBusy" />
           <button
             class="btn ghost small"
             type="button"

@@ -251,3 +251,44 @@ upstream SUMO, or links to an existing open PR for that branch.
 node --test packages/web/src/api/push.test.mjs packages/web/src/components/edit/ContributePanel.test.mjs packages/web/src/stores/changes.test.mjs
 node packages/web/e2e/push.mjs
 ```
+
+
+## Sharing proof results
+
+Use **Share result** on an Ask/Tell result or an audit contradiction, then
+**Copy report** or **Download report**. Sharing checks every loaded constituent
+against the live HEAD of its GitHub branch, using the exact text captured for
+that proof (including saved and unsaved edits). It reads the branch again after
+verification so a concurrent push cannot silently change the pinned revision.
+If any file differs, push your changes or reload the branch and rerun the proof.
+Local uploads, URL files and detached revisions must be loaded from a pushed
+GitHub branch before they can be shared. Sharing never publishes local work.
+
+Version 3 reports contain repository/branch/commit references, ordered file
+hashes, cited source axioms, the exact problem and settings, engine/prover build
+identities, and the selected proof. Complete KIF files and bulk external prover
+input/output are not included.
+
+To reproduce a report, choose **Import proof report** on Ask/Tell or Consistency
+audit and select its JSON file. Review the source revisions, operation, settings
+and build compatibility. Confirm replacing your KB only after saving a separate
+copy of work you want to keep: replay discards edits to loaded and imported
+files. Opening or cancelling the dialog does not change your workspace.
+
+The importer downloads files at their pinned commits, checks all hashes and
+parses the inputs before replacing the KB. It restores prover settings, reruns
+the recorded problem, and displays the new proof and reproduction outcome.
+For audit reports, confirmation closes the dialog and opens the Audit tab;
+loading progress, the check log and contradiction proofs appear there.
+Timeouts are inconclusive. A branch advancing after sharing does not invalidate
+the report. The engine fingerprint and external prover binaries must match;
+missing/incompatible builds block import before replacement. Files must be
+publicly downloadable from GitHub at the recorded commit. Older version 1/2
+reports lack verified inputs and must be shared again with this version.
+
+Sharing regression checks:
+
+```bash
+node --test packages/web/src/utils/proofReport.test.mjs packages/web/src/services/proof-report.test.mjs
+node packages/web/e2e/share-proof.mjs
+```

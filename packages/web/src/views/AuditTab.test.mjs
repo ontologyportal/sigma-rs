@@ -51,6 +51,7 @@ function fixture({
   noProof = false,
   invalid = "",
   recheckOutcome = "Consistent",
+  importError = "",
 } = {}) {
   const calls = [];
   const axiom = { file: "Merge.kif", line: 1, kif: "(p)" };
@@ -168,6 +169,25 @@ function fixture({
   };
   // The view's composables run for real, against the same mocks; they
   // import from their own directory, so alias those specifiers too.
+  imports["../services/proof-report"] = {
+    runWithReport: imports["../services/sigma"].call,
+    importProofReport: async (_report, progress) => {
+      calls.push("import");
+      progress("Loading pinned constituents...");
+      if (importError) throw new Error(importError);
+      return {
+        total: 100,
+        next_step: 43,
+        contradictions: [{ steps: [axiom] }],
+        batches: [{ status: "Contradictory", stop_reason: null, focus: [] }],
+        raw_output: "shared replay output",
+      };
+    },
+  };
+  imports["../utils/proofReport"] = {
+    proofReplayOutcome: () =>
+      "Contradiction reproduced with the reported source axioms.",
+  };
   imports["./useElapsed"] = imports["../composables/useElapsed"];
   const context = {
     require: (name) => imports[name] || {},
@@ -456,6 +476,46 @@ test("switching to Simple drops the Advanced overrides", async () => {
     assert.ok(f.calls.includes("reset:audit"));
     assert.equal(v.sweep.seed, 7); // the sweep position is kept
     assert.equal(v.sweep.step, 40);
+  } finally {
+    f.scope.stop();
+  }
+});
+
+test("shared audit replay records results in the Audit tab and clears nightly recheck state", async () => {
+  const f = fixture();
+  try {
+    await f.view.showMasterReport();
+    await f.view.confirmReplay();
+    assert.ok(f.view.loadedReplay.value);
+    await f.view.replayProofReport({
+      problem: { command: "audit", request: { seed: 2, step: 42 } },
+      config: { timeLimitSecs: 5 },
+    });
+    assert.equal(f.view.loadedReplay.value, null);
+    assert.equal(f.view.contradictions.value.length, 1);
+    assert.equal(f.view.batches.value.length, 1);
+    assert.equal(f.view.rawLines.value[0], "shared replay output");
+    assert.equal(f.view.run.next, 43);
+    assert.equal(f.view.replayMode.value, true);
+    assert.equal(f.view.auditing.value, false);
+    assert.equal(f.view.replayBusy.value, false);
+    assert.match(f.view.replayMessage.value, /Contradiction reproduced/);
+  } finally {
+    f.scope.stop();
+  }
+});
+
+test("shared report loading failures are shown in the Audit tab and release busy state", async () => {
+  const f = fixture({ importError: "Pinned file hash mismatch" });
+  try {
+    await f.view.replayProofReport({
+      problem: { command: "audit", request: {} },
+      config: {},
+    });
+    assert.match(f.view.error.value, /Pinned file hash mismatch/);
+    assert.equal(f.view.batches.value.length, 0);
+    assert.equal(f.view.auditing.value, false);
+    assert.equal(f.view.replayBusy.value, false);
   } finally {
     f.scope.stop();
   }

@@ -7,6 +7,11 @@
 
 import { onActivated, ref, shallowRef } from "vue";
 import { onBeforeRouteLeave } from "vue-router";
+import { importProofReport, runWithReport } from "../services/proof-report";
+import {
+  proofReplayOutcome,
+  type SharedProofReport,
+} from "../utils/proofReport";
 import { call } from "../services/sigma";
 import {
   checkAuditReplay,
@@ -42,6 +47,53 @@ export function useAuditReplay(runs: AuditRun, form: AuditSweep) {
   const recheckReason = ref("");
   const recheckRevision = ref(0);
   const rechecking = ref(false);
+
+  /** Replay a confirmed shared report into the tab's normal audit results. */
+  async function replayProofReport(shared: SharedProofReport) {
+    if (
+      shared.problem.command !== "audit" ||
+      replayBusy.value ||
+      runs.auditing.value
+    )
+      return;
+    replayBusy.value = true;
+    loadedReplay.value = null;
+    runs.clearResults();
+    runs.replayMode.value = true;
+    replayDone.value = 0;
+    Object.assign(runs.run, {
+      focused: false,
+      seed: shared.problem.request.seed ?? 0,
+      start: shared.problem.request.step ?? 0,
+      next: shared.problem.request.step ?? 0,
+      total: 0,
+      planned: null,
+      totalSecs: 0,
+      perCheckSecs: shared.config.timeLimitSecs ?? 0,
+      widest: 0,
+    });
+    runs.auditing.value = true;
+    try {
+      const result = await importProofReport(shared, (message) => {
+        replayMessage.value = message;
+      });
+      if (!("contradictions" in result))
+        throw new Error("Expected an audit result.");
+      runs.backendLabel.value = prover.backendLabel;
+      runs.record(result, new Set());
+      replayDone.value = result.batches.length;
+      runs.run.planned = result.batches.length;
+      runs.run.total = result.total;
+      runs.run.next = result.next_step;
+      replayMessage.value = proofReplayOutcome(shared, result);
+    } catch (e) {
+      runs.error.value = runs.crashMessage(e);
+      replayMessage.value = `Replay failed: ${runs.error.value}`;
+    } finally {
+      runs.auditing.value = false;
+      replayBusy.value = false;
+    }
+  }
 
   async function refreshRecheck() {
     if (!loadedReplay.value || replayBusy.value || runs.auditing.value) return;
@@ -161,11 +213,11 @@ export function useAuditReplay(runs: AuditRun, form: AuditSweep) {
         const position = positions[replayDone.value];
         replayMessage.value = `${rechecking.value ? "Rechecking target" : "Replaying"} ${replayDone.value + 1}/${positions.length}: original seed ${position.seed}, step ${position.step}`;
         const { result } = rechecking.value
-          ? await call("recheckAudit", {
+          ? await runWithReport("recheckAudit", {
               index: replayDone.value,
               revision: recheckRevision.value,
             })
-          : await call("audit", {
+          : await runWithReport("audit", {
               config: replay.config,
               request: {
                 seed: position.seed,
@@ -230,6 +282,7 @@ export function useAuditReplay(runs: AuditRun, form: AuditSweep) {
   }
 
   return {
+    replayProofReport,
     reportOpen,
     reportLoading,
     report,

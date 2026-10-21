@@ -35,6 +35,7 @@ import type {
   WordNetFiles,
 } from "sigmakee/sdk";
 import { WasmLsp } from "sigmakee";
+import { verifyReportSources, type ReportFile } from "../utils/auditReplay";
 import { AuditRecheckTracker, type RecheckTarget } from "../utils/auditReplay";
 
 // Not imported from prover-config.ts: that file is DOM code (this worker has
@@ -132,7 +133,47 @@ function makeConfig(o: ProverConfig = {}): Config {
   return cfg;
 }
 
+function reportContext(
+  files: ReportFile[] | undefined,
+  config: ProverConfig = {},
+  problem: unknown,
+) {
+  if (!files) return undefined;
+  let error = "";
+  try {
+    verifyReportSources(files, active().kb.auditSources(), (name, text) =>
+      active().kb.auditDocument(name, text),
+    );
+  } catch (e) {
+    error = e instanceof Error ? e.message : String(e);
+  }
+  return {
+    config,
+    problem,
+    error,
+    defaults: {
+      selection: Config.selectionDefaults(),
+      presets: Config.strategyPresets(),
+    },
+  };
+}
+
 export const handlers = {
+  /** Parse imported inputs and validate configuration without changing the live session. */
+  validateProofSetup({
+    files,
+    config,
+  }: {
+    files: ReportFile[];
+    config: ProverConfig;
+  }): { ok: true } {
+    const scratch = new Session({
+      backend: Backend.Native,
+      config: makeConfig(config),
+    });
+    for (const file of files) scratch.kb.auditDocument(file.name, file.text);
+    return { ok: true };
+  },
   async boot(): Promise<{ symbols: SumoSymbols }> {
     await init();
     session = newSession();
@@ -363,16 +404,25 @@ export const handlers = {
     config,
     session: sess,
     tptp,
+    reportFiles,
   }: {
     assertions?: string;
     query: string;
     config?: ProverConfig;
     session?: string;
     tptp?: boolean;
-  }): { result: AskResult } {
+    reportFiles?: ReportFile[];
+  }): { result: AskResult; reportContext?: ReturnType<typeof reportContext> } {
     active().configure(makeConfig(config));
     const tag = sess || "user-assertions";
     active().flushSession(tag);
+    const context = reportContext(reportFiles, config, {
+      command: "prove",
+      assertions,
+      query,
+      session: tag,
+      tptp: !!tptp,
+    });
     if (assertions && assertions.trim()) {
       const t = active().tell(assertions, tag, !!tptp);
       if (!t.ok)
@@ -380,20 +430,31 @@ export const handlers = {
           "assertion parse errors: " + t.errors.slice(0, 3).join("; "),
         );
     }
-    return { result: active().ask(query, { session: tag, tptp: !!tptp }) };
+    return {
+      result: active().ask(query, { session: tag, tptp: !!tptp }),
+      reportContext: context,
+    };
   },
 
   audit({
     config,
     request,
+    reportFiles,
   }: {
     config?: ProverConfig;
     request?: AuditRequest;
+    reportFiles?: ReportFile[];
   }): {
+    reportContext?: ReturnType<typeof reportContext>;
     result: AuditResult;
   } {
     active().configure(makeConfig(config));
-    return { result: active().auditConsistency(request) };
+    const context = reportContext(reportFiles, config, {
+      command: "audit",
+      request,
+    });
+    const result = active().auditConsistency(request);
+    return { result, reportContext: context };
   },
 
   /** Capture targets only after the report's exact inputs have been loaded. */
@@ -426,7 +487,16 @@ export const handlers = {
     return recheckState();
   },
 
-  recheckAudit({ index, revision }: { index: number; revision: number }): {
+  recheckAudit({
+    index,
+    revision,
+    reportFiles,
+  }: {
+    index: number;
+    revision: number;
+    reportFiles?: ReportFile[];
+  }): {
+    reportContext?: ReturnType<typeof reportContext>;
     result: AuditResult;
   } {
     const state = recheckState();
@@ -438,13 +508,14 @@ export const handlers = {
     try {
       const focus = recheck.tracker.focus(index);
       active().configure(makeConfig(recheck.config));
+      const request = { focus, count: 1, batch: 1, limit: recheck.limit };
+      const context = reportContext(reportFiles, recheck.config, {
+        command: "audit",
+        request,
+      });
       return {
-        result: active().auditConsistency({
-          focus,
-          count: 1,
-          batch: 1,
-          limit: recheck.limit,
-        }),
+        result: active().auditConsistency(request),
+        reportContext: context,
       };
     } catch (e) {
       recheck.tracker.invalid = e instanceof Error ? e.message : String(e);

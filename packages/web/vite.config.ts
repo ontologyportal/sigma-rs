@@ -18,6 +18,32 @@ function auditEngine() {
   }
 }
 
+function proverBuilds() {
+  return Object.fromEntries(
+    [
+      "vampire/vampire.wasm",
+      "eprover/eprover.wasm",
+      "eprover/e_axfilter.wasm",
+    ].map((file) => {
+      try {
+        const bytes = process
+          .getBuiltinModule("fs")
+          .readFileSync(new URL(`./public/${file}`, import.meta.url));
+        return [
+          file,
+          process
+            .getBuiltinModule("crypto")
+            .createHash("sha256")
+            .update(bytes)
+            .digest("hex"),
+        ];
+      } catch {
+        return [file, null];
+      }
+    }),
+  );
+}
+
 // vite.config.ts runs under Node, not the browser -- but this is a browser
 // package, so pulling in @types/node globally would leak Node's `setTimeout`
 // (returning `Timeout`) over DOM's (returning `number`) into every app file.
@@ -26,11 +52,20 @@ declare const process: {
   env: Record<string, string | undefined>;
   getBuiltinModule(name: "fs"): {
     readFileSync(path: URL, encoding: "utf8"): string;
+    readFileSync(path: URL): Uint8Array;
+  };
+  getBuiltinModule(name: "crypto"): {
+    createHash(algorithm: string): {
+      update(bytes: Uint8Array): { digest(encoding: "hex"): string };
+    };
   };
 };
 
 export default defineConfig({
-  define: { __AUDIT_ENGINE__: JSON.stringify(auditEngine()) },
+  define: {
+    __AUDIT_ENGINE__: JSON.stringify(auditEngine()),
+    __PROVER_BUILDS__: JSON.stringify(proverBuilds()),
+  },
   // Mount point, baked into every emitted asset URL: / for Cloudflare Pages,
   // /browse/ for GitHub Pages. Must stay ABSOLUTE -- with a relative base the
   // SPA fallback serves index.html at deeper paths (/edit/), where

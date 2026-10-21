@@ -26,7 +26,7 @@ const INPUT_RULES = new Set(["axiom", "hypothesis"]);
 
 /** The input steps of a derivation: cited axioms, plus any input-rule step
  *  whose source could not be traced (a session assertion, for instance). */
-const inputSteps = (steps: AuditStep[]) =>
+export const inputSteps = (steps: AuditStep[]) =>
   steps.filter((s) => s.file != null || INPUT_RULES.has(s.rule));
 
 /**

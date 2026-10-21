@@ -4,6 +4,7 @@
  */
 
 import { defineStore } from "pinia";
+import type { SharedProofReport } from "../utils/proofReport";
 import {
   APP_REPO,
   SEEN_VERSION_KEY,
@@ -93,6 +94,8 @@ export const useShellStore = defineStore("shell", {
     },
     /** Bumped by `requestSearchFocus`; the Browse view watches it. */
     searchFocusRequest: 0,
+    /** A confirmed report to load and replay in the Audit tab. */
+    auditReportRequest: null as SharedProofReport | null,
     /** The saved layout preference (SettingsDialog); may not be what's
      *  actually applied -- see `effectiveLayout`. */
     layout: "comfortable" as Layout,
