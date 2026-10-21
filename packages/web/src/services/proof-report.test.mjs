@@ -231,7 +231,7 @@ test("sharing rejects unpushed edits, local files, missing branches and racing b
     fixture({ remote: input + "\n; unrelated change" }).exportProofReport(
       snapshot(),
     ),
-    /do not match branch HEAD/,
+    /Cannot export this proof:.*push your changes.*reset your local files/,
   );
   await assert.rejects(
     fixture({ moved: true }).exportProofReport(snapshot()),

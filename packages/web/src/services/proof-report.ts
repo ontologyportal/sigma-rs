@@ -175,7 +175,7 @@ export async function exportProofReport(
     await verifyReplayFiles(snapshot, downloaded);
   } catch {
     throw new Error(
-      "The proof's input files do not match branch HEAD. Push your changes or reload the branch, then rerun the proof. No local edits can be included in a shared report.",
+      "Cannot export this proof: its local input files do not match the pushed HEAD of their GitHub branch. Either push your changes to the head of the branch or reset your local files to the head of the branch, then rerun the proof before exporting.",
     );
   }
   for (const source of heads.values()) {

@@ -131,11 +131,14 @@ try {
       await import("/src/components/ImportProofReport.vue");
     const { router } = await import("/src/router/index.ts");
     const { default: AuditTab } = await import("/src/views/AuditTab.vue");
+    const { default: AskTellTab } = await import("/src/views/AskTellTab.vue");
     createApp({
       render: () =>
         router.currentRoute.value.name === "audit"
           ? h(AuditTab)
-          : h("div", [h(ShareProof, { report }), h(ImportProofReport)]),
+          : router.currentRoute.value.name === "prover"
+            ? h(AskTellTab)
+            : h("div", [h(ShareProof, { report }), h(ImportProofReport)]),
     })
       .use(pinia)
       .use(router)
@@ -265,6 +268,38 @@ try {
   assert.equal(new URL(page.url()).pathname, "/audit");
   assert.equal(await page.getByRole("dialog").count(), 0);
   await page.getByText("1 contradiction found", { exact: true }).waitFor();
+  await page.evaluate(async () => {
+    await (await import("/src/router/index.ts")).navigate("prover");
+  });
+  await page.locator(".monaco-editor").first().waitFor();
+  await page.getByRole("radio", { name: "TPTP", exact: true }).click();
+  await page.evaluate(async () => {
+    const monaco = await (await import("/src/services/monaco.ts")).loadMonaco();
+    for (const model of monaco.editor.getModels())
+      model.setValue("fof(a, axiom, p).\nfof(q, conjecture, p).");
+  });
+  await page.getByRole("button", { name: "Prove", exact: true }).click();
+  const proof = page
+    .locator("details")
+    .filter({
+      has: page.locator("summary", { hasText: /^proof \(\d+ steps?\)/ }),
+    })
+    .first();
+  await proof.waitFor();
+  assert.equal(await proof.getAttribute("open"), "");
+  await proof.locator("summary").click();
+  assert.equal(await proof.getAttribute("open"), null);
+  const share = page.getByRole("button", { name: "Share result", exact: true });
+  assert.equal(await share.isVisible(), true);
+  await proof.locator("summary").click();
+  assert.equal(await proof.getAttribute("open"), "");
+  await proof.locator("summary").click();
+  await page.getByRole("button", { name: "Prove", exact: true }).click();
+  await page.getByRole("button", { name: "Prove", exact: true }).waitFor();
+  await page.waitForFunction(
+    () => document.querySelector(".proof-actions") != null,
+  );
+  assert.equal(await proof.getAttribute("open"), "");
   console.log(
     "Verified pushed-HEAD export, confirmation/cancellation, pinned import after branch advancement, and real WASM conjecture/contradiction replay.",
   );

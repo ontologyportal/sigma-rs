@@ -41,13 +41,16 @@ async function prepare() {
       problem settings, and proof. Complete KIF files are not included.
     </p>
     <p>
-      Sharing verifies every input file against the current HEAD of its GitHub
-      branch. If files differ, push your changes or reload the branch, then
-      rerun the proof. Recipients can import this report even after the branch
-      advances.
+      <strong
+        >You cannot export your proof if any local input file differs from the
+        pushed HEAD of its GitHub branch.</strong
+      >
+      Either push your changes to the head of the branch or reset your local
+      files to the head of the branch, then rerun the proof before exporting.
     </p>
-    <p>
-      If copying is unavailable, select the text below or download the report.
+    <p v-if="text">
+      Recipients can import this report even after the branch advances. Copy or
+      download it below.
     </p>
     <p v-if="busy">Preparing report...</p>
     <p v-if="status" role="status">{{ status }}</p>

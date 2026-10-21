@@ -6,6 +6,7 @@ import { useTabQuery } from "../composables/useTabQuery";
 import { useStatus } from "../composables/useStatus";
 import { navigate } from "../router";
 import ShareProof from "../components/ShareProof.vue";
+import { proofSummary } from "../utils/contradictionReport";
 import { runWithReport } from "../services/proof-report";
 import type { ProofReport } from "../utils/proofReport";
 import { call } from "../services/sigma";
@@ -108,6 +109,10 @@ const showDownloadTptp = ref(false);
 
 const shareReport = shallowRef<ProofReport | null>(null);
 const result = shallowRef<AskResult | null>(null);
+const proofCollapsed = ref(false);
+watch(result, () => {
+  proofCollapsed.value = false;
+});
 /** The last result graded against the test's expected answer, if any. */
 const outcome = ref<TestOutcome | null>(null);
 
@@ -551,16 +556,21 @@ async function saveTest() {
             Proof</label
           >
         </div>
-        <ShareProof v-if="shareReport" :report="shareReport" />
         <ProofView
           v-if="result"
           :steps="result.proof || []"
+          :steps-summary="proofSummary(result.proof || [])"
+          :steps-open="!proofCollapsed"
+          @steps-toggle="proofCollapsed = !$event"
           :prologue="result.proof_tptp_prologue"
           :prose="result.prose"
           :prose-missing="result.prose_missing"
           :graphviz="result.graphviz"
           :raw-output="result.raw_output"
         />
+        <div v-if="shareReport" class="proof-actions">
+          <ShareProof :report="shareReport" />
+        </div>
       </Card>
     </Col>
     <Col v-if="!isCompact" :span="4" style="margin-left: 15px">
@@ -575,6 +585,13 @@ async function saveTest() {
 </template>
 
 <style scoped>
+.proof-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
 .pane-editor {
   height: 96px;
   border: 1px solid var(--line);
