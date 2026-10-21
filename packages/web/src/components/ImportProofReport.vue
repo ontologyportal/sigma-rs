@@ -5,11 +5,18 @@ import type { AskResult, AuditResult } from "sigmakee/sdk";
 import BaseDialog from "./BaseDialog.vue";
 import Disclosure from "./Disclosure.vue";
 import ProofView from "./ProofView.vue";
+import {
+  fetchSumoIssue,
+  searchSumoContradictions,
+  sumoIssueNumber,
+  type IssueRef,
+} from "../api/github";
 import { AUDIT_ENGINE, PROVER_BUILDS } from "../constants";
 import { importProofReport } from "../services/proof-report";
 import {
   assertProofCompatible,
   parseProofReport,
+  proofReportFromIssue,
   proofReplayOutcome,
   type SharedProofReport,
 } from "../utils/proofReport";
@@ -17,9 +24,26 @@ import { errMsg } from "../utils/format";
 import { currentTab, navigate } from "../router";
 import { useShellStore } from "../stores/shell";
 
-defineProps<{ disabled?: boolean }>();
+const props = defineProps<{
+  disabled?: boolean;
+  allowIssue?: boolean;
+  unified?: boolean;
+  workflowBusy?: boolean;
+}>();
+const emit = defineEmits<{ workflowOpen: [] }>();
 const open = ref(false);
 const busy = ref(false);
+const fetching = ref(false);
+const searching = ref(false);
+const issueInput = ref("");
+const issueNumber = ref<number | null>(null);
+const issueMode = ref(false);
+const browseMode = ref(false);
+const fileMode = ref(false);
+const workflowMode = ref(false);
+const issueResults = ref<IssueRef[]>([]);
+const nextIssuePage = ref<number | null>(null);
+const incompleteSearch = ref(false);
 const report = shallowRef<SharedProofReport | null>(null);
 const result = shallowRef<AskResult | AuditResult | null>(null);
 const error = ref("");
@@ -54,12 +78,125 @@ const proofs = computed(() => {
       ? r.contradictions.map((c) => c.steps)
       : [r.proof ?? []];
 });
-onBeforeRouteLeave(() => !busy.value);
+onBeforeRouteLeave(() => !busy.value && !props.workflowBusy);
+
+function backToSources() {
+  issueMode.value = false;
+  browseMode.value = false;
+  fileMode.value = false;
+  workflowMode.value = false;
+  report.value = null;
+  result.value = null;
+  error.value = "";
+  message.value = "";
+  confirmed.value = false;
+  compatible.value = false;
+}
+
+function openSources() {
+  backToSources();
+  open.value = true;
+}
+
+function chooseFile() {
+  backToSources();
+  fileMode.value = true;
+  fileInput.value?.click();
+}
+
+function openWorkflow() {
+  backToSources();
+  workflowMode.value = true;
+  emit("workflowOpen");
+}
+
+function openIssue() {
+  issueMode.value = true;
+  browseMode.value = false;
+  fileMode.value = false;
+  workflowMode.value = false;
+  issueInput.value = "";
+  issueNumber.value = null;
+  report.value = null;
+  result.value = null;
+  error.value = "";
+  message.value = "";
+  confirmed.value = false;
+  compatible.value = false;
+  open.value = true;
+}
+
+function openBrowse() {
+  openIssue();
+  browseMode.value = true;
+  issueResults.value = [];
+  nextIssuePage.value = 1;
+  incompleteSearch.value = false;
+  void loadMoreIssues();
+}
+
+async function loadMoreIssues() {
+  const page = nextIssuePage.value;
+  if (searching.value || page === null) return;
+  searching.value = true;
+  error.value = "";
+  try {
+    const found = await searchSumoContradictions(page);
+    issueResults.value = [...issueResults.value, ...found.issues];
+    nextIssuePage.value = found.hasMore ? page + 1 : null;
+    incompleteSearch.value ||= found.incomplete;
+  } catch (e) {
+    error.value = errMsg(e);
+  } finally {
+    searching.value = false;
+  }
+}
+
+async function loadIssue() {
+  if (fetching.value) return;
+  fetching.value = true;
+  error.value = "";
+  report.value = null;
+  compatible.value = false;
+  try {
+    const number = sumoIssueNumber(issueInput.value);
+    const body = await fetchSumoIssue(number);
+    const loaded = proofReportFromIssue(body);
+    assertProofCompatible(loaded, AUDIT_ENGINE, PROVER_BUILDS);
+    report.value = loaded;
+    issueNumber.value = number;
+    fileName.value = `SUMO issue #${number}`;
+    compatible.value = true;
+  } catch (e) {
+    error.value = errMsg(e);
+  } finally {
+    fetching.value = false;
+  }
+}
+
+function chooseIssue(number: number) {
+  issueInput.value = String(number);
+  error.value = "";
+}
+
+function backToIssues() {
+  report.value = null;
+  result.value = null;
+  issueNumber.value = null;
+  compatible.value = false;
+  confirmed.value = false;
+  error.value = "";
+  message.value = "";
+}
 
 async function selectFile(event: Event) {
   const file = (event.target as HTMLInputElement).files?.[0];
   if (!file) return;
   open.value = true;
+  issueMode.value = false;
+  browseMode.value = false;
+  fileMode.value = true;
+  workflowMode.value = false;
   fileName.value = file.name;
   report.value = null;
   result.value = null;
@@ -122,9 +259,27 @@ async function replay() {
     class="btn ghost small"
     type="button"
     :disabled="disabled || busy"
-    @click="fileInput?.click()"
+    @click="unified ? openSources() : fileInput?.click()"
   >
-    Import proof report
+    {{ unified ? "Import contradiction" : "Import proof report" }}
+  </button>
+  <button
+    v-if="allowIssue && !unified"
+    class="btn ghost small"
+    type="button"
+    :disabled="disabled || busy"
+    @click="openIssue"
+  >
+    Load GitHub proof issue
+  </button>
+  <button
+    v-if="allowIssue && !unified"
+    class="btn ghost small"
+    type="button"
+    :disabled="disabled || busy"
+    @click="openBrowse"
+  >
+    Browse reported contradictions
   </button>
   <input
     ref="fileInput"
@@ -135,16 +290,148 @@ async function replay() {
   />
   <BaseDialog
     v-model="open"
-    title="Import proof report"
+    :title="
+      unified
+        ? 'Import contradiction'
+        : browseMode
+          ? 'Reported SUMO contradictions'
+          : issueMode
+            ? 'Load SUMO proof issue'
+            : 'Import proof report'
+    "
     width="min(640px, 94vw)"
-    :dismissible="!busy"
+    :dismissible="!busy && !fetching && !workflowBusy"
   >
+    <div
+      v-if="
+        unified &&
+        !issueMode &&
+        !fileMode &&
+        !workflowMode &&
+        !report &&
+        !result
+      "
+      class="source-choices"
+    >
+      <p class="hint">Choose where to load a contradiction from.</p>
+      <button class="source-choice" type="button" @click="chooseFile">
+        <strong>JSON report file</strong>
+        <span>A proof report saved or shared by another user.</span>
+      </button>
+      <button class="source-choice" type="button" @click="openBrowse">
+        <strong>GitHub issue</strong>
+        <span>Browse reported contradictions or enter an issue URL.</span>
+      </button>
+      <button class="source-choice" type="button" @click="openWorkflow">
+        <strong>Latest GitHub contradiction workflow</strong>
+        <span>Replay the nightly SUMO master-branch audit findings.</span>
+      </button>
+    </div>
+    <div v-if="fileMode && !report" class="file-lookup">
+      <p class="hint">Choose a version 3 proof report JSON file.</p>
+      <button class="btn" type="button" @click="fileInput?.click()">
+        Choose JSON file
+      </button>
+    </div>
+    <button
+      v-if="unified && (issueMode || fileMode || workflowMode) && !workflowBusy"
+      class="btn ghost small source-back"
+      type="button"
+      :disabled="busy || fetching"
+      @click="backToSources"
+    >
+      All sources
+    </button>
+    <section
+      v-if="browseMode && !report"
+      class="issue-results"
+      aria-label="Reported contradictions"
+    >
+      <p class="hint">
+        SUMO issues whose titles start with [Contradiction]. Select one, then
+        click Load issue to review its report.
+      </p>
+      <p v-if="searching && !issueResults.length" role="status">
+        Searching GitHub issues...
+      </p>
+      <ul v-if="issueResults.length">
+        <li v-for="issue in issueResults" :key="issue.number">
+          <button
+            class="issue-choice"
+            :class="{ selected: issueInput.trim() === String(issue.number) }"
+            type="button"
+            :disabled="fetching"
+            :aria-pressed="issueInput.trim() === String(issue.number)"
+            @click="chooseIssue(issue.number)"
+          >
+            <span class="issue-title">{{ issue.title }}</span>
+            <span class="hint">#{{ issue.number }} · {{ issue.state }}</span>
+          </button>
+        </li>
+      </ul>
+      <p v-else-if="!searching && !nextIssuePage && !error" class="hint">
+        No matching contradiction issues found.
+      </p>
+      <p v-if="incompleteSearch" class="hint">
+        GitHub reported incomplete search results. Try again later or enter an
+        issue number below.
+      </p>
+      <button
+        v-if="nextIssuePage"
+        class="btn ghost small"
+        type="button"
+        :disabled="searching || fetching"
+        @click="loadMoreIssues"
+      >
+        {{ searching ? "Loading more..." : "Load more issues" }}
+      </button>
+    </section>
+    <form
+      v-if="issueMode && !report"
+      class="issue-lookup"
+      @submit.prevent="loadIssue"
+    >
+      <label for="proof-issue-number">SUMO issue number or URL</label>
+      <input
+        id="proof-issue-number"
+        v-model="issueInput"
+        type="text"
+        placeholder="https://github.com/ontologyportal/sumo/issues/123"
+        :disabled="fetching"
+      />
+    </form>
+    <button
+      v-if="issueMode && !browseMode && !report"
+      class="btn ghost small browse-link"
+      type="button"
+      @click="openBrowse"
+    >
+      Browse reported contradictions
+    </button>
+    <slot v-if="workflowMode" name="workflow" :close="() => (open = false)" />
     <div v-if="report && !result" class="import-review">
+      <button
+        v-if="browseMode"
+        class="btn ghost small"
+        type="button"
+        @click="backToIssues"
+      >
+        Back to issues
+      </button>
       <p class="intro">Review the report before replacing your workspace.</p>
       <dl class="report-summary">
         <div class="report-file">
           <dt>Report</dt>
-          <dd>{{ fileName }}</dd>
+          <dd>
+            <a
+              v-if="issueMode && issueNumber"
+              :href="`https://github.com/ontologyportal/sumo/issues/${issueNumber}`"
+              target="_blank"
+              rel="noopener noreferrer"
+              >{{ fileName }}</a
+            >
+            <template v-else>{{ fileName }}</template>
+          </dd>
         </div>
         <div>
           <dt>Replay</dt>
@@ -223,7 +510,7 @@ async function replay() {
     <p v-if="error" class="feedback bad" role="alert">{{ error }}</p>
     <p v-if="message" class="feedback" role="status">{{ message }}</p>
     <ProofView v-for="(steps, i) in proofs" :key="i" :steps="steps" />
-    <template #actions>
+    <template v-if="!workflowMode" #actions>
       <button
         class="btn ghost"
         type="button"
@@ -231,6 +518,15 @@ async function replay() {
         @click="open = false"
       >
         Close
+      </button>
+      <button
+        v-if="issueMode && !report"
+        class="btn"
+        type="button"
+        :disabled="fetching || !issueInput.trim()"
+        @click="loadIssue"
+      >
+        {{ fetching ? "Loading issue..." : "Load issue" }}
       </button>
       <button
         v-if="report && !result"
@@ -246,6 +542,81 @@ async function replay() {
 </template>
 
 <style scoped>
+.source-choices {
+  display: grid;
+  gap: 9px;
+}
+.source-choices p {
+  margin-bottom: 4px;
+}
+.source-choice {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+}
+.source-choice:hover,
+.source-choice:focus-visible {
+  border-color: var(--accent);
+}
+.source-choice span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.file-lookup {
+  display: grid;
+  gap: 12px;
+  justify-items: start;
+}
+.browse-link {
+  margin-top: 12px;
+}
+.source-back {
+  margin: 12px 0;
+}
+.issue-results {
+  margin-bottom: 18px;
+}
+.issue-results ul {
+  list-style: none;
+  padding: 0;
+  margin: 10px 0;
+  max-height: 320px;
+  overflow: auto;
+}
+.issue-results li + li {
+  border-top: 1px solid var(--line);
+}
+.issue-choice {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  padding: 10px 4px;
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+}
+.issue-choice:hover,
+.issue-choice:focus-visible {
+  background: var(--bg);
+}
+.issue-choice.selected {
+  background: var(--bg);
+  box-shadow: inset 3px 0 var(--accent);
+}
+.issue-title {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
 .import-review {
   display: grid;
   gap: 18px;

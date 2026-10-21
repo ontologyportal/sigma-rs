@@ -29,6 +29,8 @@ const {
   parseProofReport,
   assertProofCompatible,
   proofReplayOutcome,
+  proofIssueBody,
+  proofReportFromIssue,
 } = load("./proofReport.ts");
 const { verifyReportSources } = load("./auditReplay.ts");
 
@@ -110,6 +112,22 @@ test("verified report exports pinned hashes and relevant proof without file cont
     formatProofReport({ ...report, unavailable: "stale snapshot" }, manifest),
     /stale snapshot/,
   );
+});
+
+test("a SUMO issue carries the compact report and rejects missing or oversized payloads", async () => {
+  const json = await formatProofReport(report, manifest);
+  const body = proofIssueBody(json, "This contradiction affects Oregon.");
+  assert.match(body, /This contradiction affects Oregon/);
+  assert.ok(!body.includes("PRIVATE UNRELATED CONTENT"));
+  assert.equal(proofReportFromIssue(body).fingerprint, manifest.fingerprint);
+  assert.throws(
+    () => proofReportFromIssue("Ordinary SUMO issue"),
+    /no reproducible/,
+  );
+  assert.throws(() =>
+    proofReportFromIssue(body.replace('"version":3', '"version":2')),
+  );
+  assert.throws(() => proofIssueBody(json, "x".repeat(65_000)), /too large/);
 });
 
 test("parser rejects legacy reports, unsafe sources, duplicate files, altered proofs and unsupported settings", async () => {

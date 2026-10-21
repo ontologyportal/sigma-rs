@@ -65,6 +65,44 @@ export interface SharedProofReport {
   result: { status: string; proof: AuditStep[] };
 }
 
+const ISSUE_REPORT_START = "<!-- sigma-proof-report:v3:start -->";
+const ISSUE_REPORT_END = "<!-- sigma-proof-report:v3:end -->";
+
+/** GitHub issue bodies carry the same validated, pinned report as a JSON download. */
+export function proofIssueBody(json: string, description: string): string {
+  const compact = JSON.stringify(parseProofReport(json));
+  const body = [
+    description.trim(),
+    "",
+    "<details>",
+    "<summary>Reproducible proof report (JSON)</summary>",
+    "",
+    ISSUE_REPORT_START,
+    "````json",
+    compact,
+    "````",
+    ISSUE_REPORT_END,
+    "</details>",
+  ].join("\n");
+  if (body.length > 65_000)
+    throw new Error(
+      "The proof report is too large for a GitHub issue. Copy or download the JSON report instead.",
+    );
+  return body;
+}
+
+/** Extract the pinned report from a SUMO issue before any workspace changes. */
+export function proofReportFromIssue(body: string): SharedProofReport {
+  const start = body.lastIndexOf(ISSUE_REPORT_START);
+  const end = body.lastIndexOf(ISSUE_REPORT_END);
+  if (start < 0 || end <= start)
+    throw new Error("This issue has no reproducible proof report.");
+  const block = body.slice(start + ISSUE_REPORT_START.length, end).trim();
+  const match = /^````json\n([\s\S]*?)\n````$/.exec(block);
+  if (!match) throw new Error("The issue's proof report is malformed.");
+  return parseProofReport(match[1]);
+}
+
 const record = (v: unknown): v is Record<string, unknown> =>
   !!v && typeof v === "object" && !Array.isArray(v);
 const hash = (v: unknown, n: number): v is string =>

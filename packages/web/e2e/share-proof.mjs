@@ -42,6 +42,69 @@ try {
   const head = "a".repeat(40);
   let branchHead = head;
   const downloads = [];
+  let postedIssue = null;
+  await page.route(
+    "https://api.github.com/repos/ontologyportal/sumo/issues",
+    (route) => {
+      postedIssue = JSON.parse(route.request().postData());
+      return route.fulfill({
+        json: {
+          number: 42,
+          html_url: "https://github.com/ontologyportal/sumo/issues/42",
+          title: postedIssue.title,
+          state: "open",
+        },
+      });
+    },
+  );
+  await page.route(
+    /https:\/\/api\.github\.com\/repos\/ontologyportal\/sumo\/issues\/(42|43)$/,
+    async (route) => {
+      const number = Number(route.request().url().split("/").at(-1));
+      const body =
+        number === 42
+          ? postedIssue?.body
+          : await page.evaluate(async () => {
+              const { proofIssueBody } =
+                await import("/src/utils/proofReport.ts");
+              return proofIssueBody(
+                globalThis.auditReport,
+                "Audit contradiction",
+              );
+            });
+      return route.fulfill({ json: { body } });
+    },
+  );
+  await page.route(
+    "https://api.github.com/repos/ontologyportal/sumo/git/ref/heads/master",
+    (route) => route.fulfill({ json: { object: { sha: head } } }),
+  );
+  await page.route(
+    /https:\/\/api\.github\.com\/repos\/ontologyportal\/sumo\/actions\/workflows\/contradiction-audit\.yml\/runs\?/,
+    (route) => route.fulfill({ json: { workflow_runs: [] } }),
+  );
+  await page.route(/https:\/\/api\.github\.com\/search\/issues\?/, (route) =>
+    route.fulfill({
+      json: {
+        total_count: 2,
+        incomplete_results: false,
+        items: [
+          {
+            number: 43,
+            title: "[Contradiction] Synthetic audit",
+            html_url: "https://github.com/ontologyportal/sumo/issues/43",
+            state: "open",
+          },
+          {
+            number: 44,
+            title: "A different contradiction report",
+            html_url: "https://github.com/ontologyportal/sumo/issues/44",
+            state: "closed",
+          },
+        ],
+      },
+    }),
+  );
   await page.route(
     "https://api.github.com/repos/test/proofs/git/ref/heads/main",
     (route) => route.fulfill({ json: { object: { sha: branchHead } } }),
@@ -173,6 +236,24 @@ try {
   await page.getByRole("button", { name: "Download report" }).click();
   assert.equal((await download).suggestedFilename(), "sigma-proof-report.json");
   await page.getByRole("button", { name: "Close", exact: true }).click();
+  await page.evaluate(async () => {
+    const auth = (await import("/src/stores/auth.ts")).useAuthStore();
+    auth.token = "test-token";
+    auth.user = { name: "Tester", login: "tester", avatarUrl: "" };
+  });
+  await page.getByRole("button", { name: "Report proof to GitHub" }).click();
+  await page
+    .getByLabel("Title", { exact: true })
+    .fill("A useful conjecture proof");
+  await page
+    .getByLabel("Description", { exact: true })
+    .fill("Please review this proof.");
+  await page.getByRole("button", { name: "Create SUMO issue" }).click();
+  await page.getByRole("link", { name: "issue #42" }).waitFor();
+  assert.equal(postedIssue.title, "[Proof] A useful conjecture proof");
+  assert.match(postedIssue.body, /Please review this proof/);
+  assert.match(postedIssue.body, /sigma-proof-report:v3:start/);
+  await page.getByRole("button", { name: "Close", exact: true }).click();
   branchHead = "b".repeat(40);
   const beforeImport = downloads.length;
   const fileInput = {
@@ -268,6 +349,83 @@ try {
   assert.equal(new URL(page.url()).pathname, "/audit");
   assert.equal(await page.getByRole("dialog").count(), 0);
   await page.getByText("1 contradiction found", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "Import contradiction" }).click();
+  await page.getByRole("dialog").screenshot({
+    path: fileURLToPath(new URL("import-contradiction-sources.png", shots)),
+  });
+  const auditChooser = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: /JSON report file/ }).click();
+  await (
+    await auditChooser
+  ).setFiles({
+    name: "audit.json",
+    mimeType: "application/json",
+    buffer: Buffer.from(auditJson),
+  });
+  await page
+    .getByText("Review the report before replacing your workspace.")
+    .waitFor();
+  await page.getByRole("button", { name: "All sources" }).click();
+  await page
+    .getByRole("button", { name: /Latest GitHub contradiction workflow/ })
+    .click();
+  await page
+    .getByText("SUMO runs a two-hour contradiction audit each night.", {
+      exact: false,
+    })
+    .waitFor();
+  await page
+    .getByText("No completed master contradiction audit is available.")
+    .waitFor();
+  await page.getByRole("dialog").screenshot({
+    path: fileURLToPath(new URL("import-contradiction-workflow.png", shots)),
+  });
+  await page.getByRole("button", { name: "All sources" }).click();
+  await page.getByRole("button", { name: /GitHub issue/ }).click();
+  await page
+    .getByRole("button", { name: /\[Contradiction\] Synthetic audit/ })
+    .waitFor();
+  assert.equal(
+    await page.getByText("A different contradiction report").count(),
+    0,
+  );
+  await page.getByRole("dialog").screenshot({
+    path: fileURLToPath(new URL("browse-contradictions.png", shots)),
+  });
+  await page
+    .getByRole("button", { name: /\[Contradiction\] Synthetic audit/ })
+    .click();
+  assert.equal(
+    await page.getByLabel("SUMO issue number or URL").inputValue(),
+    "43",
+  );
+  assert.equal(
+    await page.getByRole("link", { name: "SUMO issue #43" }).count(),
+    0,
+  );
+  assert.equal(
+    await page
+      .getByRole("button", { name: /\[Contradiction\] Synthetic audit/ })
+      .getAttribute("aria-pressed"),
+    "true",
+  );
+  await page.getByRole("button", { name: "Load issue", exact: true }).click();
+  await page.getByRole("link", { name: "SUMO issue #43" }).waitFor();
+  await page.getByRole("checkbox").check();
+  await page.getByRole("button", { name: "Import and replay" }).click();
+  await page.getByText("1 contradiction found", { exact: true }).waitFor();
+  assert.equal(await page.getByRole("dialog").count(), 0);
+  await page.getByRole("button", { name: "Import contradiction" }).click();
+  await page.getByRole("button", { name: /GitHub issue/ }).click();
+  await page
+    .getByLabel("SUMO issue number or URL")
+    .fill("https://github.com/ontologyportal/sumo/issues/42");
+  await page.getByRole("button", { name: "Load issue", exact: true }).click();
+  await page.getByRole("link", { name: "SUMO issue #42" }).waitFor();
+  await page.getByRole("checkbox").check();
+  await page.getByRole("button", { name: "Import and replay" }).click();
+  await page.getByText("Result reproduced: Proved.", { exact: true }).waitFor();
+  await page.getByRole("dialog").getByRole("button", { name: "Close" }).click();
   await page.evaluate(async () => {
     await (await import("/src/router/index.ts")).navigate("prover");
   });
@@ -301,7 +459,7 @@ try {
   );
   assert.equal(await proof.getAttribute("open"), "");
   console.log(
-    "Verified pushed-HEAD export, confirmation/cancellation, pinned import after branch advancement, and real WASM conjecture/contradiction replay.",
+    "Verified GitHub issue publishing and loading, pinned import after branch advancement, and real WASM conjecture/contradiction replay.",
   );
 } catch (error) {
   console.error(await page?.locator("body").innerText());

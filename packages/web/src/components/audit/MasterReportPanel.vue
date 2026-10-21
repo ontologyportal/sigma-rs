@@ -1,40 +1,26 @@
 <script setup lang="ts">
 import type { AuditReport } from "../../composables/useAuditReplay";
-import BaseDialog from "../BaseDialog.vue";
 import Disclosure from "../Disclosure.vue";
 
-/** The nightly master-branch audit report: what it is, its contradictions,
- *  and the confirmation that replaces the workspace with its inputs and
- *  replays it. Presentation only -- the Audit tab owns the replay. */
 defineProps<{
-  /** Open state (v-model). */
-  modelValue: boolean;
   report: AuditReport | null;
   loading: boolean;
   error: string;
-  /** A replay is running (blocks closing and a second confirm). */
   busy: boolean;
-  /** The replay is auditing a subproblem right now (Stop applies). */
   auditing: boolean;
   stopRequested: boolean;
   message: string;
 }>();
 
 const emit = defineEmits<{
-  "update:modelValue": [open: boolean];
   confirm: [];
   stop: [];
+  close: [];
 }>();
 </script>
 
 <template>
-  <BaseDialog
-    :model-value="modelValue"
-    title="Latest Contradiction Report"
-    width="min(800px, 94vw)"
-    :dismissible="!busy"
-    @update:model-value="emit('update:modelValue', $event)"
-  >
+  <div class="workflow-report">
     <p>
       SUMO runs a two-hour contradiction audit each night. This report records
       the contradictions found and the steps that produced them. Continue to
@@ -66,14 +52,13 @@ const emit = defineEmits<{
       </p>
       <template v-else>
         <p class="hint bad">
-          WARNING: Continuing will replace your loaded knowledge base and prover
-          settings with the workflow's exact inputs. This may overwrite work you
-          have saved, including local edits to loaded or audited constituents.
-          Save a separate copy of any work you want to keep.
+          Continuing will replace your loaded knowledge base and prover settings
+          with the workflow's exact inputs. This may overwrite work you have
+          saved, including local edits to loaded or audited constituents. Save a
+          separate copy of any work you want to keep.
         </p>
         <p>
-          Confirm to synchronize with contradiction report and replay the
-          reported contradiction steps.
+          Confirm to synchronize and replay the reported contradiction steps.
         </p>
       </template>
       <Disclosure summary="Read contradictions.json">
@@ -81,12 +66,12 @@ const emit = defineEmits<{
       </Disclosure>
     </template>
     <p v-if="message" role="status">{{ message }}</p>
-    <template #actions>
+    <div class="panel-actions">
       <button
         class="btn ghost"
         type="button"
         :disabled="busy"
-        @click="emit('update:modelValue', false)"
+        @click="emit('close')"
       >
         Close
       </button>
@@ -113,14 +98,32 @@ const emit = defineEmits<{
       >
         {{ busy ? "Replaying..." : "Confirm: replace work and replay" }}
       </button>
-    </template>
-  </BaseDialog>
+    </div>
+  </div>
 </template>
 
 <style scoped>
+.workflow-report {
+  display: grid;
+  gap: 12px;
+  line-height: 1.5;
+}
+.workflow-report p {
+  margin: 0;
+}
 .report-text {
   max-height: 45vh;
   overflow: auto;
   white-space: pre-wrap;
+}
+.panel-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 4px;
+}
+.panel-actions button:first-child {
+  margin-right: auto;
 }
 </style>

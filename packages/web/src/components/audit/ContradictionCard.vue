@@ -55,6 +55,7 @@ const emit = defineEmits<{ "update:collapsed": [collapsed: boolean] }>();
       />
       <DiagnoseContradiction :steps="contradiction.steps" />
       <ReportContradiction
+        v-if="!contradiction.shareReport"
         :steps="contradiction.steps"
         :prose="contradiction.prose"
         :backend="backend"

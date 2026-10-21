@@ -123,8 +123,9 @@ node --test packages/web/src/services/taxonomy-3d.test.mjs
 
 ## Replaying the master contradiction audit
 
-In Audit, open **Latest Contradiction Report** to inspect the latest
-completed master run. A finding makes the workflow fail, so failed runs are
+In Audit, choose **Import contradiction**, then **Latest GitHub contradiction
+workflow** to inspect the latest completed master run. A finding makes the
+workflow fail, so failed runs are
 included. Choose **Confirm: replace work and replay** only after saving any
 local work you want to keep. It replaces the loaded KB, discards conflicting
 saved edits, restores the workflow's prover settings, and runs only the
@@ -264,13 +265,21 @@ If any file differs, push your changes or reload the branch and rerun the proof.
 Local uploads, URL files and detached revisions must be loaded from a pushed
 GitHub branch before they can be shared. Sharing never publishes local work.
 
+Use **Report proof to GitHub** beside a proof to create an issue in
+`ontologyportal/sumo`. After the same branch verification, enter a title and
+description and sign in to submit it. Proof issues have a `[Proof]` title prefix;
+audit contradictions have `[Contradiction]`. The issue body embeds the compact
+version 3 JSON report. GitHub's issue size limit can prevent very large proofs
+from being posted; the JSON report can still be copied or downloaded.
+
 Version 3 reports contain repository/branch/commit references, ordered file
 hashes, cited source axioms, the exact problem and settings, engine/prover build
 identities, and the selected proof. Complete KIF files and bulk external prover
 input/output are not included.
 
-To reproduce a report, choose **Import proof report** on Ask/Tell or Consistency
-audit and select its JSON file. Review the source revisions, operation, settings
+To reproduce a report, choose **Import proof report** on Ask/Tell, or choose
+**Import contradiction** then **JSON report file** on Consistency audit.
+Review the source revisions, operation, settings
 and build compatibility. Confirm replacing your KB only after saving a separate
 copy of work you want to keep: replay discards edits to loaded and imported
 files. Opening or cancelling the dialog does not change your workspace.
@@ -280,6 +289,14 @@ parses the inputs before replacing the KB. It restores prover settings, reruns
 the recorded problem, and displays the new proof and reproduction outcome.
 For audit reports, confirmation closes the dialog and opens the Audit tab;
 loading progress, the check log and contradiction proofs appear there.
+On the Audit tab, **Import contradiction** then **GitHub issue** accepts an
+issue number or a URL from `ontologyportal/sumo`. It reads the embedded report and presents the same
+review and confirmation. Audit contradictions replay into the Audit tab's normal
+results; conjecture proofs replay in the report dialog.
+The GitHub issue choice opens a browser of SUMO issues with the `[Contradiction]`
+title prefix, including closed issues. Select an issue, then click **Load issue**
+to review its report and replay it; use **Load more issues** for later search
+pages. Issues without a compatible version 3 report cannot be replayed.
 Timeouts are inconclusive. A branch advancing after sharing does not invalidate
 the report. The engine fingerprint and external prover binaries must match;
 missing/incompatible builds block import before replacement. Files must be
