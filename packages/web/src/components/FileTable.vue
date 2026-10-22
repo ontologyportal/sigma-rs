@@ -58,6 +58,10 @@ const props = withDefaults(
     checkedIsLoaded?: boolean;
     /** Selection only: hide the load state and the Save action. */
     selectOnly?: boolean;
+    /** Group file paths into expandable directories. */
+    directories?: boolean;
+    /** Leading directory omitted from the displayed hierarchy. */
+    directoryRoot?: string;
   }>(),
   {
     loadedWord: "load",
@@ -68,6 +72,8 @@ const props = withDefaults(
     catalogError: false,
     checkedIsLoaded: false,
     selectOnly: false,
+    directories: false,
+    directoryRoot: "",
   },
 );
 
@@ -134,6 +140,72 @@ const visible = computed<FileRow[]>(() => {
   }
 });
 
+type TableEntry =
+  | { kind: "file"; key: string; row: FileRow; name: string; depth: number }
+  | {
+      kind: "directory";
+      key: string;
+      name: string;
+      depth: number;
+      open: boolean;
+    };
+
+const expanded = ref(new Set<string>());
+const searchClosed = ref(new Set<string>());
+watch(search, () => {
+  searchClosed.value = new Set();
+});
+
+function toggleDirectory(key: string) {
+  const state = search.value.trim() ? searchClosed : expanded;
+  const next = new Set(state.value);
+  if (next.has(key)) next.delete(key);
+  else next.add(key);
+  state.value = next;
+}
+
+const entries = computed<TableEntry[]>(() => {
+  const result: TableEntry[] = [];
+  function append(rows: FileRow[], depth: number, prefix: string) {
+    const groups = new Map<string, FileRow[]>();
+    for (const row of rows) {
+      const root = props.directoryRoot ? `${props.directoryRoot}/` : "";
+      const path =
+        root && row.name.startsWith(root)
+          ? row.name.slice(root.length)
+          : row.name;
+      const parts = props.directories ? path.split("/") : [row.name];
+      if (parts.length <= depth + 1) {
+        result.push({
+          kind: "file",
+          key: `file:${row.key}`,
+          row,
+          name: parts[depth],
+          depth,
+        });
+      } else {
+        const name = parts[depth];
+        const group = groups.get(name) ?? [];
+        group.push(row);
+        groups.set(name, group);
+      }
+    }
+    for (const [name, children] of groups) {
+      const key = `${prefix}${name}/`;
+      const open = search.value.trim()
+        ? !searchClosed.value.has(key)
+        : expanded.value.has(key);
+      result.push({ kind: "directory", key, name, depth, open });
+      if (open) append(children, depth + 1, key);
+    }
+  }
+  append(visible.value, 0, "");
+  return result;
+});
+const displayedRows = computed(() =>
+  entries.value.flatMap((entry) => (entry.kind === "file" ? [entry.row] : [])),
+);
+
 // The table grows with the page; the toolbar sticks to the top of the
 // window and the column headers stick just below it.
 const bar = ref<HTMLElement | null>(null);
@@ -194,7 +266,7 @@ function toggle(row: FileRow, e?: MouseEvent) {
     if (want !== baseChecked(r)) next.add(r.key);
     else next.delete(r.key);
   };
-  const list = visible.value;
+  const list = displayedRows.value;
   const from = lastToggled.value
     ? list.findIndex((r) => r.key === lastToggled.value)
     : -1;
@@ -296,94 +368,116 @@ function save() {
         </tr>
       </thead>
       <tbody>
-        <tr
-          v-for="row in visible"
-          :key="row.key"
-          :class="{ selected: selected.has(row.key), locked: row.locked }"
-          @click="onRowClick(row, $event)"
-        >
-          <td class="col-check">
-            <input
-              type="checkbox"
-              :checked="isChecked(row)"
-              :disabled="row.locked"
-              :aria-label="
-                checkedIsLoaded
-                  ? `${capitalize(loadedWord)} ${row.name}`
-                  : `Select ${row.name}`
-              "
-              :title="
-                selectOnly
-                  ? undefined
-                  : checkedIsLoaded
-                    ? row.loaded
-                      ? `Untick to ${unloadedWord} on save`
-                      : `Tick to ${loadedWord} on save`
-                    : row.loaded
-                      ? `Tick to ${unloadedWord} on save`
-                      : `Tick to ${loadedWord} on save`
-              "
-              @click.stop="toggle(row, $event)"
-            />
-          </td>
-          <td>
-            <span v-if="row.badge" class="badge">{{ row.badge }}</span>
-            <a
-              v-if="row.loaded"
-              class="mono name"
-              title="Open"
-              @click="emit('open', row)"
-              >{{ row.name }}</a
+        <template v-for="entry in entries" :key="entry.key">
+          <tr v-if="entry.kind === 'directory'">
+            <td class="col-check"></td>
+            <td :colspan="columns - 1">
+              <button
+                type="button"
+                class="directory-toggle"
+                :style="{ marginLeft: `${entry.depth * 18}px` }"
+                :aria-expanded="entry.open"
+                @click="toggleDirectory(entry.key)"
+              >
+                <span aria-hidden="true">{{ entry.open ? "▾" : "▸" }}</span>
+                {{ entry.name }}/
+              </button>
+            </td>
+          </tr>
+          <template v-else>
+            <tr
+              v-for="row in [entry.row]"
+              :key="row.key"
+              :class="{ selected: selected.has(row.key), locked: row.locked }"
+              @click="onRowClick(row, $event)"
             >
-            <span v-else class="mono name">{{ row.name }}</span>
-            <a
-              v-if="selectOnly && row.deletable"
-              class="hint delete"
-              title="Delete from the library"
-              @click="emit('delete', row)"
-              >delete</a
-            >
-          </td>
-          <td class="hint col-source">{{ row.source }}</td>
-          <td class="hint num">{{ formatSize(row.size) }}</td>
-          <td v-if="!selectOnly" class="status-cell">
-            <span
-              v-if="selected.has(row.key)"
-              class="pill pending"
-              :class="{ unload: row.loaded }"
-              :title="pendingTip"
-              >will {{ row.loaded ? unloadedWord : loadedWord }}</span
-            >
-            <span v-else-if="row.statusKind === 'in'" class="pill">{{
-              row.status
-            }}</span>
-            <span v-else class="hint">{{ row.status }}</span>
-            <span
-              v-if="row.flag"
-              class="pill flag"
-              tabindex="0"
-              :title="row.flag.tip"
-              :aria-label="`${row.flag.label}: ${row.flag.tip}`"
-              >{{ row.flag.label }}</span
-            >
-            <a
-              v-if="row.deletable"
-              class="hint delete"
-              title="Remove from the library"
-              @click="emit('delete', row)"
-              >delete</a
-            >
-          </td>
-          <td v-if="extraHeader" class="col-extra">
-            <span
-              v-if="row.extra"
-              class="result"
-              :class="row.extraKind || ''"
-              :title="row.extraTip"
-              >{{ row.extra }}</span
-            >
-          </td>
-        </tr>
+              <td class="col-check">
+                <input
+                  type="checkbox"
+                  :checked="isChecked(row)"
+                  :disabled="row.locked"
+                  :aria-label="
+                    checkedIsLoaded
+                      ? `${capitalize(loadedWord)} ${row.name}`
+                      : `Select ${row.name}`
+                  "
+                  :title="
+                    selectOnly
+                      ? undefined
+                      : checkedIsLoaded
+                        ? row.loaded
+                          ? `Untick to ${unloadedWord} on save`
+                          : `Tick to ${loadedWord} on save`
+                        : row.loaded
+                          ? `Tick to ${unloadedWord} on save`
+                          : `Tick to ${loadedWord} on save`
+                  "
+                  @click.stop="toggle(row, $event)"
+                />
+              </td>
+              <td
+                :style="{ paddingLeft: `${10 + entry.depth * 18}px` }"
+                :title="row.name"
+              >
+                <span v-if="row.badge" class="badge">{{ row.badge }}</span>
+                <a
+                  v-if="row.loaded"
+                  class="mono name"
+                  title="Open"
+                  @click="emit('open', row)"
+                  >{{ row.name }}</a
+                >
+                <span v-else class="mono name">{{ entry.name }}</span>
+                <a
+                  v-if="selectOnly && row.deletable"
+                  class="hint delete"
+                  title="Delete from the library"
+                  @click="emit('delete', row)"
+                  >delete</a
+                >
+              </td>
+              <td class="hint col-source">{{ row.source }}</td>
+              <td class="hint num">{{ formatSize(row.size) }}</td>
+              <td v-if="!selectOnly" class="status-cell">
+                <span
+                  v-if="selected.has(row.key)"
+                  class="pill pending"
+                  :class="{ unload: row.loaded }"
+                  :title="pendingTip"
+                  >will {{ row.loaded ? unloadedWord : loadedWord }}</span
+                >
+                <span v-else-if="row.statusKind === 'in'" class="pill">{{
+                  row.status
+                }}</span>
+                <span v-else class="hint">{{ row.status }}</span>
+                <span
+                  v-if="row.flag"
+                  class="pill flag"
+                  tabindex="0"
+                  :title="row.flag.tip"
+                  :aria-label="`${row.flag.label}: ${row.flag.tip}`"
+                  >{{ row.flag.label }}</span
+                >
+                <a
+                  v-if="row.deletable"
+                  class="hint delete"
+                  title="Remove from the library"
+                  @click="emit('delete', row)"
+                  >delete</a
+                >
+              </td>
+              <td v-if="extraHeader" class="col-extra">
+                <span
+                  v-if="row.extra"
+                  class="result"
+                  :class="row.extraKind || ''"
+                  :title="row.extraTip"
+                  >{{ row.extra }}</span
+                >
+              </td>
+            </tr>
+          </template>
+        </template>
         <tr v-if="!visible.length">
           <td :colspan="columns" class="hint empty">No matching files.</td>
         </tr>
@@ -439,6 +533,15 @@ function save() {
 </template>
 
 <style scoped>
+.directory-toggle {
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 2px 0;
+}
 .toolbar {
   align-items: center;
 }
