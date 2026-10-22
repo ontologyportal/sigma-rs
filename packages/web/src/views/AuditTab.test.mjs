@@ -206,10 +206,10 @@ function fixture({
   return { view, calls, scope, replay };
 }
 
-test("report dialog explains the nightly audit and stale-report restriction", () => {
+test("workflow import panel explains the nightly audit and stale-report restriction", () => {
   const template = parse(
     readFileSync(
-      new URL("../components/audit/MasterReportDialog.vue", import.meta.url),
+      new URL("../components/audit/MasterReportPanel.vue", import.meta.url),
       "utf8",
     ),
   ).descriptor.template.content.replace(/\s+/g, " ");
@@ -218,12 +218,11 @@ test("report dialog explains the nightly audit and stale-report restriction", ()
   assert.match(template, /Reports cannot be loaded if master has changed/);
 });
 
-test("opening and dismissing the report never loads or audits", async () => {
+test("fetching the workflow report never loads or audits", async () => {
   const f = fixture();
   try {
     await f.view.showMasterReport();
-    assert.equal(f.view.reportOpen.value, true);
-    f.view.reportOpen.value = false;
+    assert.equal(f.view.report.value?.replay, f.replay);
     assert.deepEqual(f.calls, []);
   } finally {
     f.scope.stop();

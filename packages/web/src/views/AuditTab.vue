@@ -33,7 +33,7 @@ import SourceLoc from "../components/SourceLoc.vue";
 import AuditAdvancedForm from "../components/audit/AuditAdvancedForm.vue";
 import CheckLog from "../components/audit/CheckLog.vue";
 import ContradictionCard from "../components/audit/ContradictionCard.vue";
-import MasterReportDialog from "../components/audit/MasterReportDialog.vue";
+import MasterReportPanel from "../components/audit/MasterReportPanel.vue";
 
 const kb = useKBStore();
 const shell = useShellStore();
@@ -114,7 +114,6 @@ const {
 
 const {
   replayProofReport,
-  reportOpen,
   reportLoading,
   report,
   reportError,
@@ -232,33 +231,33 @@ function setAllCollapsed(fold: boolean) {
 <template>
   <Row>
     <Col :span="optionsBeside ? 8 : 12">
-      <MasterReportDialog
-        v-model="reportOpen"
-        :report="report"
-        :loading="reportLoading"
-        :error="reportError"
-        :busy="replayBusy"
-        :auditing="auditing"
-        :stop-requested="stopRequested"
-        :message="replayMessage"
-        @confirm="confirmReplay"
-        @stop="stopRequested = true"
-      />
       <Card
         title="Consistency audit"
         description="Checks axioms' neighbourhoods (the axioms selected for each, as for a query) for contradictions. Any contradiction found is real, but finding none doesn't prove the KB consistent."
       >
         <template #header>
-          <ImportProofReport :disabled="auditing || replayBusy" />
-          <button
-            class="btn ghost small"
-            type="button"
-            title="The nightly master-branch audit: read it, replay it, recheck your edits against it"
+          <ImportProofReport
             :disabled="auditing || replayBusy"
-            @click="showMasterReport"
+            :workflow-busy="replayBusy"
+            allow-issue
+            unified
+            @workflow-open="showMasterReport"
           >
-            ⓘ Latest Contradiction Report
-          </button>
+            <template #workflow="{ close }">
+              <MasterReportPanel
+                :report="report"
+                :loading="reportLoading"
+                :error="reportError"
+                :busy="replayBusy"
+                :auditing="auditing"
+                :stop-requested="stopRequested"
+                :message="replayMessage"
+                @confirm="confirmReplay"
+                @stop="stopRequested = true"
+                @close="close"
+              />
+            </template>
+          </ImportProofReport>
           <Segmented
             v-model="sweep.mode"
             :options="[

@@ -592,6 +592,53 @@ export interface IssueRef {
   state: string;
 }
 
+/** One page of SUMO issues titled with the contradiction-report prefix. */
+export async function searchSumoContradictions(page = 1): Promise<{
+  issues: IssueRef[];
+  hasMore: boolean;
+  incomplete: boolean;
+}> {
+  if (!Number.isSafeInteger(page) || page < 1 || page > 20)
+    throw new GitHubError("Invalid contradiction issue page.", 0);
+  const perPage = 50;
+  const q = `repo:${SUMO.owner}/${SUMO.repo} is:issue in:title contradiction`;
+  const res = await githubApi<Res<"GET /search/issues">>(
+    `/search/issues?q=${encodeURIComponent(q)}&sort=updated&order=desc&per_page=${perPage}&page=${page}`,
+  );
+  return {
+    issues: res.items
+      .filter(
+        (issue) =>
+          !issue.pull_request &&
+          /^\[Contradiction\](?:\s|$)/i.test(issue.title),
+      )
+      .map((issue) => ({
+        number: issue.number,
+        url: issue.html_url,
+        title: issue.title,
+        state: issue.state,
+      })),
+    hasMore: page * perPage < Math.min(res.total_count, 1000),
+    incomplete: res.incomplete_results,
+  };
+}
+
+/** Accept a SUMO issue number or its canonical GitHub URL. */
+export function sumoIssueNumber(value: string): number {
+  const input = value.trim();
+  const match =
+    /^(?:https:\/\/github\.com\/ontologyportal\/sumo\/issues\/)?([1-9][0-9]*)(?:\/)?$/.exec(
+      input,
+    );
+  const number = match ? Number(match[1]) : 0;
+  if (!Number.isSafeInteger(number) || number < 1)
+    throw new GitHubError(
+      "Enter a SUMO issue number or its GitHub issue URL.",
+      0,
+    );
+  return number;
+}
+
 /** The first SUMO issue (open or closed) whose body contains `marker`, or
  *  null -- how a contradiction report finds an earlier report of itself. */
 export async function findSumoIssue(marker: string): Promise<IssueRef | null> {
@@ -629,6 +676,23 @@ export async function createSumoIssue(
     title: issue.title,
     state: issue.state,
   };
+}
+
+/** Read one SUMO issue's body for a reproducible proof report. */
+export async function fetchSumoIssue(number: number): Promise<string> {
+  if (!Number.isSafeInteger(number) || number < 1)
+    throw new GitHubError("Enter a valid SUMO issue number.", 0);
+  const issue = await githubApi<
+    Res<"GET /repos/{owner}/{repo}/issues/{issue_number}">
+  >(`/repos/${SUMO.owner}/${SUMO.repo}/issues/${number}`);
+  if (issue.pull_request)
+    throw new GitHubError(
+      "That number belongs to a pull request, not an issue.",
+      0,
+    );
+  if (!issue.body)
+    throw new GitHubError("This issue has no proof report in its body.", 0);
+  return issue.body;
 }
 
 /**

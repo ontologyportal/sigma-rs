@@ -36,7 +36,6 @@ export function useAuditReplay(runs: AuditRun, form: AuditSweep) {
   const kb = useKBStore();
   const prover = useProverStore();
 
-  const reportOpen = ref(false);
   const reportLoading = ref(false);
   const report = shallowRef<AuditReport | null>(null);
   const reportError = ref("");
@@ -129,7 +128,6 @@ export function useAuditReplay(runs: AuditRun, form: AuditSweep) {
   }
 
   async function showMasterReport() {
-    reportOpen.value = true;
     reportLoading.value = true;
     report.value = null;
     reportError.value = "";
@@ -283,7 +281,6 @@ export function useAuditReplay(runs: AuditRun, form: AuditSweep) {
 
   return {
     replayProofReport,
-    reportOpen,
     reportLoading,
     report,
     reportError,
