@@ -103,6 +103,8 @@ async function runSelected(picked: FileRow[]) {
     v-model:selected="selected"
     :rows="rows"
     :saving="tests.running"
+    directories
+    directory-root="tests"
     select-only
     extra-header="Result"
     :catalog-note="library.catalogNote.text"
