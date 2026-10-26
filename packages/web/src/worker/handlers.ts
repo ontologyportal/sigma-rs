@@ -18,10 +18,12 @@ import {
 } from "sigmakee/sdk";
 import type {
   AskResult,
+  AuditFinding,
   AuditFocus,
   AuditRequest,
   AuditResult,
   Diagnostic,
+  ImportOutcome,
   FileStats,
   KbStats,
   ManPage,
@@ -540,6 +542,27 @@ export const handlers = {
     focus: AuditFocus | null;
   } {
     return { focus: active().sentenceAt(file, offset) };
+  },
+
+  /** Every contradiction recorded in the KB's findings cache, newest first. */
+  auditFindings(): AuditFinding[] {
+    return active().auditFindings();
+  },
+
+  /** Record a contradiction report's entries whose cited axioms are all
+   *  loaded, under the label `origin`. */
+  importContradictions({
+    json,
+    origin,
+  }: {
+    json: string;
+    origin: string;
+  }): ImportOutcome {
+    return active().importContradictions(json, origin);
+  },
+
+  clearAuditFindings() {
+    active().clearAuditFindings();
   },
 };
 

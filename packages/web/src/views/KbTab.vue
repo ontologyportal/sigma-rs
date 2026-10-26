@@ -1,7 +1,8 @@
 <script setup lang="ts">
-/** Knowledge base tab, in three sub-tabs (`?view=`): the unified constituent
+/** Knowledge base tab, in four sub-tabs (`?view=`): the unified constituent
  *  table (with the standard-set presets and the Import dialog in its
- *  header), the Sources card, and the WordNet panel. */
+ *  header), the Sources card, the contradiction sources, and the WordNet
+ *  panel. */
 import { computed, onActivated, onMounted, ref, watch } from "vue";
 import { onBeforeRouteLeave } from "vue-router";
 import { fetchRepoBranches } from "../api/github";
@@ -17,6 +18,7 @@ import Card from "../components/Card.vue";
 import DropMenu from "../components/DropMenu.vue";
 import StatusLine from "../components/StatusLine.vue";
 import ConstituentTable from "../components/kb/ConstituentTable.vue";
+import ContradictionSourcesCard from "../components/kb/ContradictionSourcesCard.vue";
 import ImportDialog from "../components/kb/ImportDialog.vue";
 import SourcesCard from "../components/kb/SourcesCard.vue";
 import WordNetPanel from "../components/kb/WordNetPanel.vue";
@@ -33,10 +35,11 @@ watch(
   () => library.loadCatalogs(),
 );
 
-type View = "constituents" | "sources" | "wordnet";
+type View = "constituents" | "sources" | "contradictions" | "wordnet";
 const VIEWS: { value: View; label: string }[] = [
   { value: "constituents", label: "Constituents" },
   { value: "sources", label: "Sources" },
+  { value: "contradictions", label: "Contradictions" },
   { value: "wordnet", label: "WordNet" },
 ];
 const { query, str } = useTabQuery(["kb"]);
@@ -328,6 +331,8 @@ async function loadPreset(key: string, target?: GitOrigin) {
   <ImportDialog v-model="importOpen" @imported="(msg) => tableLog.set(msg)" />
 
   <SourcesCard v-show="view === 'sources'" />
+
+  <ContradictionSourcesCard v-show="view === 'contradictions'" />
 
   <Card v-show="view === 'wordnet'" title="WordNet lexicon">
     <template #description>

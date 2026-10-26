@@ -14,13 +14,6 @@ function transpile(source) {
     },
   }).outputText;
 }
-const utils = {};
-vm.runInNewContext(
-  transpile(
-    readFileSync(new URL("../utils/auditReplay.ts", import.meta.url), "utf8"),
-  ),
-  { exports: utils },
-);
 const plan = {};
 vm.runInNewContext(
   transpile(
@@ -35,7 +28,7 @@ const source = transpile(
   compileScript(descriptor, { id: "audit-test" }).content,
 );
 const composables = Object.fromEntries(
-  ["useAuditSweep", "useAuditRun", "useAuditReplay"].map((name) => [
+  ["useAuditSweep", "useAuditRun"].map((name) => [
     name,
     transpile(
       readFileSync(
@@ -46,59 +39,58 @@ const composables = Object.fromEntries(
   ]),
 );
 
-function fixture({
-  unavailable = "",
-  noProof = false,
-  invalid = "",
-  recheckOutcome = "Consistent",
-  importError = "",
-} = {}) {
+function fixture({ noProof = false, importMissing = false } = {}) {
   const calls = [];
   const axiom = { file: "Merge.kif", line: 1, kif: "(p)" };
-  const replay = {
-    config: {
-      backend: "native",
-      maxSteps: 500000,
-      maxLits: 12,
-      timeLimitSecs: 10,
+  const finding = {
+    key: "000000000000000a+000000000000000b",
+    culprits: [{ sid: "000000000000000a", ...axiom }],
+    complete: true,
+    session: null,
+    origin: "url:nightly",
+    found_at_ms: 1,
+    contradiction: {
+      steps: [axiom],
+      graphviz: "",
+      prose: "",
+      prose_missing: [],
+      proof_tptp_prologue: "",
     },
-    request: { count: 1, batch: 1, limit: 64 },
-    findings: [
-      { seed: 2, step: 42, axioms: [axiom] },
-      { seed: 2, step: 900, axioms: [axiom] },
-    ],
+  };
+  const recorded = {
+    findings: [finding],
+    focusKey: null,
+    refresh: async () => {
+      calls.push("refresh");
+    },
+    importJson: async (json, origin) => {
+      calls.push({ cmd: "import", origin, json });
+      return importMissing
+        ? {
+            imported: [],
+            rejected: [
+              {
+                axioms: [axiom],
+                reason: "1 cited axiom(s) are not in the knowledge base",
+                missing: [axiom],
+              },
+            ],
+          }
+        : { imported: [finding], rejected: [] };
+    },
   };
   const imports = {
-    // Setup runs outside a component here: no instance to provide into.
+    // Setup runs outside a component: no instance to provide into.
     vue: { ...vue, onActivated: () => {}, provide: () => {} },
     "vue-router": { onBeforeRouteLeave: () => {} },
     "../services/sigma": {
       isWasmAbort: () => false,
       call: async (cmd, args) => {
         calls.push({ cmd, args });
-        if (cmd === "prepareAuditRecheck" || cmd === "auditRecheckStatus")
-          return { available: !invalid, reason: invalid, revision: 7 };
-        if (cmd === "recheckAudit")
-          return {
-            result: {
-              total: 1,
-              next_step: 1,
-              contradictions: [],
-              batches: [
-                {
-                  status: recheckOutcome,
-                  stop_reason:
-                    recheckOutcome === "Timeout" ? "TimeLimit" : null,
-                  focus: [],
-                },
-              ],
-              raw_output: "",
-            },
-          };
         return {
           result: {
             total: 1000,
-            next_step: args.request.step + 1,
+            next_step: (args.request.step ?? 0) + 1,
             contradictions: noProof ? [] : [{ steps: [axiom] }],
             batches: [],
             raw_output: "",
@@ -114,8 +106,9 @@ function fixture({
     "../stores/boot": { useBootStore: () => ({}) },
     "../stores/kb": { useKBStore: () => ({ constituents: [] }) },
     "../stores/shell": {
-      useShellStore: () => ({ isCompact: true }),
+      useShellStore: () => ({ isCompact: true, auditReportRequest: null }),
     },
+    "../stores/contradictions": { useContradictionsStore: () => recorded },
     "../stores/prover": {
       useProverStore: () => ({
         adoptConfig: () => {
@@ -139,21 +132,7 @@ function fixture({
       useElapsed: () => ({ label: () => "", lastLabel: "" }),
       fmtSecs: (secs) => `${secs}s`,
     },
-    "../utils/auditReplay": utils,
     "../utils/auditPlan": plan,
-    "../services/audit-replay": {
-      latestAuditReport: async () => ({
-        replay,
-        unavailable,
-        json: '{"version":1}',
-      }),
-      loadAuditReplay: async () => {
-        calls.push("replace");
-      },
-      checkAuditReplay: async () => {
-        calls.push("check");
-      },
-    },
     "../utils/contradictionReport": {
       contradictionKey: () => "proof",
       summarizeBatches: (batches) => ({
@@ -171,22 +150,6 @@ function fixture({
   // import from their own directory, so alias those specifiers too.
   imports["../services/proof-report"] = {
     runWithReport: imports["../services/sigma"].call,
-    importProofReport: async (_report, progress) => {
-      calls.push("import");
-      progress("Loading pinned constituents...");
-      if (importError) throw new Error(importError);
-      return {
-        total: 100,
-        next_step: 43,
-        contradictions: [{ steps: [axiom] }],
-        batches: [{ status: "Contradictory", stop_reason: null, focus: [] }],
-        raw_output: "shared replay output",
-      };
-    },
-  };
-  imports["../utils/proofReport"] = {
-    proofReplayOutcome: () =>
-      "Contradiction reproduced with the reported source axioms.",
   };
   imports["./useElapsed"] = imports["../composables/useElapsed"];
   const context = {
@@ -194,7 +157,7 @@ function fixture({
     localStorage: { getItem: () => null, setItem: () => {} },
     performance,
   };
-  for (const name of ["useAuditSweep", "useAuditRun", "useAuditReplay"]) {
+  for (const name of ["useAuditSweep", "useAuditRun"]) {
     const exports = {};
     vm.runInNewContext(composables[name], { ...context, exports });
     imports[`../composables/${name}`] = exports;
@@ -203,141 +166,81 @@ function fixture({
   vm.runInNewContext(source, { ...context, exports });
   const scope = vue.effectScope();
   const view = scope.run(() => exports.default.setup({}, { expose: () => {} }));
-  return { view, calls, scope, replay };
+  return { view, calls, scope, finding, recorded };
 }
 
-test("workflow import panel explains the nightly audit and stale-report restriction", () => {
-  const template = parse(
-    readFileSync(
-      new URL("../components/audit/MasterReportPanel.vue", import.meta.url),
-      "utf8",
-    ),
-  ).descriptor.template.content.replace(/\s+/g, " ");
-  assert.match(template, /SUMO runs a two-hour contradiction audit each night/);
-  assert.match(template, /replay only those steps/);
-  assert.match(template, /Reports cannot be loaded if master has changed/);
-});
-
-test("fetching the workflow report never loads or audits", async () => {
+test("replaying a recorded contradiction audits exactly its cited axioms", async () => {
   const f = fixture();
   try {
-    await f.view.showMasterReport();
-    assert.equal(f.view.report.value?.replay, f.replay);
-    assert.deepEqual(f.calls, []);
-  } finally {
-    f.scope.stop();
-  }
-});
-
-test("confirmation syncs then audits only the reported positions with workflow settings", async () => {
-  const f = fixture();
-  try {
-    await f.view.showMasterReport();
-    await f.view.confirmReplay();
-    assert.equal(f.calls[0], "replace");
+    await f.view.replay(f.finding);
     const audits = f.calls.filter((c) => c.cmd === "audit");
-    assert.deepEqual(
-      audits.map((c) => c.args.request.step),
-      [42, 900],
+    assert.equal(audits.length, 1);
+    assert.deepEqual([...audits[0].args.request.culprits], [f.finding.key]);
+    assert.equal(audits[0].args.request.count, 1);
+    assert.equal(audits[0].args.request.batch, 1);
+    assert.equal(f.view.run.replayOf.key, f.finding.key);
+    assert.equal(f.view.contradictions.value.length, 1);
+    assert.match(
+      f.view.positionText.value,
+      /Replayed a recorded contradiction/,
     );
-    for (const c of audits) {
-      assert.equal(c.args.request.seed, 2);
-      assert.equal(c.args.request.count, 1);
-      assert.equal(c.args.request.batch, 1);
-      assert.equal(c.args.request.limit, 64);
-      assert.equal(c.args.config.maxSteps, 500000);
-    }
-    assert.match(f.view.replayMessage.value, /Reproduced all 1/);
-    assert.equal(f.view.replayBusy.value, false);
+    assert.equal(f.view.auditing.value, false);
+    // The engine recorded the result; the findings list is re-read.
+    assert.ok(f.calls.includes("refresh"));
   } finally {
     f.scope.stop();
   }
 });
 
-test("stale reports cannot be confirmed", async () => {
-  const f = fixture({ unavailable: "master changed" });
-  try {
-    await f.view.showMasterReport();
-    await f.view.confirmReplay();
-    assert.deepEqual(f.calls, []);
-  } finally {
-    f.scope.stop();
-  }
-});
-
-test("missing contradictions are reported as a mismatch, never success", async () => {
+test("a replay that finds nothing keeps the finding and says so", async () => {
   const f = fixture({ noProof: true });
   try {
-    await f.view.showMasterReport();
-    await f.view.confirmReplay();
-    assert.match(
-      f.view.replayMessage.value,
-      /1 reported contradiction\(s\) missing/,
-    );
+    await f.view.replay(f.finding);
+    assert.equal(f.view.contradictions.value.length, 0);
+    assert.match(f.view.caveat.value, /stays recorded/);
   } finally {
     f.scope.stop();
   }
 });
 
-test("rechecking uses tracked targets without loading inputs or resetting settings again", async () => {
+test("a shared audit report is recorded as a finding and replayed", async () => {
   const f = fixture();
   try {
-    await f.view.showMasterReport();
-    await f.view.confirmReplay();
-    f.calls.length = 0;
-    f.view.sweep.batch = 20;
-    f.view.sweep.scope = "Other.kif";
-    await f.view.recheckContradictions();
-    assert.deepEqual(
-      f.calls.map((c) => c.cmd),
-      [
-        "auditRecheckStatus",
-        "recheckAudit",
-        "recheckAudit",
-        "auditRecheckStatus",
-      ],
-    );
-    assert.deepEqual(
-      f.calls.filter((c) => c.cmd === "recheckAudit").map((c) => c.args.index),
-      [0, 1],
-    );
-    assert.match(
-      f.view.replayMessage.value,
-      /2 no longer reproduced a contradiction/,
-    );
-    assert.match(f.view.replayMessage.value, /does not prove/);
+    await f.view.importShared({
+      problem: { command: "audit", request: { seed: 2, step: 42 } },
+      config: { timeLimitSecs: 5 },
+    });
+    const imported = f.calls.find((c) => c.cmd === "import");
+    assert.equal(imported.origin, "report");
+    assert.match(imported.json, /"command":"audit"/);
+    const audits = f.calls.filter((c) => c.cmd === "audit");
+    assert.deepEqual([...audits[0].args.request.culprits], [f.finding.key]);
+    assert.equal(f.view.error.value, "");
   } finally {
     f.scope.stop();
   }
 });
 
-test("invalid formula tracking prevents every recheck call", async () => {
-  const f = fixture({ invalid: "Formulas were added" });
+test("a shared report whose axioms are missing is refused with the missing axioms", async () => {
+  const f = fixture({ importMissing: true });
   try {
-    await f.view.showMasterReport();
-    await f.view.confirmReplay();
-    f.calls.length = 0;
-    await f.view.recheckContradictions();
-    assert.deepEqual(
-      f.calls.map((c) => c.cmd),
-      ["auditRecheckStatus", "auditRecheckStatus"],
-    );
-    assert.match(f.view.recheckReason.value, /Formulas were added/);
+    await f.view.importShared({
+      problem: { command: "audit", request: {} },
+      config: {},
+    });
+    assert.equal(f.calls.filter((c) => c.cmd === "audit").length, 0);
+    assert.match(f.view.error.value, /not in this knowledge base/);
+    assert.match(f.view.error.value, /Merge\.kif:1/);
   } finally {
     f.scope.stop();
   }
 });
 
-test("recheck timeouts are inconclusive, not repaired contradictions", async () => {
-  const f = fixture({ recheckOutcome: "Timeout" });
+test("a shared proof (not audit) report is ignored here", async () => {
+  const f = fixture();
   try {
-    await f.view.showMasterReport();
-    await f.view.confirmReplay();
-    await f.view.recheckContradictions();
-    assert.match(
-      f.view.replayMessage.value,
-      /0 no longer reproduced a contradiction, 2 inconclusive/,
-    );
+    await f.view.importShared({ problem: { command: "prove" }, config: {} });
+    assert.deepEqual(f.calls, []);
   } finally {
     f.scope.stop();
   }
@@ -346,19 +249,21 @@ test("recheck timeouts are inconclusive, not repaired contradictions", async () 
 test("contradiction proofs fold individually and all at once", async () => {
   const f = fixture();
   try {
-    await f.view.showMasterReport();
-    await f.view.confirmReplay();
-    const [c] = f.view.contradictions.value;
+    const v = f.view;
+    v.form.totalField.value = 0;
+    v.form.roundsField.value = 1;
+    await v.start(false);
+    const [c] = v.contradictions.value;
     assert.ok(c);
-    assert.equal(f.view.isCollapsed(c), false);
-    f.view.setCollapsed(c, true);
-    f.view.setCollapsed(c, true); // idempotent, as a programmatic toggle event is
-    assert.equal(f.view.isCollapsed(c), true);
-    assert.equal(f.view.allCollapsed.value, true);
-    f.view.setAllCollapsed(false);
-    assert.equal(f.view.isCollapsed(c), false);
-    f.view.setAllCollapsed(true);
-    assert.equal(f.view.allCollapsed.value, true);
+    assert.equal(v.isCollapsed(c), false);
+    v.setCollapsed(c, true);
+    v.setCollapsed(c, true); // idempotent, as a programmatic toggle event is
+    assert.equal(v.isCollapsed(c), true);
+    assert.equal(v.allCollapsed.value, true);
+    v.setAllCollapsed(false);
+    assert.equal(v.isCollapsed(c), false);
+    v.setAllCollapsed(true);
+    assert.equal(v.allCollapsed.value, true);
   } finally {
     f.scope.stop();
   }
@@ -432,6 +337,7 @@ test("a sweep runs the set number of rounds of `batch` axioms each", async () =>
     const audits = f.calls.filter((c) => c.cmd === "audit");
     assert.equal(audits.length, 3);
     for (const c of audits) assert.equal(c.args.request.count, 2);
+    assert.ok(f.calls.includes("refresh"));
   } finally {
     f.scope.stop();
   }
@@ -475,46 +381,6 @@ test("switching to Simple drops the Advanced overrides", async () => {
     assert.ok(f.calls.includes("reset:audit"));
     assert.equal(v.sweep.seed, 7); // the sweep position is kept
     assert.equal(v.sweep.step, 40);
-  } finally {
-    f.scope.stop();
-  }
-});
-
-test("shared audit replay records results in the Audit tab and clears nightly recheck state", async () => {
-  const f = fixture();
-  try {
-    await f.view.showMasterReport();
-    await f.view.confirmReplay();
-    assert.ok(f.view.loadedReplay.value);
-    await f.view.replayProofReport({
-      problem: { command: "audit", request: { seed: 2, step: 42 } },
-      config: { timeLimitSecs: 5 },
-    });
-    assert.equal(f.view.loadedReplay.value, null);
-    assert.equal(f.view.contradictions.value.length, 1);
-    assert.equal(f.view.batches.value.length, 1);
-    assert.equal(f.view.rawLines.value[0], "shared replay output");
-    assert.equal(f.view.run.next, 43);
-    assert.equal(f.view.replayMode.value, true);
-    assert.equal(f.view.auditing.value, false);
-    assert.equal(f.view.replayBusy.value, false);
-    assert.match(f.view.replayMessage.value, /Contradiction reproduced/);
-  } finally {
-    f.scope.stop();
-  }
-});
-
-test("shared report loading failures are shown in the Audit tab and release busy state", async () => {
-  const f = fixture({ importError: "Pinned file hash mismatch" });
-  try {
-    await f.view.replayProofReport({
-      problem: { command: "audit", request: {} },
-      config: {},
-    });
-    assert.match(f.view.error.value, /Pinned file hash mismatch/);
-    assert.equal(f.view.batches.value.length, 0);
-    assert.equal(f.view.auditing.value, false);
-    assert.equal(f.view.replayBusy.value, false);
   } finally {
     f.scope.stop();
   }

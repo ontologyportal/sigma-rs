@@ -592,8 +592,13 @@ export interface IssueRef {
   state: string;
 }
 
-/** One page of SUMO issues titled with the contradiction-report prefix. */
-export async function searchSumoContradictions(page = 1): Promise<{
+/** One page of a repository's issues titled with the contradiction-report
+ *  prefix, newest activity first; the SUMO repository by default. */
+export async function searchSumoContradictions(
+  page = 1,
+  owner = SUMO.owner,
+  repo = SUMO.repo,
+): Promise<{
   issues: IssueRef[];
   hasMore: boolean;
   incomplete: boolean;
@@ -601,7 +606,7 @@ export async function searchSumoContradictions(page = 1): Promise<{
   if (!Number.isSafeInteger(page) || page < 1 || page > 20)
     throw new GitHubError("Invalid contradiction issue page.", 0);
   const perPage = 50;
-  const q = `repo:${SUMO.owner}/${SUMO.repo} is:issue in:title contradiction`;
+  const q = `repo:${owner}/${repo} is:issue in:title contradiction`;
   const res = await githubApi<Res<"GET /search/issues">>(
     `/search/issues?q=${encodeURIComponent(q)}&sort=updated&order=desc&per_page=${perPage}&page=${page}`,
   );
@@ -678,13 +683,18 @@ export async function createSumoIssue(
   };
 }
 
-/** Read one SUMO issue's body for a reproducible proof report. */
-export async function fetchSumoIssue(number: number): Promise<string> {
+/** Read one issue's body for a reproducible proof report; the SUMO
+ *  repository by default. */
+export async function fetchSumoIssue(
+  number: number,
+  owner = SUMO.owner,
+  repo = SUMO.repo,
+): Promise<string> {
   if (!Number.isSafeInteger(number) || number < 1)
     throw new GitHubError("Enter a valid SUMO issue number.", 0);
   const issue = await githubApi<
     Res<"GET /repos/{owner}/{repo}/issues/{issue_number}">
-  >(`/repos/${SUMO.owner}/${SUMO.repo}/issues/${number}`);
+  >(`/repos/${owner}/${repo}/issues/${number}`);
   if (issue.pull_request)
     throw new GitHubError(
       "That number belongs to a pull request, not an issue.",

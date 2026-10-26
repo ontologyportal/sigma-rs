@@ -83,6 +83,10 @@ try {
     /https:\/\/api\.github\.com\/repos\/ontologyportal\/sumo\/actions\/workflows\/contradiction-audit\.yml\/runs\?/,
     (route) => route.fulfill({ json: { workflow_runs: [] } }),
   );
+  await page.route(
+    "https://raw.githubusercontent.com/ontologyportal/sumo/audit-state/**",
+    (route) => route.fulfill({ status: 404, body: "" }),
+  );
   await page.route(/https:\/\/api\.github\.com\/search\/issues\?/, (route) =>
     route.fulfill({
       json: {
@@ -195,13 +199,16 @@ try {
     const { router } = await import("/src/router/index.ts");
     const { default: AuditTab } = await import("/src/views/AuditTab.vue");
     const { default: AskTellTab } = await import("/src/views/AskTellTab.vue");
+    const { default: KbTab } = await import("/src/views/KbTab.vue");
     createApp({
       render: () =>
         router.currentRoute.value.name === "audit"
           ? h(AuditTab)
           : router.currentRoute.value.name === "prover"
             ? h(AskTellTab)
-            : h("div", [h(ShareProof, { report }), h(ImportProofReport)]),
+            : router.currentRoute.value.name === "kb"
+              ? h(KbTab)
+              : h("div", [h(ShareProof, { report }), h(ImportProofReport)]),
     })
       .use(pinia)
       .use(router)
@@ -306,6 +313,16 @@ try {
     downloads.slice(beforeImport).every((url) => url.includes(`/${head}/`)),
   );
   await page.getByRole("button", { name: "Close", exact: true }).last().click();
+  // An audit report cites its contradiction's axioms; recording it needs
+  // them in the KB, so load the audited file alongside the imported one.
+  await page.evaluate(async () => {
+    const kb = (await import("/src/stores/kb.ts")).useKBStore();
+    await kb.ingest(
+      "contradiction.kif",
+      "(instance Rex Dog)\n(not (instance Rex Dog))",
+    );
+    await kb.reprocess();
+  });
   const auditJson = await page.evaluate(() => globalThis.auditReport);
   await fileInput.setInputFiles({
     name: "audit.json",
@@ -340,92 +357,76 @@ try {
   await page.setViewportSize({ width: 1280, height: 720 });
   await page.getByRole("checkbox").check();
   await page.getByRole("button", { name: "Import and replay" }).click();
-  await page
-    .getByRole("status")
-    .filter({
-      hasText: "Contradiction reproduced with the reported source axioms.",
-    })
-    .waitFor();
+  // The report's contradiction is recorded against this KB and replayed:
+  // its cited axioms audited together.
+  await page.getByText("1 contradiction found", { exact: true }).waitFor();
   assert.equal(new URL(page.url()).pathname, "/audit");
   assert.equal(await page.getByRole("dialog").count(), 0);
-  await page.getByText("1 contradiction found", { exact: true }).waitFor();
-  await page.getByRole("button", { name: "Import contradiction" }).click();
-  await page.getByRole("dialog").screenshot({
-    path: fileURLToPath(new URL("import-contradiction-sources.png", shots)),
+  await page.getByText(/Replayed a recorded contradiction/).waitFor();
+  const recordedCount = () =>
+    page.evaluate(async () =>
+      (await import("/src/stores/contradictions.ts"))
+        .useContradictionsStore()
+        .findings.map((f) => f.origin),
+    );
+  assert.deepEqual(await recordedCount(), ["report"]);
+
+  // Contradiction sources on the KB tab: the shipped GitHub tracker reads
+  // the open `[Contradiction]` issue (the mocked #43) on a manual check.
+  await page.evaluate(async () => {
+    const { useContradictionsStore } =
+      await import("/src/stores/contradictions.ts");
+    await useContradictionsStore().clearFindings();
+    const { navigate } = await import("/src/router/index.ts");
+    await navigate("kb", { view: "contradictions" });
   });
-  const auditChooser = page.waitForEvent("filechooser");
-  await page.getByRole("button", { name: /JSON report file/ }).click();
+  await page.getByText("SUMO nightly audit", { exact: true }).waitFor();
+  const tracker = page
+    .locator("details.src-report")
+    .filter({ hasText: "ontologyportal/sumo issues" });
+  await tracker.getByRole("button", { name: "Check now" }).click();
+  await page.getByText(/1 new contradiction recorded/).waitFor();
+  assert.deepEqual(await recordedCount(), ["github:ontologyportal/sumo#43"]);
+  await tracker.locator("summary").click();
+  await tracker.getByText("contradiction.kif:2").first().waitFor();
+  await page
+    .locator(".card")
+    .filter({ hasText: "Contradiction sources" })
+    .screenshot({
+      path: fileURLToPath(new URL("contradiction-sources.png", shots)),
+    });
+  // A one-shot upload of the same report records nothing new, and is
+  // listed for provenance without a watch preference.
+  await page.getByRole("radio", { name: "Upload" }).click();
+  const uploadChooser = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: /Choose report file/ }).click();
   await (
-    await auditChooser
+    await uploadChooser
   ).setFiles({
     name: "audit.json",
     mimeType: "application/json",
     buffer: Buffer.from(auditJson),
   });
-  await page
-    .getByText("Review the report before replacing your workspace.")
-    .waitFor();
-  await page.getByRole("button", { name: "All sources" }).click();
-  await page
-    .getByRole("button", { name: /Latest GitHub contradiction workflow/ })
-    .click();
-  await page
-    .getByText("SUMO runs a two-hour contradiction audit each night.", {
-      exact: false,
-    })
-    .waitFor();
-  await page
-    .getByText("No completed master contradiction audit is available.")
-    .waitFor();
-  await page.getByRole("dialog").screenshot({
-    path: fileURLToPath(new URL("import-contradiction-workflow.png", shots)),
-  });
-  await page.getByRole("button", { name: "All sources" }).click();
-  await page.getByRole("button", { name: /GitHub issue/ }).click();
-  await page
-    .getByRole("button", { name: /\[Contradiction\] Synthetic audit/ })
-    .waitFor();
+  await page.getByText(/audit\.json: 0 new contradictions recorded/).waitFor();
+  const upload = page
+    .locator("details.src-report")
+    .filter({ hasText: "audit.json" });
   assert.equal(
-    await page.getByText("A different contradiction report").count(),
+    await upload.getByRole("button", { name: "Check now" }).count(),
     0,
   );
-  await page.getByRole("dialog").screenshot({
-    path: fileURLToPath(new URL("browse-contradictions.png", shots)),
+
+  // Back on the Audit tab, the recorded contradiction replays on demand.
+  await page.evaluate(async () => {
+    const { navigate } = await import("/src/router/index.ts");
+    await navigate("audit");
   });
-  await page
-    .getByRole("button", { name: /\[Contradiction\] Synthetic audit/ })
-    .click();
-  assert.equal(
-    await page.getByLabel("SUMO issue number or URL").inputValue(),
-    "43",
-  );
-  assert.equal(
-    await page.getByRole("link", { name: "SUMO issue #43" }).count(),
-    0,
-  );
-  assert.equal(
-    await page
-      .getByRole("button", { name: /\[Contradiction\] Synthetic audit/ })
-      .getAttribute("aria-pressed"),
-    "true",
-  );
-  await page.getByRole("button", { name: "Load issue", exact: true }).click();
-  await page.getByRole("link", { name: "SUMO issue #43" }).waitFor();
-  await page.getByRole("checkbox").check();
-  await page.getByRole("button", { name: "Import and replay" }).click();
+  await page.getByText("Recorded contradictions", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "Show proof" }).click();
+  await page.getByRole("button", { name: "Hide proof" }).waitFor();
+  await page.getByRole("button", { name: "Replay", exact: true }).click();
   await page.getByText("1 contradiction found", { exact: true }).waitFor();
-  assert.equal(await page.getByRole("dialog").count(), 0);
-  await page.getByRole("button", { name: "Import contradiction" }).click();
-  await page.getByRole("button", { name: /GitHub issue/ }).click();
-  await page
-    .getByLabel("SUMO issue number or URL")
-    .fill("https://github.com/ontologyportal/sumo/issues/42");
-  await page.getByRole("button", { name: "Load issue", exact: true }).click();
-  await page.getByRole("link", { name: "SUMO issue #42" }).waitFor();
-  await page.getByRole("checkbox").check();
-  await page.getByRole("button", { name: "Import and replay" }).click();
-  await page.getByText("Result reproduced: Proved.", { exact: true }).waitFor();
-  await page.getByRole("dialog").getByRole("button", { name: "Close" }).click();
+  await page.getByText(/Replayed a recorded contradiction/).waitFor();
   await page.evaluate(async () => {
     await (await import("/src/router/index.ts")).navigate("prover");
   });
@@ -459,17 +460,22 @@ try {
   );
   assert.equal(await proof.getAttribute("open"), "");
   console.log(
-    "Verified GitHub issue publishing and loading, pinned import after branch advancement, and real WASM conjecture/contradiction replay.",
+    "Verified GitHub issue publishing, pinned import after branch advancement, recorded-contradiction import from a report, a GitHub tracker and an upload, and real WASM conjecture/contradiction replay.",
   );
 } catch (error) {
-  console.error(await page?.locator("body").innerText());
-  console.error(
-    await page?.evaluate(async () =>
-      (await import("/src/stores/kb.ts"))
-        .useKBStore()
-        .constituents.map((c) => c.file),
-    ),
-  );
+  console.error(error);
+  try {
+    console.error(await page?.locator("body").innerText());
+    console.error(
+      await page?.evaluate(async () =>
+        (await import("/src/stores/kb.ts"))
+          .useKBStore()
+          .constituents.map((c) => c.file),
+      ),
+    );
+  } catch {
+    /* the page never mounted: the error above is the one that matters */
+  }
   throw error;
 } finally {
   await browser?.close();

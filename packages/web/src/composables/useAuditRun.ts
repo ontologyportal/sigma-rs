@@ -1,17 +1,24 @@
 /**
  * The Audit tab's runs and their results: a sweep over the KB (one worker
  * call per round, so progress shows, Stop takes effect between rounds, and
- * the worker stays responsive to the editor) or a focused audit of one
- * sentence. Replays of the nightly report (see `useAuditReplay`) record into
- * the same results.
+ * the worker stays responsive to the editor), a focused audit of one
+ * sentence, or a replay of a recorded contradiction (its cited axioms
+ * audited together). Every contradiction found lands in the engine's
+ * findings cache, which the contradictions store mirrors after each run.
  */
 
 import { computed, reactive, ref, shallowRef } from "vue";
-import type { AuditBatch, AuditFocus, AuditResult } from "sigmakee/sdk";
+import type {
+  AuditBatch,
+  AuditFinding,
+  AuditFocus,
+  AuditResult,
+} from "sigmakee/sdk";
 import { runWithReport } from "../services/proof-report";
 import type { ProofReport } from "../utils/proofReport";
 import { isWasmAbort } from "../services/sigma";
 import { useBootStore } from "../stores/boot";
+import { useContradictionsStore } from "../stores/contradictions";
 import { useProverStore } from "../stores/prover";
 import { errMsg } from "../utils/format";
 import {
@@ -54,6 +61,7 @@ export interface AuditTarget {
 export function useAuditRun(form: AuditSweep, onClear: () => void = () => {}) {
   const prover = useProverStore();
   const boot = useBootStore();
+  const recorded = useContradictionsStore();
 
   const auditing = ref(false);
   const stopRequested = ref(false);
@@ -68,12 +76,10 @@ export function useAuditRun(form: AuditSweep, onClear: () => void = () => {}) {
   const contradictions = shallowRef<Contradiction[]>([]);
   const batches = shallowRef<LogEntry[]>([]);
   const rawLines = shallowRef<string[]>([]);
-  /** The results come from a replay of the nightly report ... */
-  const replayMode = ref(false);
-  /** ... or from rechecking its targets against local edits. */
-  const lastRunRecheck = ref(false);
   const run = reactive({
     focused: false,
+    /** The recorded contradiction this run replayed, if any. */
+    replayOf: null as AuditFinding | null,
     seed: 0,
     start: 0,
     next: 0,
@@ -103,8 +109,7 @@ export function useAuditRun(form: AuditSweep, onClear: () => void = () => {}) {
     rawLines.value = [];
     error.value = "";
     stopRequested.value = false;
-    replayMode.value = false;
-    lastRunRecheck.value = false;
+    run.replayOf = null;
     onClear();
   }
 
@@ -150,6 +155,14 @@ export function useAuditRun(form: AuditSweep, onClear: () => void = () => {}) {
     return isWasmAbort(errMsg(e))
       ? "Three checks in a row crashed the engine, most likely by running out of memory (a check can need several GB; the browser allows 4 GB). Lower the time per round or the axioms per round and continue from the saved step."
       : errMsg(e);
+  }
+
+  /** The engine recorded whatever this run found; mirror it. */
+  function finish() {
+    auditing.value = false;
+    recorded.refresh().catch(() => {
+      /* the Audit tab re-reads on activation */
+    });
   }
 
   /** Sweep the saved position onward, one round per worker call. */
@@ -235,7 +248,7 @@ export function useAuditRun(form: AuditSweep, onClear: () => void = () => {}) {
     } catch (e) {
       error.value = crashMessage(e);
     } finally {
-      auditing.value = false;
+      finish();
     }
   }
 
@@ -278,7 +291,36 @@ export function useAuditRun(form: AuditSweep, onClear: () => void = () => {}) {
       if (isWasmAbort(errMsg(e))) await boot.recoverWorker();
       error.value = crashMessage(e);
     } finally {
-      auditing.value = false;
+      finish();
+    }
+  }
+
+  /** Replay a recorded contradiction: audit exactly its cited axioms
+   *  together, so the derivation is re-established against the current KB. */
+  async function runCulprits(finding: AuditFinding) {
+    reset(false);
+    run.replayOf = finding;
+    run.planned = 1;
+    run.totalSecs = 0;
+    const p = form.plan.value;
+    auditing.value = true;
+    try {
+      await prover.loadDefaults();
+      const { result } = await runWithReport("audit", {
+        config: prover.config("audit", { timeLimitSecs: p.perCheckSecs }),
+        request: {
+          culprits: [finding.key],
+          count: 1,
+          batch: 1,
+          limit: p.limit,
+        },
+      });
+      record(result, new Set());
+    } catch (e) {
+      if (isWasmAbort(errMsg(e))) await boot.recoverWorker();
+      error.value = crashMessage(e);
+    } finally {
+      finish();
     }
   }
 
@@ -291,8 +333,6 @@ export function useAuditRun(form: AuditSweep, onClear: () => void = () => {}) {
     contradictions,
     batches,
     rawLines,
-    replayMode,
-    lastRunRecheck,
     run,
     progress,
     summary,
@@ -303,6 +343,7 @@ export function useAuditRun(form: AuditSweep, onClear: () => void = () => {}) {
     crashMessage,
     runSweep,
     runFocused,
+    runCulprits,
   };
 }
 

@@ -11,6 +11,7 @@ import { useKBStore } from "./kb";
 import { useWordNetStore } from "./wordnet";
 import { useTestsStore } from "./tests";
 import { useChangesStore } from "./changes";
+import { useContradictionsStore } from "./contradictions";
 import { useLibraryStore } from "./library";
 import { cacheFeatureAssets } from "../services/asset-cache";
 
@@ -145,8 +146,8 @@ export const useBootStore = defineStore("boot", {
         }
         // Off the critical path: the app is usable (browse/search) before
         // the KB is fully axiomatized or the tests are back.
-        if (!restored) kb.reprocess();
-        else kb.refreshLangSelect();
+        const ready = restored ? Promise.resolve() : kb.reprocess();
+        if (restored) kb.refreshLangSelect();
         void tests.load();
         this.syncChanges();
         // Not awaited, same reasoning as syncChanges: a per-source network
@@ -155,6 +156,16 @@ export const useBootStore = defineStore("boot", {
         kb.checkForUpdates().catch(() => {
           /* offline or rate-limited: sources keep their last known state */
         });
+        // Once the KB is axiomatized: bring back the recorded contradictions
+        // (each re-resolved against the live KB), then look for newly
+        // reported ones. Same off-the-critical-path reasoning.
+        const contradictions = useContradictionsStore();
+        ready
+          .then(() => contradictions.restoreFindings())
+          .then(() => contradictions.checkForUpdates())
+          .catch(() => {
+            /* offline, rate-limited, or no OPFS: findings keep this session's state */
+          });
       } catch (e) {
         this.failed = true;
         this.error =
