@@ -58,6 +58,7 @@ export interface ProverProfile {
 
 /** The worker's wire config (mirrors `ProverConfig` in worker/handlers.ts). */
 export interface WireConfig {
+  minLang?: "fof" | "tff" | "thf";
   timeLimitSecs?: number;
   maxSteps?: number;
   maxLits?: number;

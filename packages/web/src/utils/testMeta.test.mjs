@@ -53,6 +53,7 @@ test("a parsed test fills the form; a default note stays blank", () => {
       answer: "no",
       bindings: "",
       includes: "Astronomy.kif",
+      minLang: "",
     },
   );
   assert.equal(
@@ -88,8 +89,10 @@ test("directives round-trip the form for formatTest", () => {
     answer: "bindings",
     bindings: "Rex  Fido",
     includes: "X.kif\nY.kif",
+    minLang: "tff",
   });
   assert.equal(d.note, "SP01");
+  assert.equal(d.minLang, "tff");
   assert.deepEqual([...d.categories], ["a", "b"]);
   assert.deepEqual([...d.includes], ["X.kif", "Y.kif"]);
   assert.equal(d.expectedProof, true);
@@ -98,4 +101,12 @@ test("directives round-trip the form for formatTest", () => {
     testDirectives({ ...emptyTestMeta(), answer: "no" }).expectedProof,
     false,
   );
+});
+
+test("minimum language survives opening and saving a test", () => {
+  const meta = metaFromTest(parsed({ minLang: "tff" }));
+  assert.equal(meta.minLang, "tff");
+  assert.equal(testDirectives(meta).minLang, "tff");
+  assert.match(metaSummary(meta), /min TFF/);
+  assert.equal(testDirectives(emptyTestMeta()).minLang, null);
 });

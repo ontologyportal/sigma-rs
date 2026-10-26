@@ -121,3 +121,12 @@ test("formatTest preserves include manifests and skips empty entries", () => {
     '(include "tests/CASC/axiom-sets/full.sources")\n(include "a missing file.kif")\n',
   );
 });
+
+test("formatTest preserves minimum languages and rejects invalid values", () => {
+  for (const minLang of ["fof", "tff", "thf"])
+    assert.equal(
+      formatTest({ minLang, query: "(p a)" }),
+      `(minLang ${minLang})\n(query (p a))\n`,
+    );
+  assert.throws(() => formatTest({ minLang: "typo" }), /minLang/);
+});

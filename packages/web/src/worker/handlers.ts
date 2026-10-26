@@ -44,6 +44,7 @@ import { AuditRecheckTracker, type RecheckTarget } from "../utils/auditReplay";
 // Duplicated to match the wire shape postMessage actually carries -- worker
 // and page are separate runtimes, never sharing memory.
 export interface ProverConfig {
+  minLang?: "fof" | "tff" | "thf";
   timeLimitSecs?: number;
   maxSteps?: number;
   maxLits?: number;
@@ -105,6 +106,7 @@ function newSession(): Session {
 // always wants the proof/graph/prose.
 function makeConfig(o: ProverConfig = {}): Config {
   const cfg = new Config();
+  if (o.minLang) cfg.minLang = o.minLang;
   cfg.wantProof = o.wantProof !== undefined ? !!o.wantProof : true;
   if (o.timeLimitSecs != null) cfg.timeLimitSecs = o.timeLimitSecs;
   if (o.maxSteps != null) cfg.maxSteps = o.maxSteps;

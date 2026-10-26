@@ -51,6 +51,10 @@ pub struct ExternalOpts {
 }
 
 impl CommonProverOpts for ExternalOpts {
+    fn require_min_lang(&mut self, minimum: TptpLang) {
+        self.mode = self.mode.at_least(minimum);
+    }
+
     fn selection(&self) -> SineParams {
         self.selection
     }

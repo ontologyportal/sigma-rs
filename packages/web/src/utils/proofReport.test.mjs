@@ -114,6 +114,20 @@ test("verified report exports pinned hashes and relevant proof without file cont
   );
 });
 
+test("reports retain a test's minimum translation language", async () => {
+  const text = await formatProofReport(
+    { ...report, config: { ...report.config, minLang: "tff" } },
+    manifest,
+  );
+  assert.equal(parseProofReport(text).config.minLang, "tff");
+  const invalid = JSON.parse(text);
+  invalid.config.minLang = "typo";
+  assert.throws(
+    () => parseProofReport(JSON.stringify(invalid)),
+    /configuration/,
+  );
+});
+
 test("a SUMO issue carries the compact report and rejects missing or oversized payloads", async () => {
   const json = await formatProofReport(report, manifest);
   const body = proofIssueBody(json, "This contradiction affects Oregon.");

@@ -906,6 +906,7 @@ pub struct TestCaseView {
     pub expected_proof: Option<bool>,
     pub expected_answer: Option<Vec<String>>,
     pub includes: Vec<String>,
+    pub min_lang: Option<&'static str>,
 }
 
 impl From<&sigmakee_rs_core::TestCase> for TestCaseView {
@@ -922,6 +923,7 @@ impl From<&sigmakee_rs_core::TestCase> for TestCaseView {
             expected_proof: tc.expected_proof,
             expected_answer: tc.expected_answer.clone(),
             includes: tc.includes.clone(),
+            min_lang: tc.min_lang.map(|lang| lang.as_str()),
         }
     }
 }
@@ -1806,6 +1808,19 @@ mod tests {
     use super::*;
     use crate::Source;
     use sigmakee_rs_core::TranslationLayer;
+
+    #[test]
+    fn test_case_view_preserves_minimum_language() {
+        let tc = sigmakee_rs_core::parse_test_content(
+            "(minLang tff) (query (lessThan -5.0 0.0))",
+            "arithmetic.kif.tq",
+        )
+        .unwrap();
+        let view = TestCaseView::from(&tc);
+        assert_eq!(view.min_lang, Some("tff"));
+        let json = serde_json::to_value(view).unwrap();
+        assert_eq!(json["minLang"], "tff");
+    }
 
     fn session_with(kif: &str) -> Session<TranslationLayer> {
         let mut s = Session::<TranslationLayer>::new("views-test".into());

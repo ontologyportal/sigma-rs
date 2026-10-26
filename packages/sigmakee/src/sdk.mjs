@@ -66,6 +66,7 @@ export function parseTptpTest(name, text, remap = false) {
  * `(query …)` directive; `expectedProof` becomes `(answer yes|no)`.
  */
 export function formatTest({
+  minLang = null,
   note = "",
   timeout = 0,
   categories = [],
@@ -82,6 +83,11 @@ export function formatTest({
     return /^[A-Za-z0-9_.-]+$/.test(t) ? t : `"${t.replace(/"/g, "'")}"`;
   };
   const out = [];
+  if (minLang != null) {
+    if (!["fof", "tff", "thf"].includes(minLang))
+      throw new Error("minLang must be fof, tff, or thf");
+    out.push(`(minLang ${minLang})`);
+  }
   if (note) out.push(`(note ${value(note)})`);
   for (const c of categories)
     if (String(c).trim()) out.push(`(category ${value(c)})`);

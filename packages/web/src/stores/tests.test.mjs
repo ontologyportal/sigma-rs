@@ -21,6 +21,7 @@ function fixture({ catalog = [], entries = [], edited = {} } = {}) {
   const history = [];
   const files = new Map();
   const calls = [];
+  const proveArgs = [];
   const edits = [];
   const configs = [];
   const profiles = [];
@@ -43,8 +44,10 @@ function fixture({ catalog = [], entries = [], edited = {} } = {}) {
     "../services/sigma": {
       async call(method, args) {
         calls.push(method);
-        if (method === "prove")
+        if (method === "prove") {
+          proveArgs.push(args);
           return { result: { status: "Proved", proved: true } };
+        }
         const { text } = args;
         if (!text.trim() || text === "malformed")
           throw new Error("Invalid test");
@@ -109,6 +112,7 @@ function fixture({ catalog = [], entries = [], edited = {} } = {}) {
     history,
     files,
     calls,
+    proveArgs,
     edits,
     configs,
     profiles,
@@ -223,6 +227,19 @@ test("a test overrides the time limit only when it has a (time) directive", asyn
     { timeLimitSecs: 12 },
   ]);
   assert.deepEqual([...f.profiles], ["test", "test"]);
+});
+
+test("a test passes its minimum language to the prover without leaking it", async () => {
+  const f = fixture();
+  for (const minLang of ["tff", "thf", null])
+    await f.store.run({
+      name: "t.kif.tq",
+      parsed: { queryKif: "(p)", axiomKif: "", minLang },
+    });
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(f.proveArgs.map((a) => a.config))),
+    [{ minLang: "tff" }, { minLang: "thf" }, {}],
+  );
 });
 
 test("runAll flags the store as running only while it runs", async () => {

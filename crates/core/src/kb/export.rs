@@ -328,7 +328,9 @@ impl<L: HasTranslation + Layer> KnowledgeBase<L> {
                 &query_sids,
                 prover_opts.selection,
                 staged.session.as_deref(),
-                translation_opts.lang,
+                tc.min_lang.map_or(translation_opts.lang, |minimum| {
+                    translation_opts.lang.at_least(minimum)
+                }),
                 &self.prove_ctx(),
             );
             assemble_tptp_indexed(

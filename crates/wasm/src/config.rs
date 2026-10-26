@@ -3,7 +3,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use sigmakee_rs_core::SineParams;
 use sigmakee_rs_sdk::manager::NativeProverConfig;
-use sigmakee_rs_sdk::{ExternalOpts, NativeOpts, Strategy};
+use sigmakee_rs_sdk::{ExternalOpts, NativeOpts, Strategy, TptpLang};
 use wasm_bindgen::prelude::*;
 
 // -- Config --------------------------------------------------------------------
@@ -37,6 +37,7 @@ pub struct Config {
     backend: Backend,
     vampire_args: String,
     keep_tptp: bool,
+    min_lang: Option<TptpLang>,
     pub(crate) selection_budget: u32,
     pub(crate) audit_axfilter: bool,
     pub(crate) audit_subset_limit: u32,
@@ -75,6 +76,10 @@ impl Config {
         ExternalOpts {
             timeout_secs: self.inner.time_limit_secs,
             selection: self.resolved_selection(axiom_count),
+            mode: self.min_lang.map_or_else(
+                || ExternalOpts::default().mode,
+                |minimum| ExternalOpts::default().mode.at_least(minimum),
+            ),
             ..ExternalOpts::default()
         }
     }
@@ -158,11 +163,30 @@ impl Config {
             backend: Backend::Native,
             vampire_args: String::new(),
             keep_tptp: false,
+            min_lang: None,
             selection_budget: 0,
             audit_axfilter: false,
             audit_subset_limit: 20,
             selection_time_limit_secs: 10,
         }
+    }
+
+    /// Minimum TPTP language for external proving; empty means unspecified.
+    #[wasm_bindgen(getter, js_name = minLang)]
+    pub fn min_lang(&self) -> String {
+        self.min_lang.map_or("", TptpLang::as_str).into()
+    }
+
+    #[wasm_bindgen(setter, js_name = minLang)]
+    pub fn set_min_lang(&mut self, value: &str) -> Result<(), JsValue> {
+        self.min_lang = match value {
+            "" => None,
+            "fof" => Some(TptpLang::Fof),
+            "tff" => Some(TptpLang::Tff),
+            "thf" => Some(TptpLang::Thf),
+            _ => return Err(JsValue::from_str("minLang must be fof, tff, or thf")),
+        };
+        Ok(())
     }
 
     /// Which prover `ask` / `auditConsistency` run: `"native"` (default) or
@@ -395,6 +419,25 @@ mod tests {
         let mut cfg = Config::new();
         cfg.inner.selection.depth_limit = Some(depth);
         cfg
+    }
+
+    #[test]
+    fn minimum_language_is_applied_to_external_options() {
+        let mut config = Config::new();
+        assert_eq!(
+            config.to_external_opts(0).mode,
+            ExternalOpts::default().mode
+        );
+        config.set_min_lang("tff").unwrap();
+        assert_eq!(config.min_lang(), "tff");
+        assert_eq!(config.to_external_opts(0).mode, TptpLang::Tff);
+        config.set_min_lang("thf").unwrap();
+        assert_eq!(config.to_external_opts(0).mode, TptpLang::Thf);
+        config.set_min_lang("").unwrap();
+        assert_eq!(
+            config.to_external_opts(0).mode,
+            ExternalOpts::default().mode
+        );
     }
 
     #[test]

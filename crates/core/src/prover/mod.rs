@@ -277,6 +277,9 @@ pub trait CommonProverOpts {
     fn set_session(&mut self, session: Option<String>);
     /// The session whose assertions ride in as hypotheses, if any.
     fn session(&self) -> Option<&str>;
+    /// Require at least this translation language for a TQ case. Native
+    /// backends consume KIF directly and need no translation override.
+    fn require_min_lang(&mut self, _minimum: crate::TptpLang) {}
     /// Reconfigure for a standalone TPTP problem (`.p` / `.tptp`).  The native
     /// backend swaps in its complete-calculus, full-saturation strategy: the
     /// KIF path's set-of-support tiering is structurally unable to prove
