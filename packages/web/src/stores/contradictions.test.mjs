@@ -49,7 +49,7 @@ function fixture({
         const axioms = e.axioms ?? [];
         const missing = axioms.filter((a) => /MISSING/.test(a.kif));
         if (!axioms.length || missing.length) {
-          rejected.push({ axioms, reason: "missing", missing });
+          rejected.push({ axioms, steps: [], reason: "missing", missing });
           continue;
         }
         const key = axioms
@@ -194,10 +194,16 @@ test("a URL source imports on first check, then only when the report changes", a
   assert.equal(f.store.alerts.length, 1);
   assert.match(f.store.alerts[0].message, /1 new contradiction recorded/);
 
-  // Same report again: nothing fetched beyond the text, nothing imported.
+  // Same report again: re-imported quietly (idempotent) so the row can say
+  // how much of it applies, with no new alert.
   f.calls.length = 0;
+  f.store.alerts = [];
   await f.store.checkSource(nightly);
-  assert.equal(imports(f.calls).length, 0);
+  assert.equal(imports(f.calls).length, 1);
+  assert.equal(f.store.alerts.length, 0);
+  assert.equal(f.store.checks[nightly.id].reported, 1);
+  assert.deepEqual([...f.store.checks[nightly.id].recorded], ["(a)+(b)"]);
+  assert.equal(f.store.checks[nightly.id].raw, report(["(a)", "(b)"]));
 
   // A changed report with one applicable and one inapplicable entry.
   f.setUrlText(report(["(a)", "(b)"], ["(c)"], ["(MISSING)"]));
@@ -207,6 +213,13 @@ test("a URL source imports on first check, then only when the report changes", a
   assert.equal(f.store.findings.length, 2);
   assert.match(f.store.alerts.at(-1).message, /1 new contradiction recorded/);
   assert.match(f.store.alerts.at(-1).message, /1 not applicable/);
+  // The row keeps what was reported but could not be recorded, and why.
+  const check = f.store.checks[nightly.id];
+  assert.equal(check.reported, 3);
+  assert.equal(check.recorded.length, 2);
+  assert.equal(check.notApplicable.length, 1);
+  assert.equal(check.notApplicable[0].origin, nightly.id);
+  assert.equal(check.notApplicable[0].missing[0].kif, "(MISSING)");
 
   // A manual check always re-imports and always reports.
   f.calls.length = 0;
@@ -214,6 +227,15 @@ test("a URL source imports on first check, then only when the report changes", a
   await f.store.checkSource(nightly, true);
   assert.equal(imports(f.calls).length, 1);
   assert.match(f.store.alerts[0].message, /0 new contradictions recorded/);
+});
+
+test("a source whose report cannot be fetched says so on its row", async () => {
+  const f = fixture({ urlText: new Error("HTTP 404") });
+  const [nightly] = f.store.sources;
+  await f.store.checkSource(nightly);
+  assert.equal(imports(f.calls).length, 0);
+  assert.match(f.store.checks[nightly.id].error, /HTTP 404/);
+  assert.equal(f.store.alerts.length, 0);
 });
 
 test("an auto-check URL source offers the changed report instead of importing it", async () => {

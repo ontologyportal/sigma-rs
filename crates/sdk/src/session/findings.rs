@@ -272,6 +272,8 @@ pub fn parse_sids<'a>(
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct RejectedContradiction {
     pub axioms: Vec<CitedAxiom>,
+    /// The report's derivation, as parsed (empty when it carried none).
+    pub steps: Vec<ReportedStep>,
     pub reason: String,
     /// The cited axioms not present in the KB, when that was the reason.
     pub missing: Vec<CitedAxiom>,
@@ -327,6 +329,7 @@ impl<L: TopLayer> Session<L> {
                 Ok(finding) => imported.push(finding),
                 Err(rejection) => rejected.push(RejectedContradiction {
                     axioms: report.axioms.clone(),
+                    steps: report.steps.clone(),
                     reason: rejection.to_string(),
                     missing: match rejection {
                         ImportRejection::Missing(missing) => missing,

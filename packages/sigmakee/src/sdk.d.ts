@@ -205,6 +205,14 @@ export interface ImportOutcome {
   imported: AuditFinding[];
   rejected: Array<{
     axioms: CitedAxiom[];
+    /** The report's derivation as parsed: `{ rule, premises, kif, axiom }`
+     *  per step, `axiom` indexing `axioms`; empty when it carried none. */
+    steps: Array<{
+      rule: string;
+      premises: number[];
+      kif: string;
+      axiom: number | null;
+    }>;
     reason: string;
     /** The cited axioms not present in the KB. */
     missing: CitedAxiom[];

@@ -12,7 +12,7 @@
  * rest are reported as not applicable. */
 
 import { defineStore } from "pinia";
-import type { AuditFinding, ImportOutcome } from "sigmakee/sdk";
+import type { AuditFinding, CitedAxiom, ImportOutcome } from "sigmakee/sdk";
 import {
   CONTRADICTION_BASELINES_KEY,
   CONTRADICTION_PREFS_KEY,
@@ -65,6 +65,36 @@ export interface ContradictionAlert {
   message: string;
   pending?: PendingImport;
   keys?: string[];
+}
+
+/** One contradiction a source reported that this KB cannot record: a cited
+ *  axiom is missing (edited, unloaded, or never loaded), or the entry cites
+ *  none. Kept so the row can show what was reported and why it was skipped. */
+export interface NotApplicable {
+  /** The origin the finding would have carried (`<source id>` or
+   *  `<source id>#<issue>`). */
+  origin: string;
+  axioms: CitedAxiom[];
+  steps: ImportOutcome["rejected"][number]["steps"];
+  reason: string;
+  missing: CitedAxiom[];
+}
+
+/** What a source's last check found. In memory only: the boot-time check
+ *  rebuilds it. */
+export interface SourceCheck {
+  at: number;
+  /** Contradictions the source reported (applicable or not). */
+  reported: number;
+  /** Keys of the findings recorded (new or already present). */
+  recorded: string[];
+  notApplicable: NotApplicable[];
+  /** Reports that could not be parsed at all. */
+  unreadable: number;
+  /** The fetch or listing failed; nothing below is meaningful. */
+  error?: string;
+  /** The fetched report text (URL and upload sources). */
+  raw?: string;
 }
 
 /** The SUMO nightly audit's published report. */
@@ -191,6 +221,8 @@ export const useContradictionsStore = defineStore("contradictions", {
     changedOnLoad: [] as ContradictionAlert[],
     /** Source ids with a check in flight. */
     checking: [] as string[],
+    /** Each source's last check, by source id. */
+    checks: {} as Record<string, SourceCheck>,
     /** The finding the Audit tab should scroll to / expand, if any. */
     focusKey: null as string | null,
   }),
@@ -298,19 +330,33 @@ export const useContradictionsStore = defineStore("contradictions", {
      *  changed. A background check stays quiet when nothing new arrived. */
     async applyImport(pending: PendingImport, manual: boolean) {
       const before = new Set(this.findings.map((f) => f.key));
-      let rejected = 0;
-      let unreadable = 0;
+      const check: SourceCheck = {
+        at: Date.now(),
+        reported: 0,
+        recorded: [],
+        notApplicable: [],
+        unreadable: 0,
+        raw:
+          pending.source.kind !== "github" && pending.reports.length === 1
+            ? pending.reports[0].json
+            : undefined,
+      };
       for (const r of pending.reports) {
         try {
           const o = await call("importContradictions", {
             json: r.json,
             origin: r.origin,
           });
-          rejected += o.rejected.length;
+          check.reported += o.imported.length + o.rejected.length;
+          check.recorded.push(...o.imported.map((f) => f.key));
+          check.notApplicable.push(
+            ...o.rejected.map((x) => ({ origin: r.origin, ...x })),
+          );
         } catch {
-          unreadable++;
+          check.unreadable++;
         }
       }
+      this.checks[pending.source.id] = check;
       await this.refresh();
       if (pending.baseline)
         this.setBaseline(pending.source.id, pending.baseline);
@@ -318,17 +364,31 @@ export const useContradictionsStore = defineStore("contradictions", {
         .filter((f) => !before.has(f.key))
         .map((f) => f.key);
       if (!fresh.length && !manual) return;
+      const rejected = check.notApplicable.length;
       const parts = [
         `${fresh.length} new contradiction${fresh.length === 1 ? "" : "s"} recorded`,
       ];
       if (rejected)
         parts.push(`${rejected} not applicable to this knowledge base`);
-      if (unreadable) parts.push(`${unreadable} report(s) unreadable`);
+      if (check.unreadable)
+        parts.push(`${check.unreadable} report(s) unreadable`);
       this.pushAlert({
         key: pending.source.id,
         message: `${pending.source.label}: ${parts.join(", ")}.`,
         keys: fresh,
       });
+    },
+
+    /** Record that a source's check could not even reach its reports. */
+    failCheck(source: ContradictionSource, error: string) {
+      this.checks[source.id] = {
+        at: Date.now(),
+        reported: 0,
+        recorded: [],
+        notApplicable: [],
+        unreadable: 0,
+        error,
+      };
     },
 
     /** Import an `auto-check` alert's pending reports -- its Import action. */
@@ -351,6 +411,7 @@ export const useContradictionsStore = defineStore("contradictions", {
           try {
             text = await fetchText(source.url ?? source.label);
           } catch (e) {
+            this.failCheck(source, `couldn't fetch the report (${errMsg(e)})`);
             if (manual)
               this.pushAlert({
                 key: source.id,
@@ -360,12 +421,18 @@ export const useContradictionsStore = defineStore("contradictions", {
           }
           const hash = (await blobSha(text)) ?? `len:${text.length}`;
           const baseline = this.baselines[source.id];
-          if (!manual && baseline === hash) return;
           const pending: PendingImport = {
             source,
             reports: [{ json: text, origin: source.id }],
             baseline: hash,
           };
+          // Unchanged since the last import: re-import quietly anyway. It
+          // is idempotent, and it is what tells the row how much of the
+          // report applies to the KB loaded now.
+          if (!manual && baseline === hash) {
+            await this.applyImport(pending, false);
+            return;
+          }
           if (!manual && pref === "auto-check" && baseline) {
             this.pushAlert({
               key: source.id,
@@ -385,6 +452,7 @@ export const useContradictionsStore = defineStore("contradictions", {
             await searchSumoContradictions(1, source.owner, source.repo)
           ).issues.filter((i) => i.state === "open");
         } catch (e) {
+          this.failCheck(source, `couldn't list issues (${errMsg(e)})`);
           if (manual)
             this.pushAlert({
               key: source.id,
@@ -400,6 +468,13 @@ export const useContradictionsStore = defineStore("contradictions", {
           .slice(0, ISSUES_PER_CHECK);
         if (!fresh.length) {
           this.setBaseline(source.id, String(newest));
+          this.checks[source.id] ??= {
+            at: Date.now(),
+            reported: 0,
+            recorded: [],
+            notApplicable: [],
+            unreadable: 0,
+          };
           if (manual)
             this.pushAlert({
               key: source.id,

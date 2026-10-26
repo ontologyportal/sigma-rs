@@ -10,11 +10,13 @@ import {
   githubSource,
   urlSource,
   type ContradictionSource,
+  type NotApplicable,
 } from "../../stores/contradictions";
 import type { UpdatePref } from "../../stores/kb";
 import { navigate } from "../../router";
 import { errMsg, fmtTime } from "../../utils/format";
 import Card from "../Card.vue";
+import JsonDialog from "../JsonDialog.vue";
 import Segmented from "../Segmented.vue";
 import SourceLoc from "../SourceLoc.vue";
 
@@ -127,6 +129,35 @@ function showFinding(key: string) {
   store.focusKey = key;
   navigate("audit");
 }
+
+/** One line summarizing a source's last check. */
+function checkSummary(source: ContradictionSource): string {
+  const c = store.checks[source.id];
+  if (!c) return "Not checked yet this session.";
+  const when = fmtTime(new Date(c.at));
+  if (c.error) return `Last check ${when}: ${c.error}.`;
+  const parts = [`${c.reported} reported`, `${c.recorded.length} applicable`];
+  if (c.notApplicable.length)
+    parts.push(`${c.notApplicable.length} not applicable`);
+  if (c.unreadable) parts.push(`${c.unreadable} unreadable`);
+  return `Last check ${when}: ${parts.join(", ")}.`;
+}
+
+/** The axioms a skipped entry is missing, by a quick text match. */
+function isMissing(entry: NotApplicable, kif: string): boolean {
+  return entry.missing.some((m) => m.kif === kif);
+}
+
+const jsonOpen = ref(false);
+const jsonTitle = ref("");
+const jsonValue = ref<unknown>(null);
+const jsonName = ref("contradiction.json");
+function showJson(title: string, value: unknown, name: string) {
+  jsonTitle.value = title;
+  jsonValue.value = value;
+  jsonName.value = name;
+  jsonOpen.value = true;
+}
 </script>
 
 <template>
@@ -214,17 +245,28 @@ function showFinding(key: string) {
       </summary>
       <div class="src-body">
         <div class="hint src-detail">{{ detail(s) }}</div>
+        <div class="src-check">
+          <span class="hint">{{ checkSummary(s) }}</span>
+          <button
+            v-if="store.checks[s.id]?.raw"
+            class="btn ghost small"
+            type="button"
+            title="The report as fetched"
+            @click="
+              showJson(
+                `Report from ${s.label}`,
+                store.checks[s.id]!.raw,
+                'contradiction-report.json',
+              )
+            "
+          >
+            View raw report
+          </button>
+        </div>
         <div v-if="!store.findingsFor(s).length" class="hint">
           No contradictions recorded from this source.
         </div>
-        <button
-          v-for="f in store.findingsFor(s)"
-          :key="f.key"
-          class="finding"
-          type="button"
-          title="Show on the Audit tab"
-          @click="showFinding(f.key)"
-        >
+        <div v-for="f in store.findingsFor(s)" :key="f.key" class="finding">
           <span class="finding-axioms">
             <SourceLoc
               v-for="c in f.culprits"
@@ -237,9 +279,91 @@ function showFinding(key: string) {
           <time class="hint" :datetime="new Date(f.found_at_ms).toISOString()">
             {{ fmtTime(new Date(f.found_at_ms)) }}
           </time>
-        </button>
+          <span class="finding-actions">
+            <button
+              class="btn ghost small"
+              type="button"
+              title="Show on the Audit tab"
+              @click="showFinding(f.key)"
+            >
+              Show
+            </button>
+            <button
+              class="btn ghost small"
+              type="button"
+              title="The recorded contradiction as JSON"
+              @click="showJson('Recorded contradiction', f, `${f.key}.json`)"
+            >
+              JSON
+            </button>
+          </span>
+        </div>
+        <details
+          v-if="store.checks[s.id]?.notApplicable.length"
+          class="not-applicable"
+        >
+          <summary>
+            Not applicable to this knowledge base ({{
+              store.checks[s.id]!.notApplicable.length
+            }})
+            <span class="hint">
+              -- reported contradictions citing axioms this KB does not hold
+            </span>
+          </summary>
+          <div
+            v-for="(entry, i) in store.checks[s.id]!.notApplicable"
+            :key="i"
+            class="finding skipped"
+          >
+            <span class="finding-axioms">
+              <span
+                v-for="(a, j) in entry.axioms"
+                :key="j"
+                class="axiom"
+                :class="{ missing: isMissing(entry, a.kif) }"
+                :title="
+                  isMissing(entry, a.kif)
+                    ? 'Not in the loaded knowledge base'
+                    : 'Present in the loaded knowledge base'
+                "
+              >
+                <SourceLoc
+                  v-if="a.file"
+                  :file="a.file"
+                  :line="a.line ?? 0"
+                  variant="loc"
+                />
+                <code>{{ a.kif }}</code>
+              </span>
+            </span>
+            <span class="hint reason">{{ entry.reason }}</span>
+            <span class="finding-actions">
+              <button
+                class="btn ghost small"
+                type="button"
+                title="The reported contradiction as JSON"
+                @click="
+                  showJson(
+                    'Reported contradiction (not applicable)',
+                    entry,
+                    'contradiction.json',
+                  )
+                "
+              >
+                JSON
+              </button>
+            </span>
+          </div>
+        </details>
       </div>
     </details>
+
+    <JsonDialog
+      v-model="jsonOpen"
+      :title="jsonTitle"
+      :value="jsonValue"
+      :filename="jsonName"
+    />
 
     <form class="add" @submit.prevent="add">
       <Segmented
@@ -303,6 +427,33 @@ function showFinding(key: string) {
   display: flex;
   align-items: center;
   gap: 8px;
+  list-style: none;
+}
+/* `display: flex` on a summary drops the browser's disclosure marker, so
+   draw one: a chevron that turns down while the row is open. */
+.src-report summary::-webkit-details-marker,
+.not-applicable summary::-webkit-details-marker {
+  display: none;
+}
+.src-report summary::before,
+.not-applicable summary::before {
+  content: "";
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  margin: 0 4px 0 2px;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  transform: rotate(-45deg);
+  transition: transform 0.15s ease;
+}
+.src-report[open] > summary::before,
+.not-applicable[open] > summary::before {
+  transform: rotate(45deg);
+}
+.src-report summary:hover::before,
+.not-applicable summary:hover::before {
+  border-color: var(--accent);
 }
 .src-label {
   flex-shrink: 0;
@@ -363,22 +514,69 @@ function showFinding(key: string) {
 }
 .finding {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+  gap: 6px 10px;
   width: 100%;
+  box-sizing: border-box;
   padding: 6px 8px;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: var(--bg);
   color: var(--fg);
-  font: inherit;
   font-size: 12px;
-  text-align: left;
-  cursor: pointer;
 }
-.finding:hover {
-  border-color: var(--accent);
+.finding-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 6px;
+}
+.src-check {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+}
+.not-applicable summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  list-style: none;
+}
+.not-applicable .finding {
+  margin-top: 6px;
+}
+.skipped .finding-axioms {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+.axiom {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+}
+.axiom code {
+  font-family: var(--mono);
+  font-size: 11px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.axiom.missing code {
+  text-decoration: underline wavy color-mix(in srgb, var(--accent) 70%, red);
+}
+.axiom.missing::after {
+  content: "missing";
+  font-size: 10px;
+  font-weight: 700;
+  color: color-mix(in srgb, var(--accent) 70%, red);
+}
+.reason {
+  flex-basis: 100%;
 }
 .finding-axioms {
   display: flex;

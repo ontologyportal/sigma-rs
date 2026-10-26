@@ -36,6 +36,7 @@ import AuditAdvancedForm from "../components/audit/AuditAdvancedForm.vue";
 import CheckLog from "../components/audit/CheckLog.vue";
 import ContradictionCard from "../components/audit/ContradictionCard.vue";
 import RecordedContradictions from "../components/audit/RecordedContradictions.vue";
+import HistoryToggle from "../components/HistoryToggle.vue";
 
 const kb = useKBStore();
 const shell = useShellStore();
@@ -45,6 +46,17 @@ const recorded = useContradictionsStore();
 onActivated(() => {
   recorded.refresh().catch(() => {});
 });
+
+/** Compact layout: the recorded contradictions toggle open under the form,
+ *  as Ask/Tell's run history does. Opened on arrival at a specific finding. */
+const recordedOpen = ref(false);
+watch(
+  () => recorded.focusKey,
+  (key) => {
+    if (key) recordedOpen.value = true;
+  },
+  { immediate: true },
+);
 
 // -- focus (right-click "Audit this sentence" in the editor) ------------------
 
@@ -168,10 +180,14 @@ watch(
   },
 );
 const isCompact = computed(() => shell.isCompact);
-/** Advanced in the classic layout: the prover options sit in a column on
- *  the right, as on Ask/Tell; otherwise they toggle open in the form. */
+/** The classic layout keeps a column on the right: the recorded
+ *  contradictions, and (in Advanced) the prover options above them, as on
+ *  Ask/Tell. Compact stacks everything under the form. */
+const sideColumn = computed(() => !isCompact.value);
+/** Advanced in the classic layout: the prover options sit in the side
+ *  column; otherwise they toggle open in the form. */
 const optionsBeside = computed(
-  () => sweep.mode === "advanced" && !isCompact.value,
+  () => sweep.mode === "advanced" && sideColumn.value,
 );
 
 const canContinue = computed(
@@ -252,7 +268,7 @@ function setAllCollapsed(fold: boolean) {
 
 <template>
   <Row>
-    <Col :span="optionsBeside ? 8 : 12">
+    <Col :span="sideColumn ? 8 : 12">
       <Card
         title="Consistency audit"
         description="Checks axioms' neighbourhoods (the axioms selected for each, as for a query) for contradictions. Any contradiction found is real, but finding none doesn't prove the KB consistent."
@@ -375,12 +391,24 @@ function setAllCollapsed(fold: boolean) {
             :toggle="sweep.mode === 'advanced' && isCompact"
             :disabled="auditing"
           />
+          <HistoryToggle
+            v-if="isCompact"
+            v-model:open="recordedOpen"
+            title="Recorded contradictions"
+          />
         </div>
         <ProverOptions
           v-if="sweep.mode === 'advanced' && isCompact && optionsOpen"
           profile="audit"
           hide-time
           :disabled="auditing"
+        />
+        <RecordedContradictions
+          v-if="isCompact && recordedOpen"
+          class="history-panel"
+          embedded
+          :busy="auditing"
+          @replay="replay"
         />
       </Card>
 
@@ -423,11 +451,15 @@ function setAllCollapsed(fold: boolean) {
           @update:collapsed="setCollapsed(c, $event)"
         />
       </template>
-
-      <RecordedContradictions :busy="auditing" @replay="replay" />
     </Col>
-    <Col v-if="optionsBeside" :span="4" style="margin-left: 15px">
-      <ProverOptionsCard profile="audit" hide-time :disabled="auditing" />
+    <Col v-if="sideColumn" :span="4" style="margin-left: 15px">
+      <ProverOptionsCard
+        v-if="optionsBeside"
+        profile="audit"
+        hide-time
+        :disabled="auditing"
+      />
+      <RecordedContradictions :busy="auditing" @replay="replay" />
     </Col>
   </Row>
 </template>
@@ -506,5 +538,8 @@ function setAllCollapsed(fold: boolean) {
 }
 .fold-all {
   margin-left: auto;
+}
+.history-panel {
+  margin-top: 12px;
 }
 </style>
