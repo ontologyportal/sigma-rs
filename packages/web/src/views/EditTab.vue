@@ -2,7 +2,7 @@
 /**
  * Edit tab: the in-browser IDE (Monaco) for KIF constituents -- file picker,
  * live validation, save, the TPTP split pane, the contribution panel, and
- * the fullscreen toggle. Owns the buffer and the current file.
+ * the fullscreen toggle. Owns the open files and their editor buffers.
  */
 import {
   computed,
@@ -74,6 +74,26 @@ const splitBtn = ref<HTMLElement | null>(null);
 const current = ref<{ name: string; origin: Origin } | null>(null);
 const text = ref(NEW_FILE_TEXT);
 let loadedText = NEW_FILE_TEXT;
+type EditorTab = {
+  id: number;
+  file: { name: string; origin: Origin } | null;
+  text: string;
+  loadedText: string;
+};
+const tabs = ref<EditorTab[]>([]);
+const activeTab = ref<number | null>(null);
+let nextTabId = 0;
+const draggedTab = ref<number | null>(null);
+
+watch(
+  current,
+  (file) => {
+    const tab = tabs.value.find((t) => t.id === activeTab.value);
+    if (tab) tab.file = file;
+  },
+  { flush: "sync" },
+);
+
 const editingTest = computed(
   () => !!current.value && isTestFile(current.value.name),
 );
@@ -340,18 +360,9 @@ function checkStaleOnOpen() {
 
 let openRequest = 0;
 
-async function openFile(c: OpenedFile | null) {
+async function openFile(c: OpenedFile | null, tabId?: number) {
   const request = ++openRequest;
-  if (!current.value && !saving.value && text.value !== loadedText) {
-    if (
-      !window.confirm(
-        "Discard this unnamed file's unsaved changes? Use Save As first to keep them.",
-      )
-    ) {
-      updateParams({});
-      return false;
-    }
-  } else if ((text.value !== loadedText && dirty.value) || saving.value) {
+  if ((text.value !== loadedText && dirty.value) || saving.value) {
     if (!(await flushAutosave())) {
       if (request === openRequest && current.value)
         updateParams({ file: fileParam(current.value) });
@@ -360,14 +371,39 @@ async function openFile(c: OpenedFile | null) {
   }
   if (request !== openRequest) return false;
   clearTimeout(autosaveTimer);
+  const previous = tabs.value.find((t) => t.id === activeTab.value);
+  if (previous) {
+    previous.text = text.value;
+    previous.loadedText = loadedText;
+  }
+  let tab = tabs.value.find((t) =>
+    tabId !== undefined
+      ? t.id === tabId
+      : c &&
+        t.file?.name === c.name &&
+        originId(t.file.origin) === originId(c.origin),
+  );
   if (c)
     c =
       (isTestFile(c.name)
         ? tests.find(c.name)
         : kb.find(c.name, c.origin.kind)) ?? c;
-  current.value = c ? { name: c.name, origin: c.origin } : null;
-  text.value = c ? c.text : NEW_FILE_TEXT;
-  loadedText = text.value;
+  if (!tab) {
+    tab = {
+      id: ++nextTabId,
+      file: c ? { name: c.name, origin: c.origin } : null,
+      text: c ? c.text : NEW_FILE_TEXT,
+      loadedText: c ? c.text : NEW_FILE_TEXT,
+    };
+    tabs.value.push(tab);
+  } else if (c && tab.text === tab.loadedText) {
+    tab.text = c.text;
+    tab.loadedText = c.text;
+  }
+  activeTab.value = tab.id;
+  current.value = tab.file;
+  text.value = tab.text;
+  loadedText = tab.loadedText;
   saveStatus.clear();
   diags.value = [];
   ed.value?.setMarkers([]);
@@ -376,6 +412,73 @@ async function openFile(c: OpenedFile | null) {
   scheduleValidate();
   checkStaleOnOpen();
   return true;
+}
+
+async function selectTab(tab: EditorTab) {
+  if (tab.id === activeTab.value) return true;
+  const opened = await openFile(
+    tab.file ? { ...tab.file, text: tab.text } : null,
+    tab.id,
+  );
+  if (opened) updateParams(tab.file ? { file: fileParam(tab.file) } : {});
+  return opened;
+}
+
+async function closeTab(id: number) {
+  const tab = tabs.value.find((t) => t.id === id);
+  if (!tab) return;
+  const active = id === activeTab.value;
+  const buffer = active ? text.value : tab.text;
+  if (
+    !tab.file &&
+    buffer !== NEW_FILE_TEXT &&
+    !window.confirm(
+      "Discard this unnamed file's unsaved changes? Use Save As first to keep them.",
+    )
+  )
+    return;
+  if (active) {
+    if (!(await flushAutosave())) return;
+    const index = tabs.value.indexOf(tab);
+    const next = tabs.value[index + 1] ?? tabs.value[index - 1];
+    if (next) {
+      if (!(await selectTab(next))) return;
+    } else {
+      activeTab.value = null;
+      current.value = null;
+      text.value = NEW_FILE_TEXT;
+      loadedText = NEW_FILE_TEXT;
+      diags.value = [];
+      ed.value?.setMarkers([]);
+      status.value = "";
+      statusLink.value = null;
+      cursor.value = null;
+      tptpOpen.value = false;
+      saveStatus.clear();
+      log.clear();
+      updateParams({});
+    }
+  }
+  tabs.value = tabs.value.filter((t) => t.id !== id);
+  await nextTick();
+  ed.value?.closeDocument(String(id));
+}
+
+function startTabDrag(event: DragEvent, id: number) {
+  draggedTab.value = id;
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", String(id));
+  }
+}
+
+function dropTab(target: number) {
+  const from = tabs.value.findIndex((t) => t.id === draggedTab.value);
+  const to = tabs.value.findIndex((t) => t.id === target);
+  draggedTab.value = null;
+  if (from < 0 || to < 0 || from === to) return;
+  const [tab] = tabs.value.splice(from, 1);
+  tabs.value.splice(to, 0, tab!);
 }
 
 onActivated(() => {
@@ -500,7 +603,10 @@ function onBeforeUnload(event: BeforeUnloadEvent) {
   if (
     dirty.value ||
     saving.value ||
-    (!current.value && text.value !== loadedText)
+    (!current.value && text.value !== loadedText) ||
+    tabs.value.some(
+      (t) => t.id !== activeTab.value && !t.file && t.text !== NEW_FILE_TEXT,
+    )
   ) {
     event.preventDefault();
     event.returnValue = "";
@@ -1085,9 +1191,57 @@ function onJump({ line, col }: { line: number; col: number }) {
 
     <Card class="edit-pane" :class="{ split: tptpOpen }">
       <div class="editor-container">
+        <div class="editor-tabs" role="tablist" aria-label="Open files">
+          <div
+            v-for="tab in tabs"
+            :key="tab.id"
+            class="editor-file-tab"
+            :class="{
+              active: tab.id === activeTab,
+              dragging: tab.id === draggedTab,
+            }"
+            draggable="true"
+            @dragstart="startTabDrag($event, tab.id)"
+            @dragend="draggedTab = null"
+            @dragover.prevent
+            @drop.prevent="dropTab(tab.id)"
+          >
+            <button
+              type="button"
+              role="tab"
+              :aria-selected="tab.id === activeTab"
+              :title="tab.file?.name ?? 'New file (unsaved)'"
+              @click="selectTab(tab)"
+            >
+              {{ tab.file?.name ?? "New file (unsaved)" }}
+              <span
+                v-if="
+                  tab.id === activeTab
+                    ? dirty || (!current && text !== NEW_FILE_TEXT)
+                    : !tab.file && tab.text !== NEW_FILE_TEXT
+                "
+                >*</span
+              >
+            </button>
+            <button
+              type="button"
+              class="close-tab"
+              :aria-label="'Close ' + (tab.file?.name ?? 'new file')"
+              title="Close tab"
+              @click.stop="closeTab(tab.id)"
+            >
+              &times;
+            </button>
+          </div>
+        </div>
+        <div v-if="!tabs.length" class="editor-empty">
+          Open a file or create a new file to start editing.
+        </div>
         <MonacoEditor
+          v-show="tabs.length"
           ref="ed"
           v-model="text"
+          :document-key="String(activeTab)"
           :language="language"
           :lsp="!editingTest"
           placeholder="Loading editor..."
@@ -1219,7 +1373,52 @@ a.jump-diag:hover {
   padding: 0;
   overflow: visible;
 }
+.editor-tabs {
+  display: flex;
+  flex-shrink: 0;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--line);
+}
+.editor-file-tab {
+  display: flex;
+  flex-shrink: 0;
+  border-right: 1px solid var(--line);
+  border-bottom: 2px solid transparent;
+}
+.editor-file-tab.active {
+  border-bottom-color: var(--accent);
+  background: var(--card);
+}
+.editor-file-tab.dragging {
+  opacity: 0.5;
+}
+.editor-file-tab button {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 8px 10px;
+}
+.editor-file-tab.active button {
+  color: var(--fg);
+}
+.editor-file-tab .close-tab {
+  padding: 8px;
+}
+.editor-file-tab button:hover {
+  background: var(--line);
+}
+.editor-empty {
+  padding: 24px;
+  color: var(--muted);
+}
+.editor-container :deep(.monaco-host) {
+  flex: 1;
+  min-height: 0;
+}
 .editor-container {
+  display: flex;
+  flex-direction: column;
   height: 520px;
 }
 /* TPTP preview pane: BELOW the editor normally, BESIDE it in fullscreen
