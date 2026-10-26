@@ -51,10 +51,10 @@ const summary = computed(() => metaSummary(meta.value));
         </div>
       </div>
       <div>
-        <label for="tqFiles">required files</label>
+        <label for="tqIncludes">includes</label>
         <input
-          id="tqFiles"
-          v-model="meta.files"
+          id="tqIncludes"
+          v-model="meta.includes"
           type="text"
           placeholder="e.g. Astronomy.kif"
         />

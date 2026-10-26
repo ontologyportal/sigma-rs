@@ -905,7 +905,7 @@ pub struct TestCaseView {
     pub axiom_kif: String,
     pub expected_proof: Option<bool>,
     pub expected_answer: Option<Vec<String>>,
-    pub extra_files: Vec<String>,
+    pub includes: Vec<String>,
 }
 
 impl From<&sigmakee_rs_core::TestCase> for TestCaseView {
@@ -921,7 +921,7 @@ impl From<&sigmakee_rs_core::TestCase> for TestCaseView {
             axiom_kif: tc.axiom_kif(),
             expected_proof: tc.expected_proof,
             expected_answer: tc.expected_answer.clone(),
-            extra_files: tc.extra_files.clone(),
+            includes: tc.includes.clone(),
         }
     }
 }

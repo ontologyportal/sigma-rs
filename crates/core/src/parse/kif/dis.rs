@@ -689,11 +689,11 @@ mod format_document_tests {
 
     #[test]
     fn tq_document_roundtrips_directives_query_and_comments() {
-        let src = "; suite header\n(note \"dogs are mortal\")\n(time 30)\n(instance Rex Dog) ; the pet\n(query (instance Rex Mammal))\n(answer yes)\n(file \"Merge.kif\")";
+        let src = "; suite header\n(note \"dogs are mortal\")\n(time 30)\n(instance Rex Dog) ; the pet\n(query (instance Rex Mammal))\n(answer yes)\n(include \"Merge.kif\")";
         let out = assert_roundtrip_with(src, || Parser::Tq);
         assert_eq!(
             out,
-            "; suite header\n(note \"dogs are mortal\")\n(time 30)\n(instance Rex Dog) ; the pet\n(query (instance Rex Mammal))\n(answer yes)\n(file \"Merge.kif\")"
+            "; suite header\n(note \"dogs are mortal\")\n(time 30)\n(instance Rex Dog) ; the pet\n(query (instance Rex Mammal))\n(answer yes)\n(include \"Merge.kif\")"
         );
     }
 

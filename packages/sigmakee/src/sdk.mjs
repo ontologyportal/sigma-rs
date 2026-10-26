@@ -40,7 +40,7 @@ export function sumoSymbols() {
 /**
  * Parse a `.kif.tq` test file (requires {@link init}).  Returns
  * `{ name, note, timeout, queryKif, axiomKif, expectedProof, expectedAnswer,
- * extraFiles }`; throws with the parse diagnostic's message on malformed
+ * includes }`; throws with the parse diagnostic's message on malformed
  * input.
  */
 export function parseTest(name, text) {
@@ -69,7 +69,7 @@ export function formatTest({
   note = "",
   timeout = 0,
   categories = [],
-  extraFiles = [],
+  includes = [],
   assertions = "",
   query = "",
   expectedProof = null,
@@ -86,9 +86,9 @@ export function formatTest({
   for (const c of categories)
     if (String(c).trim()) out.push(`(category ${value(c)})`);
   if (timeout > 0) out.push(`(time ${Math.round(timeout)})`);
-  for (const f of extraFiles)
+  for (const f of includes)
     if (String(f).trim())
-      out.push(`(file "${String(f).trim().replace(/"/g, "'")}")`);
+      out.push(`(include "${String(f).trim().replace(/"/g, "'")}")`);
   const a = assertions.trim();
   if (a) out.push(a);
   const q = query.trim();

@@ -7,7 +7,7 @@
 // form into a [`DocItem`]:
 //
 //   * `(query F)`         → `DocItem::Stmt(Annotated { Conjecture })`.
-//   * `(note ...)`, `(time N)`, `(answer ...)`, `(file ...)`, and the other
+//   * `(note ...)`, `(time N)`, `(answer ...)`, `(include ...)`, and the other
 //     `DIRECTIVES` -> `DocItem::Meta`.
 //   * everything else     → `DocItem::Stmt(Annotated { Hypothesis })`.
 //
@@ -33,7 +33,7 @@ const DIRECTIVES: &[&str] = &[
     "note",
     "time",
     "answer",
-    "file",
+    "include",
     "category",
     "minLang",
     "regen",
@@ -76,7 +76,8 @@ pub struct TestCase {
     pub expected_answer: Option<Vec<String>>,
     /// Hypotheses, each `Annotated { role: Hypothesis, … }`.
     pub axioms: Vec<AstNode>,
-    pub extra_files: Vec<String>,
+    /// Declared include paths, preserved as metadata without loading files.
+    pub includes: Vec<String>,
     /// The TPTP `% Status : <word>` header pragma, verbatim (`Theorem` /
     /// `Unsatisfiable` / `Satisfiable` / `CounterSatisfiable` / `Open` /
     /// `Unknown` / …), when the source carried a `status` [`MetaNode`].
@@ -119,7 +120,7 @@ impl TestCase {
             expected_proof: None,
             expected_answer: None,
             axioms: Vec::new(),
-            extra_files: Vec::new(),
+            includes: Vec::new(),
             expected_status: None,
             has_fof_conjecture: false,
             input_formulas: 0,
@@ -181,7 +182,7 @@ impl TestCase {
             expected_answer: None,
             expected_proof: None,
             axioms: Vec::new(),
-            extra_files: Vec::new(),
+            includes: Vec::new(),
             expected_status: None,
             has_fof_conjecture: false,
             input_formulas: 0,
@@ -283,8 +284,8 @@ impl TestCase {
                     }
                 }
             }
-            "file" if let Some(el) = m.args.first() => {
-                self.extra_files.push(directive_text(el));
+            "include" if let Some(el) = m.args.first() => {
+                self.includes.push(directive_text(el));
             }
             // The TPTP `% Status : <word>` header pragma (see the tokenizer's
             // `record_status_pragma`) — first match wins, mirroring the

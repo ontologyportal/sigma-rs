@@ -235,8 +235,8 @@ export interface ParsedTest {
   expectedProof: boolean | null;
   /** Bindings-style `(answer …)` values, when present. */
   expectedAnswer: string[] | null;
-  /** `(file …)` directives — external KIF files the test expects loaded. */
-  extraFiles: string[];
+  /** `(include …)` directives — paths preserved as metadata; dependency loading is deferred. */
+  includes: string[];
 }
 
 /** The SUMO symbol constants the engine was compiled with (its
@@ -268,8 +268,8 @@ export function formatTest(opts?: {
   timeout?: number;
   /** One `(category ...)` directive each. */
   categories?: string[];
-  /** One `(file ...)` directive each. */
-  extraFiles?: string[];
+  /** One `(include ...)` directive each. */
+  includes?: string[];
   assertions?: string;
   query?: string;
   /** `(answer yes|no)`; `null` writes no answer. */
