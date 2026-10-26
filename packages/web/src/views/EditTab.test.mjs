@@ -508,8 +508,14 @@ test("unnamed buffers use Save As for their first save and cannot be silently di
       f.calls.some((c) => c[0] === "save"),
       false,
     );
-    assert.equal(await f.editor.openFile(f.files.get("original.kif")), false);
+    const unnamed = f.editor.tabs.value.find(
+      (t) => t.id === f.editor.activeTab.value,
+    );
+    assert.equal(await f.editor.openFile(f.files.get("original.kif")), true);
+    assert.equal(await f.editor.selectTab(unnamed), true);
     assert.equal(f.editor.text.value, "new unnamed work");
+    await f.editor.closeTab(unnamed.id);
+    assert.ok(f.editor.tabs.value.some((t) => t.id === unnamed.id));
     await f.editor.onSaveAs();
     assert.equal(f.files.get("copy.kif").text, "new unnamed work");
   } finally {
@@ -754,6 +760,97 @@ test("edits remain saveable when persistence succeeds but postprocessing fails",
     assert.equal(f.files.get("original.kif").text, "unsaved edits");
     await f.tick(5000);
     assert.equal(f.files.get("original.kif").text, "saved");
+  } finally {
+    f.scope.stop();
+  }
+});
+
+test("opening files adds tabs and reopening selects the existing tab", async () => {
+  const f = fixture();
+  try {
+    const originalId = f.editor.activeTab.value;
+    const next = { name: "next.kif", text: "next", origin: { kind: "file" } };
+    f.files.set(next.name, next);
+    await f.editor.openFile(next);
+    assert.equal(f.editor.tabs.value.length, 2);
+    await f.editor.openFile(f.files.get("original.kif"));
+    assert.equal(f.editor.tabs.value.length, 2);
+    assert.equal(f.editor.activeTab.value, originalId);
+    assert.equal(f.editor.text.value, "unsaved edits");
+  } finally {
+    f.scope.stop();
+  }
+});
+
+test("closing inactive and active tabs preserves files and selects a neighbor", async () => {
+  const f = fixture();
+  try {
+    const originalId = f.editor.activeTab.value;
+    await f.editor.openFile(null);
+    const blankId = f.editor.activeTab.value;
+    await f.editor.openFile(null);
+    const lastId = f.editor.activeTab.value;
+    await f.editor.closeTab(blankId);
+    assert.equal(f.editor.activeTab.value, lastId);
+    await f.editor.closeTab(lastId);
+    assert.equal(f.editor.activeTab.value, originalId);
+    await f.editor.closeTab(originalId);
+    assert.equal(f.editor.tabs.value.length, 0);
+    assert.equal(f.editor.activeTab.value, null);
+    assert.equal(f.editor.current.value, null);
+    assert.equal(f.files.get("original.kif").text, "unsaved edits");
+  } finally {
+    f.scope.stop();
+  }
+});
+
+test("failed saves prevent closing the active tab", async () => {
+  const f = fixture({ fail: true });
+  try {
+    const id = f.editor.activeTab.value;
+    await f.editor.closeTab(id);
+    assert.equal(f.editor.activeTab.value, id);
+    assert.equal(f.editor.tabs.value.length, 1);
+    assert.equal(f.editor.text.value, "unsaved edits");
+  } finally {
+    f.scope.stop();
+  }
+});
+
+test("dragging tabs reorders them without changing the active file", async () => {
+  const f = fixture();
+  try {
+    await f.editor.openFile(null);
+    await f.editor.openFile(null);
+    const ids = f.editor.tabs.value.map((t) => t.id);
+    const active = f.editor.activeTab.value;
+    f.editor.draggedTab.value = ids[0];
+    f.editor.dropTab(ids[2]);
+    assert.deepEqual(
+      Array.from(f.editor.tabs.value, (t) => t.id),
+      [ids[1], ids[2], ids[0]],
+    );
+    assert.equal(f.editor.activeTab.value, active);
+    f.editor.dropTab(ids[0]);
+    assert.equal(f.editor.tabs.value.length, 3);
+  } finally {
+    f.scope.stop();
+  }
+});
+
+test("inactive unnamed work still warns before leaving the page", async () => {
+  const f = fixture();
+  try {
+    await f.editor.openFile(null);
+    f.editor.text.value = "keep this draft";
+    await f.editor.openFile(f.files.get("original.kif"));
+    let warned = false;
+    f.editor.onBeforeUnload({
+      preventDefault() {
+        warned = true;
+      },
+    });
+    assert.equal(warned, true);
   } finally {
     f.scope.stop();
   }

@@ -16,6 +16,8 @@ const props = withDefaults(
   defineProps<{
     /** The editor's text (v-model). */
     modelValue: string;
+    /** Keep a separate model and view state for each open editor tab. */
+    documentKey?: string;
     /** Language id of the model. */
     language?: "kif" | "tptp";
     /** Read-only editor. */
@@ -61,6 +63,14 @@ const fallbackText = ref(props.modelValue);
 
 let monaco: MonacoNs | null = null;
 let unmounted = false;
+const documents = new Map<
+  string,
+  {
+    model: Monaco.editor.ITextModel;
+    view: Monaco.editor.ICodeEditorViewState | null;
+  }
+>();
+let currentDocument: string | undefined;
 
 const COMPACT_OPTIONS: Monaco.editor.IStandaloneEditorConstructionOptions = {
   lineNumbers: "off",
@@ -109,6 +119,9 @@ onMounted(async () => {
   monaco = m;
   const ed = m.editor.create(mount.value, constructionOptions());
   editor.value = ed;
+  currentDocument = props.documentKey;
+  if (currentDocument !== undefined && ed.getModel())
+    documents.set(currentDocument, { model: ed.getModel()!, view: null });
   ready.value = true;
   ed.onDidChangeModelContent(() => emit("update:modelValue", ed.getValue()));
   ed.onDidChangeCursorPosition((e) => {
@@ -129,14 +142,35 @@ onBeforeUnmount(() => {
   const model = ed.getModel();
   ed.dispose();
   model?.dispose();
+  for (const document of documents.values())
+    if (document.model !== model) document.model.dispose();
+  documents.clear();
   editor.value = null;
 });
 
 watch(
-  () => props.modelValue,
-  (v) => {
+  () => [props.documentKey, props.modelValue, props.language] as const,
+  ([key, v, language]) => {
     fallbackText.value = v;
     const ed = editor.value;
+    if (ed && monaco && key !== currentDocument) {
+      const previous =
+        currentDocument !== undefined && documents.get(currentDocument);
+      if (previous) previous.view = ed.saveViewState();
+      let document = key !== undefined ? documents.get(key) : undefined;
+      if (!document) {
+        document = {
+          model: monaco.editor.createModel(v, language),
+          view: null,
+        };
+        if (key !== undefined) documents.set(key, document);
+      }
+      const oldModel = ed.getModel();
+      ed.setModel(document.model);
+      if (currentDocument === undefined) oldModel?.dispose();
+      currentDocument = key;
+      if (document.view) ed.restoreViewState(document.view);
+    }
     if (ed && ed.getValue() !== v) {
       const pos = ed.getPosition();
       ed.setValue(v);
@@ -219,7 +253,16 @@ function getPosition(): { lineNumber: number; column: number } | null {
   return pos ? { lineNumber: pos.lineNumber, column: pos.column } : null;
 }
 
+/** Release a closed tab's model and undo history. */
+function closeDocument(key: string): void {
+  const document = documents.get(key);
+  if (!document || key === currentDocument) return;
+  document.model.dispose();
+  documents.delete(key);
+}
+
 defineExpose({
+  closeDocument,
   editor,
   setMarkers,
   revealLine,
