@@ -1,6 +1,6 @@
 /**
  * The `.kif.tq` harness directives Ask/Tell edits beside its panes: note,
- * categories, expected answer and required files, as form fields (lists
+ * categories, expected answer and includes, as form fields (lists
  * comma-separated). A test's `(time N)` is not here -- Ask/Tell keeps it as
  * the prover options' time limit, so there is one time input.
  *
@@ -17,7 +17,7 @@ export interface TestMeta {
   answer: ExpectedAnswer;
   /** Space-separated, for `answer: "bindings"`. */
   bindings: string;
-  files: string;
+  includes: string;
 }
 
 /** A new test's details: expects a proof, nothing else set. */
@@ -26,7 +26,7 @@ export const emptyTestMeta = (): TestMeta => ({
   categories: "",
   answer: "yes",
   bindings: "",
-  files: "",
+  includes: "",
 });
 
 /** A comma- (or newline-) separated form field as a list. */
@@ -50,7 +50,7 @@ export function metaFromTest(p: ParsedTest): TestMeta {
           ? "no"
           : "none",
     bindings: (p.expectedAnswer ?? []).join(" "),
-    files: (p.extraFiles ?? []).join(", "),
+    includes: (p.includes ?? []).join(", "),
   };
 }
 
@@ -76,7 +76,7 @@ export function testDirectives(m: TestMeta) {
   return {
     note: m.note.trim(),
     categories: splitList(m.categories),
-    extraFiles: splitList(m.files),
+    includes: splitList(m.includes),
     expectedProof: expectedProof(m),
     expectedAnswer:
       m.answer === "bindings" ? m.bindings.split(/\s+/).filter(Boolean) : null,

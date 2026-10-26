@@ -261,7 +261,7 @@ sumo test PATH... [-k FILE] [--backend NAME] [--lang fof|tff]
           [--timeout SECS] [--profile] [-f FILE]... [-d DIR]... [--db DIR]
 ```
 
-Test files are KIF-like but may contain special directives: `(note "…")`, `(time N)`, `(answer yes|no)`, `(query FORMULA)`. Everything else is treated as an axiom.
+Test files are KIF-like but may contain special directives: `(note "…")`, `(time N)`, `(answer yes|no)`, `(query FORMULA)`. `(include PATH)` declarations are preserved as metadata and ignored by proving and translation; they do not load files yet. Everything else is treated as an axiom.
 
 | Flag | Default | Description |
 |---|---|---|

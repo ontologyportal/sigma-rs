@@ -73,7 +73,7 @@ test("formatTest writes every harness directive", () => {
       note: "Astronomy_4",
       categories: ["Astronomy", "Space Science"],
       timeout: 30,
-      extraFiles: ["Astronomy.kif"],
+      includes: ["Astronomy.kif"],
       assertions: "(instance EX1 Exoplanet)",
       query: "(instance EX1 Planet)",
       expectedProof: true,
@@ -83,7 +83,7 @@ test("formatTest writes every harness directive", () => {
       "(category Astronomy)",
       '(category "Space Science")',
       "(time 30)",
-      '(file "Astronomy.kif")',
+      '(include "Astronomy.kif")',
       "(instance EX1 Exoplanet)",
       "(query (instance EX1 Planet))",
       "(answer yes)",
@@ -106,5 +106,18 @@ test("formatTest omits absent directives and prefers bindings", () => {
   assert.equal(
     formatTest({ query: "(p a)", expectedProof: false }),
     "(query (p a))\n(answer no)\n",
+  );
+});
+
+test("formatTest preserves include manifests and skips empty entries", () => {
+  assert.equal(
+    formatTest({
+      includes: [
+        "tests/CASC/axiom-sets/full.sources",
+        " ",
+        "a missing file.kif",
+      ],
+    }),
+    '(include "tests/CASC/axiom-sets/full.sources")\n(include "a missing file.kif")\n',
   );
 });

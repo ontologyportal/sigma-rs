@@ -30,7 +30,7 @@ const parsed = (over = {}) => ({
   axiomKif: "",
   expectedProof: true,
   expectedAnswer: null,
-  extraFiles: [],
+  includes: [],
   ...over,
 });
 
@@ -41,7 +41,7 @@ test("a parsed test fills the form; a default note stays blank", () => {
       note: "Astronomy_4",
       noteGiven: true,
       categories: ["Astronomy", "Space"],
-      extraFiles: ["Astronomy.kif"],
+      includes: ["Astronomy.kif"],
       expectedProof: false,
     }),
   );
@@ -52,7 +52,7 @@ test("a parsed test fills the form; a default note stays blank", () => {
       categories: "Astronomy, Space",
       answer: "no",
       bindings: "",
-      files: "Astronomy.kif",
+      includes: "Astronomy.kif",
     },
   );
   assert.equal(
@@ -87,11 +87,11 @@ test("directives round-trip the form for formatTest", () => {
     categories: "a, b,",
     answer: "bindings",
     bindings: "Rex  Fido",
-    files: "X.kif\nY.kif",
+    includes: "X.kif\nY.kif",
   });
   assert.equal(d.note, "SP01");
   assert.deepEqual([...d.categories], ["a", "b"]);
-  assert.deepEqual([...d.extraFiles], ["X.kif", "Y.kif"]);
+  assert.deepEqual([...d.includes], ["X.kif", "Y.kif"]);
   assert.equal(d.expectedProof, true);
   assert.deepEqual([...d.expectedAnswer], ["Rex", "Fido"]);
   assert.equal(

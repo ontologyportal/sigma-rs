@@ -1342,32 +1342,20 @@ mod tq_session_tests {
     }
 
     #[test]
-    fn tq_file_directive_warns_when_constituent_is_missing() {
+    fn tq_include_metadata_does_not_require_loaded_constituents() {
         let state = GlobalState::new();
         let uri = Url::parse("file:///tmp/t3.kif.tq").expect("url");
         let out = open(
             &state,
             &uri,
-            "(file \"Merge.kif\")\n(instance Rex Dog)\n(query (instance Rex Dog))",
+            "(include tests/CASC/axiom-sets/full.sources)\n(include \"Merge.kif\")\n(instance Rex Dog)\n(query (instance Rex Dog))",
         );
         let diags = published_messages(&out);
         assert!(
-            diags.iter().any(|m| m.contains("file-not-loaded")),
-            "expected a file-not-loaded warning, got: {diags:?}"
-        );
-
-        // Load a constituent with that basename; re-opening publishes clean.
-        let base = Url::parse("file:///tmp/Merge.kif").expect("url");
-        open(&state, &base, "(subclass Dog Mammal)");
-        let out2 = open(
-            &state,
-            &uri,
-            "(file \"Merge.kif\")\n(instance Rex Dog)\n(query (instance Rex Dog))",
-        );
-        let diags2 = published_messages(&out2);
-        assert!(
-            !diags2.iter().any(|m| m.contains("file-not-loaded")),
-            "warning must clear once the constituent is loaded: {diags2:?}"
+            diags
+                .iter()
+                .all(|m| !m.contains("file-not-loaded") && !m.contains("full.sources")),
+            "include metadata must not produce diagnostics: {diags:?}"
         );
     }
 

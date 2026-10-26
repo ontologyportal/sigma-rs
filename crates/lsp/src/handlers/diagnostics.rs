@@ -20,7 +20,7 @@ use lsp_server::{Message, Notification};
 use lsp_types::{PublishDiagnosticsParams, Url};
 use ropey::Rope;
 
-use sigmakee_rs_sdk::{AstNode, Diagnostic, KnowledgeBase, ParsedDocument, Severity, TopLayer};
+use sigmakee_rs_sdk::{KnowledgeBase, ParsedDocument, TopLayer};
 
 use crate::conv::{kb_diagnostic_to_lsp, uri_to_tag};
 use crate::state::GlobalState;
@@ -88,42 +88,6 @@ fn publish_diagnostics_filtered<L: TopLayer>(
             continue;
         }
         diagnostics.push(kb_diagnostic_to_lsp(rope, &d));
-    }
-
-    // (3) `.tq` directive checks.  `(file "X")` names a background library
-    // the test expects
-    if is_tq {
-        let loaded = kb.iter_files();
-        for meta in parsed
-            .ast
-            .iter()
-            .filter_map(|i| i.as_meta())
-            .filter(|m| m.key == "file")
-        {
-            for arg in &meta.args {
-                let name = match arg {
-                    AstNode::Str { value, .. } => value.trim_matches('"').to_string(),
-                    AstNode::Symbol { name, .. } => name.clone(),
-                    _ => continue,
-                };
-                let found = loaded.iter().any(|f| {
-                    f == &name
-                        || std::path::Path::new(f)
-                            .file_name()
-                            .is_some_and(|b| b == name.as_str())
-                });
-                if !found {
-                    let mut d = Diagnostic::new_error(
-                        "tq",
-                        "file-not-loaded",
-                        format!("background file '{name}' is not loaded as a KB constituent"),
-                    );
-                    d.severity = Severity::Warning;
-                    d.range = meta.span.clone();
-                    diagnostics.push(kb_diagnostic_to_lsp(rope, &d));
-                }
-            }
-        }
     }
 
     let params = PublishDiagnosticsParams {
