@@ -59,6 +59,33 @@ impl AuditFinding {
         }
     }
 
+    /// `true` when the finding holds no derivation of its own: one axiom
+    /// step per culprit closed by a synthesized `contradiction` step, as an
+    /// import without a recorded proof produces.
+    pub fn is_skeleton(&self) -> bool {
+        self.steps
+            .last()
+            .is_some_and(|s| s.rule == "contradiction" && s.source_sid.is_none())
+            && self.steps[..self.steps.len() - 1]
+                .iter()
+                .all(|s| s.premises.is_empty() && s.source_sid.is_some())
+    }
+
+    /// The record kept when `self` is already recorded and `newer` arrives
+    /// for the same culprits: the first record's identity (origin, time,
+    /// session) stands, but a real derivation replaces a skeleton.
+    pub(crate) fn merged_with(self: &Arc<Self>, newer: &Arc<Self>) -> Arc<Self> {
+        if self.is_skeleton() && !newer.is_skeleton() {
+            Arc::new(Self {
+                steps: newer.steps.clone(),
+                complete: newer.complete,
+                ..(**self).clone()
+            })
+        } else {
+            Arc::clone(self)
+        }
+    }
+
     /// Build a finding from a proof transcript (output from an audit call).
     /// The `source_sid`s are the culprits, and the proof is complete when every
     /// premise-free step that is not the (negated) conjecture cites one.
@@ -133,7 +160,14 @@ impl EagerMapBehavior for AuditFindings {
                     for &sid in &finding.culprits {
                         side.by_sid.entry(sid).or_default().insert(key.clone());
                     }
-                    store.update(key, Arc::clone(finding));
+                    // The same contradiction found again keeps its first
+                    // record (origin and time); only a missing derivation is
+                    // filled in.
+                    let value = match store.get(&key) {
+                        Some(existing) => existing.merged_with(finding),
+                        None => Arc::clone(finding),
+                    };
+                    store.update(key, value);
                 }
                 // When a given sentence is removed, evict any contradiction which was cause by it
                 Event::RootRemoved { sid, .. } => {
@@ -280,6 +314,38 @@ mod tests {
         }]);
         assert!(outcome.errors.is_empty(), "{:?}", outcome.errors);
         finding
+    }
+
+    #[test]
+    fn refinding_keeps_the_first_record_but_fills_in_a_skeleton() {
+        let layer = layer("(subclass Foo Entity) (subclass Bar Entity)");
+        let sids = layer.syntactic.by_head("subclass");
+        // An import without a proof: axiom steps plus a synthesized close.
+        let mut skeleton: Vec<KifProofStep> = sids
+            .iter()
+            .enumerate()
+            .map(|(i, &sid)| axiom_step(i, sid))
+            .collect();
+        skeleton.push(KifProofStep {
+            rule: "contradiction".into(),
+            ..false_step(2, vec![0, 1])
+        });
+        let imported = AuditFinding::from_steps(skeleton, None, "nightly".into(), 5).unwrap();
+        assert!(imported.is_skeleton());
+        let _ = layer.cascade(vec![Event::ContradictionFound {
+            finding: Arc::new(imported),
+        }]);
+        // A local audit re-derives it: origin and time stay, the proof lands.
+        let found = record(&layer, &sids, None);
+        assert!(!found.is_skeleton());
+        let all = layer.audit_findings();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].origin, "nightly");
+        assert_eq!(all[0].found_at_ms, 5);
+        assert_eq!(all[0].steps, found.steps);
+        // Found yet again: nothing changes.
+        record(&layer, &sids, None);
+        assert_eq!(layer.audit_findings()[0].origin, "nightly");
     }
 
     #[test]

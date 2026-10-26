@@ -200,11 +200,30 @@ impl Session {
                     })
             })
             .transpose()?;
-        let targeted: Vec<SentenceId> = focus.or(at).into_iter().collect();
+        let culprits: Vec<SentenceId> = match &req.culprits {
+            Some(keys) => {
+                let sids = sigmakee_rs_sdk::parse_sids(keys.iter().map(String::as_str))
+                    .map_err(|e| JsValue::from_str(&e))?;
+                if sids.is_empty() {
+                    return Err(JsValue::from_str("culprits names no sentences"));
+                }
+                if let Some(gone) = sids
+                    .iter()
+                    .find(|&&sid| session_guard.kb().sentence(sid).is_none())
+                {
+                    return Err(JsValue::from_str(&format!(
+                        "cited axiom {gone:016x} is no longer in the knowledge base"
+                    )));
+                }
+                sids
+            }
+            None => Vec::new(),
+        };
+        let targeted: Vec<SentenceId> = focus.or(at).into_iter().chain(culprits).collect();
         if !targeted.is_empty() {
             sample.step = 0;
-            sample.count = 1;
-            sample.batch = 1;
+            sample.count = targeted.len();
+            sample.batch = targeted.len();
         }
         let target = if targeted.is_empty() {
             sigmakee_rs_sdk::AuditTarget::Sweep(req.scope.as_deref())
@@ -232,6 +251,52 @@ impl Session {
                 to_js(&session_guard.audit_view(opts, sample, target))
             }
         }
+    }
+
+    /// Every contradiction recorded in the KB's audit-findings cache, newest
+    /// first: `{ key, culprits: { sid, kif, file, line }[], complete,
+    /// session, origin, found_at_ms, contradiction }` where `contradiction`
+    /// has the shape of an [`auditConsistency`](Session::audit_consistency)
+    /// contradiction.  Findings are recorded by every audit and by
+    /// [`importContradictions`](Session::import_contradictions), and dropped
+    /// as soon as one of their cited axioms leaves the KB.  `key` replays
+    /// through `auditConsistency({ culprits: [key] })`.
+    #[wasm_bindgen(js_name = auditFindings)]
+    pub fn audit_findings(&self) -> Result<JsValue, JsValue> {
+        let guard = self.session.read().expect("kb lock not poisoned");
+        to_js(&guard.audit_findings_view())
+    }
+
+    /// The recorded finding with `key`, or `null`.
+    #[wasm_bindgen(js_name = auditFinding)]
+    pub fn audit_finding(&self, key: &str) -> Result<JsValue, JsValue> {
+        let guard = self.session.read().expect("kb lock not poisoned");
+        let view = guard
+            .audit_finding_view(key)
+            .map_err(|e| JsValue::from_str(&e))?;
+        to_js(&view)
+    }
+
+    /// Import a contradiction report (`json`: a version 3 sigma-proof-report
+    /// audit, the nightly `latest-contradictions.json`, or `sumo audit
+    /// --json` output) under the label `origin`.  Each reported
+    /// contradiction whose cited axioms are all present is recorded; the
+    /// rest come back in `rejected` with the missing axioms.  Returns
+    /// `{ imported: AuditFinding[], rejected: { axioms, reason, missing }[] }`.
+    #[wasm_bindgen(js_name = importContradictions)]
+    pub fn import_contradictions(&self, json: &str, origin: &str) -> Result<JsValue, JsValue> {
+        let guard = self.session.read().expect("kb lock not poisoned");
+        let outcome = guard
+            .import_contradiction_report(json, origin)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        to_js(&outcome)
+    }
+
+    /// Forget every recorded contradiction.
+    #[wasm_bindgen(js_name = clearAuditFindings)]
+    pub fn clear_audit_findings(&self) {
+        let guard = self.session.read().expect("kb lock not poisoned");
+        guard.clear_audit_findings();
     }
 
     /// Parse formula identities in source order, without mutating the KB.
@@ -439,6 +504,7 @@ struct AuditRequest {
     budget: Option<usize>,
     depth: Option<usize>,
     at: Option<FocusAt>,
+    culprits: Option<Vec<String>>,
 }
 
 /// A position in a loaded file: `{ file, offset }`, offset in UTF-8 bytes.
@@ -474,6 +540,7 @@ impl Default for AuditRequest {
             budget: None,
             depth: None,
             at: None,
+            culprits: None,
         }
     }
 }

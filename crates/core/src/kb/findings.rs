@@ -212,6 +212,19 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
         steps: &[ReportedStep],
         origin: &str,
     ) -> Result<Arc<AuditFinding>, ImportRejection> {
+        self.import_contradiction_at(axioms, steps, origin, None)
+    }
+
+    /// [`import_contradiction`](Self::import_contradiction) stamped with the
+    /// report's own `found_at_ms` when it records one, so a finding restored
+    /// from a mirror keeps the time it was first found.
+    pub fn import_contradiction_at(
+        &self,
+        axioms: &[CitedAxiom],
+        steps: &[ReportedStep],
+        origin: &str,
+        found_at_ms: Option<u64>,
+    ) -> Result<Arc<AuditFinding>, ImportRejection> {
         if axioms.is_empty() {
             return Err(ImportRejection::NoAxioms);
         }
@@ -297,8 +310,13 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
                 });
             }
         }
-        let finding = AuditFinding::from_steps(out, None, origin.to_string(), unix_millis())
-            .ok_or(ImportRejection::NoAxioms)?;
+        let finding = AuditFinding::from_steps(
+            out,
+            None,
+            origin.to_string(),
+            found_at_ms.unwrap_or_else(unix_millis),
+        )
+        .ok_or(ImportRejection::NoAxioms)?;
         Ok(self.record_finding(finding))
     }
 }

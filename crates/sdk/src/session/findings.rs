@@ -30,6 +30,10 @@ pub struct ReportedContradiction {
     /// The recorded derivation, empty when the report carries none.
     #[serde(default)]
     pub steps: Vec<ReportedStep>,
+    /// When the report says the contradiction was first found (unix ms);
+    /// the import time otherwise.
+    #[serde(default)]
+    pub found_at_ms: Option<u64>,
 }
 
 /// Parse a contradiction report in any accepted shape.
@@ -63,7 +67,11 @@ pub fn parse_contradiction_report(json: &str) -> SdkResult<Vec<ReportedContradic
             .and_then(Value::as_array)
             .map(|proof| reported_steps(proof, &axioms))
             .unwrap_or_default();
-        return Ok(vec![ReportedContradiction { axioms, steps }]);
+        return Ok(vec![ReportedContradiction {
+            axioms,
+            steps,
+            found_at_ms: None,
+        }]);
     }
 
     if let Some(findings) = obj.get("findings").and_then(Value::as_array) {
@@ -73,6 +81,7 @@ pub fn parse_contradiction_report(json: &str) -> SdkResult<Vec<ReportedContradic
                 Ok(ReportedContradiction {
                     axioms: cited_axioms(f.get("axioms"))?,
                     steps: Vec::new(),
+                    found_at_ms: f.get("found_at_ms").and_then(Value::as_u64),
                 })
             })
             .collect();
@@ -88,7 +97,11 @@ pub fn parse_contradiction_report(json: &str) -> SdkResult<Vec<ReportedContradic
                     .and_then(Value::as_array)
                     .map(|proof| reported_steps(proof, &axioms))
                     .unwrap_or_default();
-                Ok(ReportedContradiction { axioms, steps })
+                Ok(ReportedContradiction {
+                    axioms,
+                    steps,
+                    found_at_ms: c.get("found_at_ms").and_then(Value::as_u64),
+                })
             })
             .collect();
     }
@@ -305,10 +318,12 @@ impl<L: TopLayer> Session<L> {
         let mut imported: Vec<Arc<AuditFinding>> = Vec::new();
         let mut rejected = Vec::new();
         for report in reports {
-            match self
-                .kb
-                .import_contradiction(&report.axioms, &report.steps, origin)
-            {
+            match self.kb.import_contradiction_at(
+                &report.axioms,
+                &report.steps,
+                origin,
+                report.found_at_ms,
+            ) {
                 Ok(finding) => imported.push(finding),
                 Err(rejection) => rejected.push(RejectedContradiction {
                     axioms: report.axioms.clone(),
