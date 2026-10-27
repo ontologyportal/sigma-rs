@@ -117,7 +117,13 @@ onMounted(async () => {
   }
   if (unmounted || !mount.value) return;
   monaco = m;
-  const ed = m.editor.create(mount.value, constructionOptions());
+  // Pass an explicit model: Monaco disposes a model it creates from value
+  // on the first setModel(), but document tabs must be able to restore it.
+  const initialModel = m.editor.createModel(props.modelValue, props.language);
+  const ed = m.editor.create(mount.value, {
+    ...constructionOptions(),
+    model: initialModel,
+  });
   editor.value = ed;
   currentDocument = props.documentKey;
   if (currentDocument !== undefined && ed.getModel())
