@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import ImportProofReport from "../components/ImportProofReport.vue";
-import { computed, onActivated, ref, shallowRef, watch } from "vue";
+import { computed, ref, shallowRef, watch } from "vue";
 import { AskResult, formatTest } from "sigmakee/sdk";
 import { useTabQuery } from "../composables/useTabQuery";
 import { useStatus } from "../composables/useStatus";
@@ -296,8 +296,9 @@ function openTest(t: TestEntry) {
     assertions.value = t.parsed.axiomKif || "";
     query.value = t.parsed.queryKif || "";
     meta.value = metaFromTest(t.parsed);
-    if (t.parsed.timeGiven)
-      prover.profiles.ask.timeLimitSecs = t.parsed.timeout;
+    prover.profiles.ask.timeLimitSecs = t.parsed.timeGiven
+      ? t.parsed.timeout
+      : profileDefaults("ask").timeLimitSecs;
     metaOpen.value = true;
   } else {
     prover.proofLang = "tptp";
@@ -321,10 +322,13 @@ watch(
   },
 );
 
-onActivated(() => {
-  const t = tests.openTest && tests.find(tests.openTest.name);
-  if (t && t.text !== loadedTestText) openTest(t);
-});
+watch(
+  () => tests.openTest && tests.find(tests.openTest.name)?.text,
+  () => {
+    const t = tests.openTest && tests.find(tests.openTest.name);
+    if (t && !savingTest.value && t.text !== loadedTestText) openTest(t);
+  },
+);
 
 const { onQuery, query: urlQuery, str } = useTabQuery(["prover"]);
 

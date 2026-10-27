@@ -855,3 +855,56 @@ test("inactive unnamed work still warns before leaving the page", async () => {
     f.scope.stop();
   }
 });
+
+for (const name of ["test.kif.tq", "test.p"])
+  test(`a saved ${name} update arriving after activation refreshes the raw buffer`, async () => {
+    const f = fixture();
+    try {
+      const original = { name, text: "original", origin: { kind: "file" } };
+      f.testFiles.set(name, original);
+      await f.editor.openFile(original);
+      for (const hook of f.hooks.activated) hook();
+      await f.tick(0);
+      f.calls.length = 0;
+      f.testFiles.set(name, { ...original, text: "saved from AskTell" });
+      await f.tick(0);
+      assert.equal(f.editor.text.value, "saved from AskTell");
+      assert.equal(f.editor.dirty.value, false);
+      await f.tick(10000);
+      assert.equal(
+        f.calls.some((c) => c[0] === "saveTest"),
+        false,
+      );
+      await f.editor.openFile(null);
+      await f.editor.openFile(f.testFiles.get(name));
+      assert.equal(f.editor.text.value, "saved from AskTell");
+    } finally {
+      f.scope.stop();
+    }
+  });
+
+test("external saves preserve unsaved raw edits and leave other files alone", async () => {
+  const f = fixture();
+  try {
+    const original = {
+      name: "test.kif.tq",
+      text: "original",
+      origin: { kind: "file" },
+    };
+    f.testFiles.set(original.name, original);
+    await f.editor.openFile(original);
+    f.editor.text.value = "raw draft";
+    f.testFiles.set(original.name, { ...original, text: "external save" });
+    await f.tick(0);
+    assert.equal(f.editor.text.value, "raw draft");
+    assert.equal(f.editor.dirty.value, true);
+    await f.editor.openFile(f.files.get("original.kif"));
+    f.testFiles.set(original.name, { ...original, text: "another save" });
+    await f.tick(0);
+    assert.equal(f.editor.text.value, "unsaved edits");
+    await f.editor.openFile(f.testFiles.get(original.name));
+    assert.equal(f.editor.text.value, "another save");
+  } finally {
+    f.scope.stop();
+  }
+});

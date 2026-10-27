@@ -148,17 +148,31 @@ for (const raw of ["", "malformed"])
     assert.equal(f.store.find("a.kif.tq").text, "old");
   });
 
-test("explicit raw target does not overwrite the different test open in AskTell", async () => {
-  const f = fixture();
-  await f.store.add("a.kif.tq", "a", f.local);
-  await f.store.add("b.kif.tq", "b", f.local);
-  f.store.setOpen(f.store.find("b.kif.tq"));
-  await f.store.saveCurrent("edited a", "kif", {
-    name: "a.kif.tq",
-    origin: f.local,
+for (const origin of [
+  { kind: "file" },
+  { kind: "sumo" },
+  { kind: "url", url: "https://example.org/a.kif.tq" },
+])
+  test(`explicit raw target from ${origin.kind} preserves the different test open in AskTell`, async () => {
+    const f = fixture();
+    await f.store.add("a.kif.tq", "a", origin);
+    await f.store.add("b.kif.tq", "b", f.local);
+    f.store.setOpen(f.store.find("b.kif.tq"));
+    await f.store.saveCurrent("edited a", "kif", {
+      name: "a.kif.tq",
+      origin,
+    });
+    assert.equal(f.store.find("a.kif.tq").text, "edited a");
+    assert.equal(f.store.find("b.kif.tq").text, "b");
+    assert.equal(f.store.openTest.name, "b.kif.tq");
   });
-  assert.equal(f.store.find("a.kif.tq").text, "edited a");
-  assert.equal(f.store.find("b.kif.tq").text, "b");
+
+test("saving a new raw test leaves AskTell's selection unchanged", async () => {
+  const f = fixture();
+  f.choose("new.kif.tq");
+  await f.store.saveCurrent("new raw test", "kif", null);
+  assert.equal(f.store.find("new.kif.tq").text, "new raw test");
+  assert.equal(f.store.openTest, null);
 });
 
 test("AskTell still saves its current test without an explicit target", async () => {
