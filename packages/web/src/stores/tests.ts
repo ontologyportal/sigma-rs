@@ -285,7 +285,7 @@ export const useTestsStore = defineStore("tests", {
      *  open, or a different dialect -- prompts for a new file name and saves
      *  as a new local test. `saved: false` means the user cancelled the name
      *  prompt. `target` lets the raw editor save a file independently of the
-     *  test currently open in Ask/Tell. */
+     *  test currently open in Ask/Tell without changing that selection. */
     async saveCurrent(
       text: string,
       dialect: TestDialect,
@@ -319,7 +319,8 @@ export const useTestsStore = defineStore("tests", {
         remote.text = text;
         remote.parsed = test;
         remote.outcome = null;
-        this.setOpen({ name: remote.name, origin: remote.origin });
+        if (target === undefined)
+          this.setOpen({ name: remote.name, origin: remote.origin });
         return { saved: true, name: remote.name, overwritten: true };
       }
       const canOverwrite =
@@ -355,11 +356,11 @@ export const useTestsStore = defineStore("tests", {
         existing.text = text;
         existing.parsed = test;
         existing.outcome = null;
-        this.setOpen({ name, origin });
+        if (target === undefined) this.setOpen({ name, origin });
         return { saved: true, name, overwritten: true };
       }
       const r = await this.add(name, text, origin);
-      if (r.added) this.setOpen({ name, origin });
+      if (r.added && target === undefined) this.setOpen({ name, origin });
       return { saved: r.added, name, overwritten: false, notices: r.notices };
     },
 

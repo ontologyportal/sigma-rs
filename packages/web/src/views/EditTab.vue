@@ -481,11 +481,17 @@ function dropTab(target: number) {
   tabs.value.splice(to, 0, tab!);
 }
 
-onActivated(() => {
-  const t =
-    editingTest.value && current.value && tests.find(current.value.name);
-  if (t && text.value === loadedText && t.text !== loadedText) openFile(t);
-});
+watch(
+  () =>
+    editingTest.value && current.value
+      ? tests.find(current.value.name)?.text
+      : undefined,
+  () => {
+    const t =
+      editingTest.value && current.value && tests.find(current.value.name);
+    if (t && text.value === loadedText && t.text !== loadedText) openFile(t);
+  },
+);
 
 async function onCreate() {
   if (await openFile(null)) updateParams({});
