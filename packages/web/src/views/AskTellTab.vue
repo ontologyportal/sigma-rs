@@ -204,6 +204,8 @@ async function prove() {
     }
     await prover.loadDefaults();
     const config = prover.config("ask");
+    if (!tptpMode.value && meta.value.minLang)
+      config.minLang = meta.value.minLang;
     runLimitSecs.value = config.timeLimitSecs ?? 0;
     let r: AskResult;
     let asserted = assertions.value.trim();

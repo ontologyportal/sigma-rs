@@ -103,6 +103,9 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
         // Scope the prover to the session the hypotheses were staged under,
         // so the engine force-includes them.
         let mut opts = opts.clone();
+        if let Some(minimum) = tc.min_lang {
+            opts.require_min_lang(minimum);
+        }
         opts.set_session(staged.session.clone());
 
         // The layer's `prove` warms up, prepares the conjecture (its own
@@ -820,6 +823,83 @@ fof(f4, plain, $false, inference(resolution, [], [f1, f3])).\n\
             .next()
             .expect("one formula");
         TestCase::conjecture("test::query", ast)
+    }
+
+    #[test]
+    fn tq_min_lang_tff_reaches_the_external_runner_and_export() {
+        let runner = Arc::new(Canned {
+            transcript: "% SZS status GaveUp for input\n",
+            seen: Mutex::new(Vec::new()),
+        });
+        let mut kb = kb_with(runner.clone());
+        let loaded = kb.reload_kif(
+            "(subclass RealNumber Number)
+             (subclass UnaryFunction Function)
+             (subclass BinaryFunction Function)
+             (subclass Function Relation)
+             (instance SubtractionFn BinaryFunction)
+             (domain SubtractionFn 1 RealNumber)
+             (domain SubtractionFn 2 RealNumber)
+             (range SubtractionFn RealNumber)
+             (instance lessThan BinaryPredicate)
+             (domain lessThan 1 RealNumber)
+             (domain lessThan 2 RealNumber)
+             (instance AbsoluteValueFn UnaryFunction)
+             (domain AbsoluteValueFn 1 RealNumber)
+             (range AbsoluteValueFn RealNumber)",
+            &std::path::PathBuf::from("arithmetic.kif"),
+            "arithmetic.kif",
+        );
+        assert!(loaded.ok, "{:?}", loaded.diagnostics);
+        kb.make_session_axiomatic("arithmetic.kif").unwrap();
+        let tc = crate::parse_test_content(
+            "(minLang tff)
+             (=> (lessThan ?N 0.0)
+                 (equal (AbsoluteValueFn ?N) (SubtractionFn 0.0 ?N)))
+             (query (equal (AbsoluteValueFn -5.0) 5.0))",
+            "arithmetic.kif.tq",
+        )
+        .unwrap();
+        let opts = ExternalOpts::default();
+        let exported = kb
+            .tc_to_tptp(tc.clone(), &crate::TptpOptions::default(), &opts)
+            .unwrap();
+        kb.ask(tc, &opts);
+        assert_eq!(
+            opts.mode,
+            crate::TptpLang::Fof,
+            "override must stay local to the case"
+        );
+        let seen = runner.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        for problem in [&exported, &seen[0]] {
+            assert!(problem.contains(", conjecture,"), "{problem}");
+            assert!(problem.contains("$less("), "{problem}");
+            assert!(problem.contains("$difference(0.0,"), "{problem}");
+            assert!(problem.contains("$real"), "{problem}");
+            assert!(problem.contains("(-5.0) = 5.0"), "{problem}");
+            assert!(!problem.contains("n__neg_5_0"), "{problem}");
+            assert!(!problem.contains("fof("), "{problem}");
+        }
+    }
+
+    #[test]
+    fn tq_minimum_does_not_downgrade_a_stronger_external_mode() {
+        use crate::{CommonProverOpts, TptpLang};
+        for (mode, minimum, expected) in [
+            (TptpLang::Fof, TptpLang::Tff, TptpLang::Tff),
+            (TptpLang::Tff, TptpLang::Fof, TptpLang::Tff),
+            (TptpLang::Thf, TptpLang::Tff, TptpLang::Thf),
+            (TptpLang::Auto, TptpLang::Tff, TptpLang::Tff),
+            (TptpLang::Auto, TptpLang::Fof, TptpLang::Auto),
+        ] {
+            let mut opts = ExternalOpts {
+                mode,
+                ..Default::default()
+            };
+            opts.require_min_lang(minimum);
+            assert_eq!(opts.mode, expected);
+        }
     }
 
     #[test]

@@ -237,6 +237,8 @@ export interface ParsedTest {
   expectedAnswer: string[] | null;
   /** `(include …)` directives — paths preserved as metadata; dependency loading is deferred. */
   includes: string[];
+  /** Minimum external-prover translation language; null when absent. */
+  minLang: "fof" | "tff" | "thf" | null;
 }
 
 /** The SUMO symbol constants the engine was compiled with (its
@@ -263,6 +265,7 @@ export function parseTptpTest(
 
 /** Render an Ask/Tell pair as `.kif.tq` text (pure; the inverse of {@link parseTest}). */
 export function formatTest(opts?: {
+  minLang?: "fof" | "tff" | "thf" | null;
   note?: string;
   /** `(time N)`; omitted when 0. */
   timeout?: number;

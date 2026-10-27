@@ -36,10 +36,17 @@ async function fixture() {
     return model;
   }
   let model;
+  let ownsModel = false;
   let position = { lineNumber: 1, column: 1 };
   const editor = {
     getModel: () => model,
     setModel(next) {
+      // Monaco owns and disposes a model created from editor options.value.
+      if (ownsModel && model !== next) {
+        model.dispose();
+        ownsModel = false;
+      }
+      if (next.disposed) throw new Error("Model is disposed!");
       model = next;
       position = { lineNumber: 1, column: 1 };
     },
@@ -62,7 +69,8 @@ async function fixture() {
   const monaco = {
     editor: {
       create(_host, options) {
-        model = createModel(options.value, options.language);
+        ownsModel = !options.model;
+        model = options.model ?? createModel(options.value, options.language);
         return editor;
       },
       createModel,

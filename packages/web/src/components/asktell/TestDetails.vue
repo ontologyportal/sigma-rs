@@ -15,6 +15,15 @@ const summary = computed(() => metaSummary(meta.value));
   <Disclosure :summary="summary" :open="open" @toggle="open = $event">
     <div class="meta-grid">
       <div>
+        <label for="tqMinLang">minimum language</label>
+        <select id="tqMinLang" v-model="meta.minLang">
+          <option value="">unspecified</option>
+          <option value="fof">FOF</option>
+          <option value="tff">TFF (typed arithmetic)</option>
+          <option value="thf">THF</option>
+        </select>
+      </div>
+      <div>
         <label for="tqNote">note</label>
         <input
           id="tqNote"

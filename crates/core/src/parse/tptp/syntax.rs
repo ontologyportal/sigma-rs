@@ -30,6 +30,17 @@ pub enum TptpLang {
 }
 
 impl TptpLang {
+    /// Raise an emission language to a test's minimum, retaining stronger modes.
+    pub fn at_least(self, minimum: Self) -> Self {
+        match (self, minimum) {
+            (Self::Thf, _) | (_, Self::Thf) => Self::Thf,
+            (Self::Tff, _) | (_, Self::Tff) => Self::Tff,
+            (Self::Auto, _) => Self::Auto,
+            (_, Self::Fof) => Self::Fof,
+            _ => self,
+        }
+    }
+
     /// The leading language keyword (`cnf`/`fof`/`tff`).  `Auto` has no keyword
     /// of its own and reports the untyped fallback `fof`.
     pub fn as_str(self) -> &'static str {

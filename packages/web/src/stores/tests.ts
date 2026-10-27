@@ -378,7 +378,10 @@ export const useTestsStore = defineStore("tests", {
       const { result } = await call("prove", {
         assertions: t.parsed.axiomKif,
         query,
-        config,
+        config: {
+          ...config,
+          ...(t.parsed.minLang ? { minLang: t.parsed.minLang } : {}),
+        },
         session: "__tq_test__",
       });
       t.outcome = { ...gradeTest(t.parsed, result), status: result.status };

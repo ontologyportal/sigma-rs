@@ -2,6 +2,18 @@
 
 **COMING SOON**
 
+## TQ minimum language
+
+Tests can declare `(minLang fof)`, `(minLang tff)`, or `(minLang thf)`.
+Inference Tests and Ask/Tell honor this minimum when generating external-prover
+input. TFF preserves interpreted arithmetic rather than hiding numeric literals
+as ordinary constants. A stronger configured language is retained. SUPr reads
+KIF directly and does not use a TPTP translation setting.
+
+Ask/Tell shows the directive under **Test details > minimum language** and
+preserves it when saving a test. Download TPTP input after an external run to
+inspect the language actually submitted to the prover.
+
 ## Editor autosave
 
 Named files save locally after 5 seconds without typing. Each edit restarts

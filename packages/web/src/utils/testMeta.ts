@@ -18,6 +18,7 @@ export interface TestMeta {
   /** Space-separated, for `answer: "bindings"`. */
   bindings: string;
   includes: string;
+  minLang: "" | "fof" | "tff" | "thf";
 }
 
 /** A new test's details: expects a proof, nothing else set. */
@@ -27,6 +28,7 @@ export const emptyTestMeta = (): TestMeta => ({
   answer: "yes",
   bindings: "",
   includes: "",
+  minLang: "",
 });
 
 /** A comma- (or newline-) separated form field as a list. */
@@ -51,6 +53,7 @@ export function metaFromTest(p: ParsedTest): TestMeta {
           : "none",
     bindings: (p.expectedAnswer ?? []).join(" "),
     includes: (p.includes ?? []).join(", "),
+    minLang: p.minLang ?? "",
   };
 }
 
@@ -64,6 +67,7 @@ export function metaSummary(m: TestMeta): string {
   if (m.note) parts.push(m.note);
   const cats = splitList(m.categories);
   if (cats.length) parts.push(cats.join(", "));
+  if (m.minLang) parts.push(`min ${m.minLang.toUpperCase()}`);
   if (m.answer !== "none")
     parts.push(
       `expects ${m.answer === "bindings" ? m.bindings || "bindings" : m.answer}`,
@@ -77,6 +81,7 @@ export function testDirectives(m: TestMeta) {
     note: m.note.trim(),
     categories: splitList(m.categories),
     includes: splitList(m.includes),
+    minLang: m.minLang || null,
     expectedProof: expectedProof(m),
     expectedAnswer:
       m.answer === "bindings" ? m.bindings.split(/\s+/).filter(Boolean) : null,

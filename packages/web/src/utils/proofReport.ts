@@ -237,6 +237,7 @@ export function parseProofReport(json: string): SharedProofReport {
       ...nums,
       ...bools,
       "backend",
+      "minLang",
       "vampireArgs",
       "selection",
       "strategy",
@@ -245,6 +246,8 @@ export function parseProofReport(json: string): SharedProofReport {
     bools.some((k) => k in c && typeof c[k] !== "boolean") ||
     (c.backend !== undefined &&
       !["native", "vampire", "e"].includes(String(c.backend))) ||
+    (c.minLang !== undefined &&
+      !["fof", "tff", "thf"].includes(String(c.minLang))) ||
     (c.vampireArgs !== undefined &&
       (!str(c.vampireArgs) || c.vampireArgs.length > 10000)) ||
     ["selection", "strategy"].some(

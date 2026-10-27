@@ -21,13 +21,14 @@ use crate::parse::doc::{CommentBlock, DocItem, MetaNode};
 use crate::parse::kif;
 use crate::parse::kif::error::KifParseError;
 use crate::parse::Span;
+use crate::TptpLang;
 use crate::{DiagResult, ToDiagnostic};
 
 /// Directive head keywords that classify a top-level `(kw …)` list as a
 /// [`MetaNode`] rather than a logical statement.  `query` is **not** here —
 /// it carries a formula, so it becomes a `Conjecture` statement.  Mirrors
 /// SigmaKEE's `InferenceTest.readTestFile`: the translation/prover switches
-/// (`minLang`, `regen`, `holUseModals`, ...) have no effect here, but must
+/// (`regen`, `holUseModals`, ...) have no effect here, but must
 /// still never be asserted as hypotheses.
 const DIRECTIVES: &[&str] = &[
     "note",
@@ -78,6 +79,8 @@ pub struct TestCase {
     pub axioms: Vec<AstNode>,
     /// Declared include paths, preserved as metadata without loading files.
     pub includes: Vec<String>,
+    /// Minimum external-prover translation language declared by `(minLang ...)`.
+    pub min_lang: Option<TptpLang>,
     /// The TPTP `% Status : <word>` header pragma, verbatim (`Theorem` /
     /// `Unsatisfiable` / `Satisfiable` / `CounterSatisfiable` / `Open` /
     /// `Unknown` / …), when the source carried a `status` [`MetaNode`].
@@ -121,6 +124,7 @@ impl TestCase {
             expected_answer: None,
             axioms: Vec::new(),
             includes: Vec::new(),
+            min_lang: None,
             expected_status: None,
             has_fof_conjecture: false,
             input_formulas: 0,
@@ -183,6 +187,7 @@ impl TestCase {
             expected_proof: None,
             axioms: Vec::new(),
             includes: Vec::new(),
+            min_lang: None,
             expected_status: None,
             has_fof_conjecture: false,
             input_formulas: 0,
@@ -251,6 +256,11 @@ impl TestCase {
     /// Fold one harness directive into the test case.
     fn apply_directive(&mut self, m: &MetaNode) {
         match m.key.as_str() {
+            "minLang" => {
+                if let Some(lang) = minimum_language(&m.args) {
+                    self.min_lang = Some(self.min_lang.map_or(lang, |old| old.at_least(lang)));
+                }
+            }
             "note" => {
                 if let Some(first) = m.args.first() {
                     self.note = directive_text(first);
@@ -303,6 +313,18 @@ impl TestCase {
 
 /// A directive argument as plain text: a string without its quotes, a symbol
 /// by name, anything else as KIF.
+fn minimum_language(args: &[AstNode]) -> Option<TptpLang> {
+    match args {
+        [arg] => match directive_text(arg).as_str() {
+            "fof" => Some(TptpLang::Fof),
+            "tff" => Some(TptpLang::Tff),
+            "thf" => Some(TptpLang::Thf),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn directive_text(node: &AstNode) -> String {
     match node {
         AstNode::Str { value, .. } => value.trim_matches('"').to_string(),
@@ -389,9 +411,20 @@ pub fn parse_tq(
     let (tokens, tok_err) = kif::tokenize(content, file);
     let comments = kif::comment_blocks(&tokens);
     let (nodes, parse_err) = kif::parse(tokens, file);
-    let items = nodes.into_iter().map(|n| classify(n, file)).collect();
+    let items: Vec<_> = nodes.into_iter().map(|n| classify(n, file)).collect();
     let mut errors = tok_err;
     errors.extend(parse_err);
+    for item in &items {
+        match item {
+            DocItem::Meta(m) if m.key == "minLang" && minimum_language(&m.args).is_none() => {
+                errors.push(KifParseError::Other {
+                    msg: "minLang expects exactly one language: fof, tff, or thf".into(),
+                    span: m.span.clone(),
+                });
+            }
+            _ => {}
+        }
+    }
     (items, errors, comments)
 }
 
@@ -444,6 +477,37 @@ pub fn parse_test_content(content: &str, file_name: &str) -> DiagResult<TestCase
 mod tests {
     use super::*;
     use crate::parse::Parser;
+
+    #[test]
+    fn min_lang_preserves_the_strongest_requirement() {
+        for (directives, expected) in [
+            ("", None),
+            ("(minLang fof)", Some(TptpLang::Fof)),
+            ("(minLang tff)", Some(TptpLang::Tff)),
+            ("(minLang thf) (minLang tff)", Some(TptpLang::Thf)),
+            ("(minLang tff) (minLang fof)", Some(TptpLang::Tff)),
+        ] {
+            let tc =
+                parse_test_content(&format!("{directives} (query (p a))"), "T.kif.tq").unwrap();
+            assert_eq!(tc.min_lang, expected);
+            assert!(tc.axioms.is_empty());
+        }
+    }
+
+    #[test]
+    fn min_lang_rejects_invalid_or_missing_languages() {
+        for directive in [
+            "(minLang auto)",
+            "(minLang typo)",
+            "(minLang tff fof)",
+            "(minLang)",
+        ] {
+            assert!(
+                parse_test_content(&format!("{directive} (query (p a))"), "T.kif.tq").is_err(),
+                "{directive}"
+            );
+        }
+    }
 
     #[test]
     fn classifies_axioms_query_and_metadata() {

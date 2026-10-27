@@ -1213,7 +1213,9 @@ function onJump({ line, col }: { line: number; col: number }) {
               :title="tab.file?.name ?? 'New file (unsaved)'"
               @click="selectTab(tab)"
             >
-              {{ tab.file?.name ?? "New file (unsaved)" }}
+              <span class="tab-name">{{
+                tab.file?.name ?? "New file (unsaved)"
+              }}</span>
               <span
                 v-if="
                   tab.id === activeTab
@@ -1382,6 +1384,8 @@ a.jump-diag:hover {
 .editor-file-tab {
   display: flex;
   flex-shrink: 0;
+  max-width: 220px;
+  min-width: 0;
   border-right: 1px solid var(--line);
   border-bottom: 2px solid transparent;
 }
@@ -1399,10 +1403,22 @@ a.jump-diag:hover {
   color: var(--muted);
   padding: 8px 10px;
 }
+.editor-file-tab button[role="tab"] {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.tab-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .editor-file-tab.active button {
   color: var(--fg);
 }
 .editor-file-tab .close-tab {
+  flex-shrink: 0;
   padding: 8px;
 }
 .editor-file-tab button:hover {
