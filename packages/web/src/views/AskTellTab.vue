@@ -129,6 +129,8 @@ const testActive = computed(
   () => !tptpMode.value && (!!tests.openTest || metaOpen.value),
 );
 const resultBackend = ref("");
+/** The query `result` answers, as proved (the pane may have changed since). */
+const resultQuery = ref("");
 const error = ref("");
 
 const backendBadge = computed(() =>
@@ -233,6 +235,7 @@ async function prove() {
     error.value = "";
     result.value = r;
     resultBackend.value = backend;
+    resultQuery.value = asked.trim();
     recordRun(asked, asserted, r.status, backend);
     const expected = expectedProof(meta.value);
     if (testActive.value && expected !== null)
@@ -567,6 +570,8 @@ async function saveTest() {
           :prose-missing="result.prose_missing"
           :graphviz="result.graphviz"
           :raw-output="result.raw_output"
+          explain-kind="ask"
+          :explain-query="resultQuery"
         />
         <div v-if="shareReport" class="proof-actions">
           <ShareProof :report="shareReport" />

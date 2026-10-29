@@ -1,0 +1,18 @@
+{
+  // The Pages Functions under functions/ run in the Workers runtime: neither
+  // DOM (tsconfig.json) nor WebWorker (tsconfig.worker.json) globals, but
+  // @cloudflare/workers-types' (KVNamespace, PagesFunction, ...).
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "types": ["@cloudflare/workers-types"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "isolatedModules": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "strict": true
+  },
+  "include": ["functions"]
+}

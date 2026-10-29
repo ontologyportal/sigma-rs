@@ -237,6 +237,61 @@ node --test packages/web/src/api/push.test.mjs packages/web/src/components/edit/
 node packages/web/e2e/push.mjs
 ```
 
+## Explaining proofs with AI
+
+Signed-in users can choose **Explain with AI** below an Ask/Tell proof or an
+audit contradiction. For an Ask/Tell proof the model restates the query and
+explains how the premises yield it. For a contradiction it names the
+conflicting axioms by file and line, explains why they clash, and proposes one
+to three possible fixes. Explanations are generated only when you click, are
+cached by proof content, and can be wrong: check them against the proof steps.
+Proofs over 60 steps cannot be explained.
+
+The model runs in the site's Worker (`functions/api/explain.ts`, pipeline in
+`functions/_utils/explain-handler.ts`). It accepts only proof steps, never a
+free-form prompt, and requires a GitHub sign-in: the OAuth session cookie or,
+for personal-token sign-ins, the token as a bearer header. Spend is bounded by
+per-minute limits per user and per IP, a per-user daily count, and a global
+daily neuron budget that fails closed. The budget defaults to 9,000 neurons,
+inside Workers AI's free allocation of 10,000 per day, so explanations cost
+nothing. Explanations pause until 00:00 UTC once it is spent, or as soon as
+Workers AI reports the account's free allocation used up. Each user gets 20
+uncached explanations per day. The model is GLM 5.3 Flash at low
+reasoning effort, the best of the formats and settings compared by the
+experiment in `scripts/explain-eval/`; it needs a paid billing method on
+Workers AI (Workers Paid keeps the 10,000 free neurons per day). Caps and the
+model's neuron rates are recorded in `wrangler.jsonc`.
+
+To enable it on a deployment:
+
+1. Create the cache and counter namespace and uncomment the `EXPLAIN` KV
+   binding in `wrangler.jsonc` with the printed id:
+   ```sh
+   npx wrangler kv namespace create EXPLAIN
+   ```
+2. Deploy. The `AI` binding, rate limiters and `EXPLAIN_*` variables are
+   already configured. Without the `EXPLAIN` binding the endpoint reports
+   itself disabled and the button stays hidden.
+3. Optionally create an AI Gateway and set its id as `EXPLAIN_GATEWAY` for
+   request logs and a manual kill switch. The free allocation is shared by
+   all Workers AI use on the account; lower `EXPLAIN_DAILY_CAP` if anything
+   else uses it.
+
+Each uncached explanation writes three KV keys, so the Workers Free plan's KV
+write quota allows roughly 300 explanations per day, enough for the
+free neuron budget.
+
+For local development, `npm run dev` binds a local `EXPLAIN` namespace but no
+model. Add `--ai=AI` to the `dev:http` script to use Workers AI; it runs
+remotely, needs `npx wrangler login`, and is billed to that account.
+
+Tests:
+
+```sh
+npm run test:functions --workspace @sigma/web   # validation, prompt, handler
+npm run test:e2e:explain --workspace @sigma/web # browser, mocked /api
+```
+
 ## Sharing proof results
 
 Use **Share result** on an Ask/Tell result or an audit contradiction, then

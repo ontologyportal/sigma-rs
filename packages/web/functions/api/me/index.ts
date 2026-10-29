@@ -5,7 +5,7 @@
 // invocation and a second KV read to answer the same "who is logged in"
 // question.
 
-import { getGithubToken } from "../../_utils/session";
+import { getSession, setSessionLogin } from "../../_utils/session";
 
 interface Env {
   SESSIONS: KVNamespace;
@@ -18,8 +18,9 @@ interface GithubUser {
 }
 
 export const onRequestGet: PagesFunction<Env> = async (context) => {
-  const token = await getGithubToken(context.request, context.env);
-  if (!token) {
+  const session = await getSession(context.request, context.env);
+  const token = session?.accessToken;
+  if (!session || !token) {
     return new Response("Not logged in", { status: 401 });
   }
 
@@ -41,6 +42,8 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
   }
 
   const user = (await res.json()) as GithubUser;
+  if (session.login !== user.login)
+    await setSessionLogin(session.sessionId, user.login, context.env);
 
   return new Response(
     JSON.stringify({

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-/** One release's rendered notes (`renderReleaseNotes` output) and a link to
+/** One release's rendered notes (`renderMarkdown` output) and a link to
  *  its page on GitHub. */
 defineProps<{
   html: string | null;
