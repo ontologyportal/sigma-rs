@@ -151,6 +151,13 @@ pub(crate) enum Event {
     #[allow(dead_code)] // parked: see `ValidateKB`
     ValidateSession { session: String },
 
+    /// A consistency audit (or an import) established a contradiction among
+    /// the finding's cited axioms.
+    #[cfg(any(feature = "external-prover", feature = "native-prover"))]
+    ContradictionFound {
+        finding: Arc<crate::semantics::caches::audit_findings::AuditFinding>,
+    },
+
     // ---- diagnostics (emitted by any reactor, consumed by none) ----
     /// A warning or non-fatal error surfaced by a reactor.  No reactor
     /// `consumes` it (it never participates in the schedule); the router peels
@@ -220,6 +227,12 @@ pub(crate) enum EventKind {
     ValidateSentence,
     /// Validate every sentence in a session's scope.
     ValidateSession,
+    /// A consistency audit or an import established a contradiction.
+    #[cfg_attr(
+        not(any(feature = "external-prover", feature = "native-prover")),
+        allow(dead_code)
+    )]
+    ContradictionFound,
     /// A warning or non-fatal error surfaced by a reactor.
     Diagnostic,
 }
@@ -254,6 +267,8 @@ impl Event {
             Event::ValidateKB => EventKind::ValidateKB,
             Event::ValidateSentence { .. } => EventKind::ValidateSentence,
             Event::ValidateSession { .. } => EventKind::ValidateSession,
+            #[cfg(any(feature = "external-prover", feature = "native-prover"))]
+            Event::ContradictionFound { .. } => EventKind::ContradictionFound,
             Event::Diagnostic(_) => EventKind::Diagnostic,
             Event::NumericSortRemoved(_) => EventKind::NumericSortRemoved,
             Event::NumericSortAdded(_) => EventKind::NumericSortAdded,

@@ -179,6 +179,19 @@ impl<T: HasTranslation + 'static> ProvingLayer for ExternalProverLayer<T> {
         self.translation().ensure_rewrite_pass();
     }
 
+    fn backend_name(&self) -> &'static str {
+        match &self.backend {
+            #[cfg(feature = "ask")]
+            Prover::VampireSubprocess(_) => "vampire",
+            #[cfg(feature = "ask")]
+            Prover::Eprover(_) => "eprover",
+            #[cfg(feature = "integrated-prover")]
+            Prover::VampireIntegrated(_) => "vampire",
+            Prover::Custom(_) => "external",
+            Prover::None => "none",
+        }
+    }
+
     /// Intern the conjecture into the **shared store** under a fresh query tag
     /// (the `&self` cascade) so the TPTP builder can resolve + mark it, and
     /// resolve its roots into `Conjecture.sents`.  The shared `prepare`

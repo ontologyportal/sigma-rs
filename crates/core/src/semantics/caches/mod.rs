@@ -10,6 +10,10 @@ pub(crate) mod tax_edges;
 // Validation cache
 pub(crate) mod validate;
 
+// Contradictions found by consistency audits, kept across runs
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
+pub(crate) mod audit_findings;
+
 // IS-A queries
 pub(crate) mod disjoint;
 pub(crate) mod has_ancestor;

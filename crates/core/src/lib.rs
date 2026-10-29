@@ -63,12 +63,9 @@ pub use crate::trans::TranslationLayer;
 /// A generic trait used to control the active KB layer.
 pub use crate::layer::TopLayer;
 
-/// Monotonic-clock shim (`std::time::Instant` off wasm32, a `Date.now()`
-/// work-alike on it, since `Instant::now()` panics there). Any caller that
-/// needs to measure elapsed time or compute a deadline and might run on
-/// wasm32 -- rather than only `cfg(not(target_arch = "wasm32"))` -- should
-/// use this instead of `std::time::Instant` directly.
-pub use crate::clock::Instant;
+/// Wasm-safe time types. TODO, consumers should do this
+/// directly
+pub use crate::clock::{unix_millis, Instant, SystemTime, UNIX_EPOCH};
 
 pub use crate::trans::HasTranslation;
 
@@ -114,6 +111,8 @@ pub use cache::CacheConfig;
 #[cfg(feature = "native-prover")]
 pub use kb::clausify::{MatchMode, MatchOpts, MatchPolarity};
 pub use kb::dis::SentenceForm;
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
+pub use kb::findings::{AuditFinding, CitedAxiom, ImportRejection, ReportedStep};
 pub use kb::man::{ManKind, ManPage, ParentEdge, SentenceRef, SortSig};
 #[cfg(any(feature = "external-prover", feature = "native-prover"))]
 pub use kb::prove::{AuditBatch, AuditSample, SampledAudit};

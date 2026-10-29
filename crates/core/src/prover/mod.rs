@@ -85,6 +85,13 @@ pub trait ProvingLayer: TopLayer {
     /// Default no-op (the native layer needs none).
     fn warm_up(&self) {}
 
+    /// A short label for the engine behind this layer (`"native"`,
+    /// `"vampire"`, `"eprover"`, ...), recorded on the contradictions it
+    /// finds.  Default: the native saturation prover.
+    fn backend_name(&self) -> &'static str {
+        "native"
+    }
+
     /// Intern the normalized conjecture where this backend's engine resolves it
     /// — native into its prover-local atom table, external into the shared
     /// store under a query tag — returning the conjecture roots as

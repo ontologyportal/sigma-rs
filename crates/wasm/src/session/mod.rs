@@ -65,8 +65,6 @@ impl Session {
         let config = Config::new();
         let runner = Arc::new(WasmExternalRunner::default());
         Self {
-            // Explicit session name: `from_kb(.., None)` generates one from
-            // `SystemTime::now()`, which panics on wasm32-unknown-unknown.
             session: std::sync::Arc::new(std::sync::RwLock::new(
                 sigmakee_rs_sdk::Session::from_kb(
                     KnowledgeBase::new_external_native(Prover::Custom(runner.clone())),

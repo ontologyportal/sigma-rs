@@ -89,6 +89,7 @@ itertools                   = "0.14"
 # explicitly at compile time — see .cargo/config.toml's wasm32 rustflags.
 graphviz-rust                = "0.9.8"
 getrandom                    = { version = "0.3", features = ["wasm_js"] }
+web-time                     = "1.1"
 
 # persist feature
 heed    = { version = "0.20", features = ["serde-bincode"], optional = true }
@@ -122,12 +123,6 @@ vampire-prover = { git = "https://github.com/theo-kim/vampire-rs", rev = "513435
 
 # Direct vampire-sys access for the clausify path (integrated-prover only).
 vampire-sys = { git = "https://github.com/theo-kim/vampire-rs", rev = "513435d3088cf740b326a97e91f69b18e3e0728c", optional = true }
-
-# wasm32 has no system clock: `std::time::Instant::now()` /
-# `SystemTime::now()` panic at runtime.  `crate::clock` backs those with
-# `js_sys::Date::now()` on wasm only, so `js-sys` is a wasm-target dep.
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-js-sys = "0.3"
 
 [dev-dependencies]
 env_logger = "0.11"

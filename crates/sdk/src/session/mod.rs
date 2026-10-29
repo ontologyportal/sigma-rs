@@ -29,7 +29,6 @@ pub mod views;
 // module is native-prover-specific (the external arm errors as "unwired").
 #[cfg(feature = "native-prover")]
 mod ask;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(feature = "native-prover")]
 pub use ask::{szs_status, ExpectedOutcome, OpenSession, SzsStatus, TestCaseOutcome, TestOutcome};
@@ -40,6 +39,7 @@ use sigmakee_rs_core::TopLayer;
 use sigmakee_rs_core::{DynSink, KnowledgeBase, TranslationLayer};
 #[cfg(feature = "external-prover")]
 use sigmakee_rs_core::{ExternalProverLayer, Prover};
+use sigmakee_rs_core::{SystemTime, UNIX_EPOCH};
 
 /// Which top layer (and prover) backs a [`Session`].
 pub enum Backend {
@@ -199,8 +199,10 @@ impl<L: TopLayer> Session<L> {
     }
 
     fn uuid() -> String {
-        let d = SystemTime::now().duration_since(UNIX_EPOCH);
-        format!("{:x}", d.unwrap().as_nanos())
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        format!("{nanos:x}")
     }
 }
 

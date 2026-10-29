@@ -22,6 +22,8 @@ use crate::syntactic::SyntacticLayer;
 use crate::types::{Element, Sentence, SentenceId, SymbolId};
 
 use caches::arity::Arity;
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
+use caches::audit_findings::AuditFindings;
 use caches::defining_sentences::DefiningSentences;
 use caches::disjoint::Disjoint;
 use caches::doc_coverage::DocCoverageCache;
@@ -86,6 +88,10 @@ pub struct SemanticLayer {
     pub(crate) inferred_class: Cache<InferredClass>,
     /// Validation cache. See [`caches::validate`]. Disabled by default
     pub(crate) validate: Cache<Validate>,
+    /// Contradictions found by consistency audits.  See
+    /// [`caches::audit_findings`].
+    #[cfg(any(feature = "external-prover", feature = "native-prover"))]
+    pub(crate) audit_findings: EagerMap<AuditFindings>,
 
     /// A relation's below-set (subrelation lattice incl. mined
     /// rule-edges), with witness pointers.  See [`caches::subrel_lattice`].
@@ -128,6 +134,8 @@ impl SemanticLayer {
             domain: Cache::new(cfg, Domain),
             range: Cache::new(cfg, Range),
             validate: Cache::new(cfg, Validate),
+            #[cfg(any(feature = "external-prover", feature = "native-prover"))]
+            audit_findings: EagerMap::new(cfg, AuditFindings),
 
             documentation: Cache::new(cfg, Documentation),
             defining_sentences: WholeCache::new(cfg, DefiningSentences),
@@ -314,13 +322,20 @@ impl Layer for SemanticLayer {
             bind(&self.trans_reach, self),
             bind(&self.transitive_relations, self),
             bind(&self.validate, self),
+            #[cfg(any(feature = "external-prover", feature = "native-prover"))]
+            bind(&self.audit_findings, self),
         ]
     }
 
     fn own_persistable(&self) -> Vec<&dyn crate::cache::persistence::PersistableCache> {
-        // Only the eagerly-maintained taxonomy edges are primary state; every
-        // other semantic cache is a lazy query cache that recomputes on a miss.
-        vec![&self.tax_edges]
+        // The eagerly-maintained taxonomy edges and the recorded audit
+        // findings are primary state; every other semantic cache is a lazy
+        // query cache that recomputes on a miss.
+        vec![
+            &self.tax_edges,
+            #[cfg(any(feature = "external-prover", feature = "native-prover"))]
+            &self.audit_findings,
+        ]
     }
 
     fn initialize_own_caches(&self) {
