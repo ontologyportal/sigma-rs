@@ -1442,6 +1442,11 @@ a.jump-diag:hover {
   display: flex;
   flex-direction: column;
   height: 520px;
+  min-height: 240px;
+  resize: vertical;
+  overflow: hidden;
+  padding-bottom: 12px;
+  box-sizing: border-box;
 }
 /* TPTP preview pane: BELOW the editor normally, BESIDE it in fullscreen
    (see the body.edit-fullscreen rules further down). The toggle button
@@ -1486,6 +1491,9 @@ a.jump-diag:hover {
 :global(body.edit-fullscreen) .editor-container {
   flex: 1 1 auto;
   height: auto;
+  min-height: 0;
+  resize: none;
+  padding-bottom: 0;
 }
 /* Fullscreen flips the pane to the side: row layout, equal halves, both
    columns fluid-height. */
