@@ -599,10 +599,14 @@ async function saveTest() {
   margin-top: 10px;
 }
 .pane-editor {
-  height: 96px;
+  height: 200px;
+  min-height: 100px;
+  resize: vertical;
+  padding-bottom: 12px;
+  box-sizing: border-box;
   border: 1px solid var(--line);
   border-radius: 7px;
-  overflow: visible;
+  overflow: hidden;
 }
 .test-outcome {
   font-size: 12px;
@@ -620,8 +624,11 @@ async function saveTest() {
   background: color-mix(in srgb, var(--bad) 18%, transparent);
   color: var(--bad);
 }
+.pane-editor :deep(.monaco-host) {
+  min-height: 0;
+}
 .pane-editor-sm {
-  height: 56px;
+  height: 140px;
 }
 .pane-editor-tall {
   height: 320px;
