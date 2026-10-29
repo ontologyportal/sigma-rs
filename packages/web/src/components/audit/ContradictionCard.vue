@@ -46,6 +46,7 @@ const emit = defineEmits<{ "update:collapsed": [collapsed: boolean] }>();
       :graphviz="contradiction.graphviz"
       :steps-summary="proofSummary(contradiction.steps)"
       :steps-open="!collapsed"
+      explain-kind="contradiction"
       @steps-toggle="emit('update:collapsed', !$event)"
     />
     <div class="contradiction-actions">

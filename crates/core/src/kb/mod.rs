@@ -21,6 +21,8 @@ pub mod dis;
 #[cfg(feature = "native-prover")]
 pub mod doxastic;
 pub mod export;
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
+pub mod findings;
 pub mod ingest;
 pub mod man;
 #[cfg(any(feature = "snapshot", feature = "persist"))]

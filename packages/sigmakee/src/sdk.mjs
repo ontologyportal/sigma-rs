@@ -404,6 +404,42 @@ export class Session {
   }
 
   /**
+   * Every contradiction recorded in the KB's findings cache, newest first.
+   * Recorded by every audit and by {@link importContradictions}; a finding
+   * is dropped as soon as one of its cited axioms leaves the KB.
+   * @returns {import('./sdk').AuditFinding[]}
+   */
+  auditFindings() {
+    return this.#kb.auditFindings();
+  }
+
+  /**
+   * The recorded finding with `key`, or `null`.
+   * @param {string} key
+   * @returns {import('./sdk').AuditFinding | null}
+   */
+  auditFinding(key) {
+    return this.#kb.auditFinding(key);
+  }
+
+  /**
+   * Record a contradiction report's entries whose cited axioms are all
+   * loaded; the rest come back as `rejected` with the missing axioms.
+   * @param {string} json a version 3 `sigma-proof-report` audit, the nightly
+   *   `latest-contradictions.json`, or `sumo audit --json` output
+   * @param {string} origin label recorded on each finding
+   * @returns {import('./sdk').ImportOutcome}
+   */
+  importContradictions(json, origin) {
+    return this.#kb.importContradictions(json, origin);
+  }
+
+  /** Forget every recorded contradiction. */
+  clearAuditFindings() {
+    this.#kb.clearAuditFindings();
+  }
+
+  /**
    * The root sentence enclosing UTF-8 byte `offset` of loaded file `file`
    * (what an audit `focus` resolves to), or `null` when none does.
    * @param {string} file

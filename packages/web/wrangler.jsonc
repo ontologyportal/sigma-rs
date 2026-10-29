@@ -12,5 +12,46 @@
       "binding": "SESSIONS",
       "id": "2dcf985ed06d4be0815114ef0589c47a",
     },
+    // Proof explanations (functions/_utils/explain-handler.ts): cache +
+    // counters. Create with `npx wrangler kv namespace create EXPLAIN`, then
+    // uncomment with the printed id. Without this binding /api/explain
+    // reports disabled and the web app hides the Explain button.
+    {
+      "binding": "EXPLAIN",
+       "id": "36761dbc07504bfe8a63405e0b2a5f85"
+    },
   ],
+  // Workers AI, for /api/explain.
+  "ai": { "binding": "AI" },
+  // Per-minute limits on /api/explain (period must be 10 or 60 seconds).
+  "ratelimits": [
+    {
+      "name": "EXPLAIN_RL_USER",
+      "namespace_id": "1001",
+      "simple": { "limit": 10, "period": 60 },
+    },
+    {
+      "name": "EXPLAIN_RL_IP",
+      "namespace_id": "1002",
+      "simple": { "limit": 30, "period": 60 },
+    },
+  ],
+  "vars": {
+    // @cf/zai-org/glm-5.3-flash, at low reasoning effort: 13,636 / 45,455
+    // neurons per M input / output tokens (price list read 2026-10-26).
+    // Needs a paid billing method (Workers Paid, or prepaid AI Gateway
+    // credits). Measured on the format experiment: ~30 neurons per
+    // contradiction, ~20 per Ask/Tell proof. Largest allowed request (~16k
+    // input + 1,200 output tokens) ~= 275 neurons.
+    "EXPLAIN_MODEL": "@cf/zai-org/glm-5.3-flash",
+    // Global neurons per UTC day, kept inside Workers AI's 10,000 free
+    // neurons/day (resets 00:00 UTC; Workers Paid keeps it) so explanations
+    // add nothing to the bill: ~300-450 explanations a day. The 10% margin
+    // covers KV's eventual consistency, token-estimate error and other
+    // Workers AI use on the account, which shares the allocation.
+    "EXPLAIN_DAILY_CAP": "9000",
+    // Explanations per GitHub login per UTC day (cache hits are free):
+    // typically ~600 neurons, ~5,500 if every proof is maximum size.
+    "EXPLAIN_USER_DAILY": "20",
+  },
 }

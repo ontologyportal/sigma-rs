@@ -61,6 +61,14 @@ export const UPDATE_PREFS_KEY = "sumoBrowserUpdatePrefs";
  *  seen for each source, checked against on the next update pass -- see
  *  `useKBStore.updateBaselines`. */
 export const UPDATE_BASELINES_KEY = "sumoBrowserUpdateBaselines";
+/** Where recorded contradictions are watched for: GitHub issue trackers,
+ *  report URLs and one-shot uploads -- see `useContradictionsStore`. */
+export const CONTRADICTION_SOURCES_KEY = "sumoBrowserContradictionSources";
+/** Per-contradiction-source update preference, keyed by source id. */
+export const CONTRADICTION_PREFS_KEY = "sumoBrowserContradictionPrefs";
+/** The last report hash (URL sources) or newest issue number (GitHub
+ *  sources) imported from each contradiction source. */
+export const CONTRADICTION_BASELINES_KEY = "sumoBrowserContradictionBaselines";
 
 /** Tabs that need the KB axiomatized; greyed while a promote is in flight. */
 export const PROMOTE_TABS: readonly TabName[] = [

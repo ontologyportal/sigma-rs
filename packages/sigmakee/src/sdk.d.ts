@@ -63,6 +63,11 @@ export interface AuditStep {
 export interface AuditRequest {
   /** Recheck a tracked source formula instead of an unstable sweep position. Native only. */
   focus?: { file: string; source: string; kif: string; unchanged: boolean };
+  /** Replay recorded contradictions: audit exactly these cited axioms
+   *  together (finding keys or 16-hex sentence ids, see
+   *  {@link AuditFinding.key}) instead of a sweep. Throws when one of them
+   *  is no longer in the KB. */
+  culprits?: string[];
   /** Seed of the pseudorandom sweep order (default 0). */
   seed?: number;
   /** Sweep position to start from (default 0). */
@@ -152,6 +157,65 @@ export interface AuditResult {
     prose_missing: string[];
     /** See {@link AskResult.proof_tptp_prologue}. */
     proof_tptp_prologue: string;
+  }>;
+}
+
+/** One distinct contradiction of an {@link AuditResult}. */
+export type AuditContradiction = AuditResult["contradictions"][number];
+
+/** An axiom a recorded contradiction cites (see {@link AuditFinding}). */
+export interface AuditCulprit {
+  /** The sentence id as 16 hex digits. */
+  sid: string;
+  kif: string;
+  file: string | null;
+  line: number | null;
+}
+
+/** A contradiction recorded in the KB's findings cache (see
+ *  {@link Session.auditFindings}). Recorded by every audit and by
+ *  {@link Session.importContradictions}; dropped automatically when one of
+ *  its cited axioms leaves the KB. */
+export interface AuditFinding {
+  /** Stable identity: the sorted culprit sids joined by `+`. Pass it in
+   *  {@link AuditRequest.culprits} to replay. */
+  key: string;
+  culprits: AuditCulprit[];
+  /** `true` when every leaf of the derivation cites a source axiom. */
+  complete: boolean;
+  /** The session whose assertions the proof reasoned in, if any. */
+  session: string | null;
+  /** `"native"`, `"vampire"`, `"eprover"`, or the import label given. */
+  origin: string;
+  /** Unix milliseconds when it was recorded. */
+  found_at_ms: number;
+  contradiction: AuditContradiction;
+}
+
+/** An axiom as a contradiction report cites it. */
+export interface CitedAxiom {
+  file: string | null;
+  line: number | null;
+  kif: string;
+}
+
+/** What {@link Session.importContradictions} did with a report. */
+export interface ImportOutcome {
+  /** Findings recorded (or already present) for the report's entries. */
+  imported: AuditFinding[];
+  rejected: Array<{
+    axioms: CitedAxiom[];
+    /** The report's derivation as parsed: `{ rule, premises, kif, axiom }`
+     *  per step, `axiom` indexing `axioms`; empty when it carried none. */
+    steps: Array<{
+      rule: string;
+      premises: number[];
+      kif: string;
+      axiom: number | null;
+    }>;
+    reason: string;
+    /** The cited axioms not present in the KB. */
+    missing: CitedAxiom[];
   }>;
 }
 
@@ -592,6 +656,17 @@ export class Session {
   ask(query: string, opts?: AskOpts): AskResult;
   /** Sampled consistency audit with this session's backend: check `request`'s slice of the KB's seeded sweep, one SInE neighborhood per subproblem. */
   auditConsistency(request?: AuditRequest): AuditResult;
+  /** Every contradiction recorded in the KB's findings cache, newest first. */
+  auditFindings(): AuditFinding[];
+  /** The recorded finding with `key`, or `null`. */
+  auditFinding(key: string): AuditFinding | null;
+  /** Record a contradiction report's entries whose cited axioms are all
+   *  loaded. `json` is a version 3 `sigma-proof-report` audit, the nightly
+   *  `latest-contradictions.json`, or `sumo audit --json` output; `origin`
+   *  labels the findings. Throws when the report cannot be read. */
+  importContradictions(json: string, origin: string): ImportOutcome;
+  /** Forget every recorded contradiction. */
+  clearAuditFindings(): void;
   /** The root sentence enclosing UTF-8 byte `offset` of loaded file `file`, or `null`. */
   sentenceAt(file: string, offset: number): AuditFocus | null;
   /** The promoted axioms with a clause unifying with a clause of `formula`

@@ -106,7 +106,7 @@ impl WasmExternalRunner {
                 .unwrap_or(u32::MAX)
                 .saturating_add(5000)
         };
-        let started = js_sys::Date::now();
+        let started = sigmakee_rs_core::Instant::now();
         let out = match self.bridge(name, tptp, &args, timeout_ms) {
             Ok(out) => out,
             Err(error) => {
@@ -116,8 +116,7 @@ impl WasmExternalRunner {
                 }
             }
         };
-        let elapsed =
-            std::time::Duration::from_millis((js_sys::Date::now() - started).max(0.0) as u64);
+        let elapsed = started.elapsed();
         let stdout = string_field(&out, "stdout");
         let stderr = string_field(&out, "stderr");
         if self.backend == Backend::E {

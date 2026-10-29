@@ -2572,7 +2572,6 @@ dependencies = [
  "heed",
  "inline_colorization",
  "itertools 0.14.0",
- "js-sys",
  "log",
  "once_cell",
  "rayon",
@@ -2583,6 +2582,7 @@ dependencies = [
  "thiserror",
  "vampire-prover",
  "vampire-sys",
+ "web-time",
  "winnow",
  "xxhash-rust",
 ]

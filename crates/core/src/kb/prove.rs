@@ -127,7 +127,9 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
                         ..Default::default()
                     }
                 } else {
-                    prover.audit_consistency(&focus, &opts, 1, &ctx)
+                    let r = prover.audit_consistency(&focus, &opts, 1, &ctx);
+                    self.record_contradictions(&r, opts.session(), prover.backend_name());
+                    r
                 }
             }
         };
@@ -202,7 +204,9 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
         opts: &P::Opts,
         limit: usize,
     ) -> ProverResult {
-        prover.audit_consistency(focus, opts, limit, &self.prove_ctx())
+        let r = prover.audit_consistency(focus, opts, limit, &self.prove_ctx());
+        self.record_contradictions(&r, opts.session(), prover.backend_name());
+        r
     }
 
     /// The sweep a sampled audit walks: every promoted axiom (or only

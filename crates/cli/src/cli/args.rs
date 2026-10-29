@@ -570,6 +570,18 @@ pub enum Cmd {
         #[arg(short = 'k', long, value_name = "FILE")]
         keep: Option<PathBuf>,
 
+        /// Instead of sweeping, import a contradiction report (a local
+        /// path or an http(s) URL): a version 3 `sigma-proof-report`
+        /// audit as the web app downloads and files in GitHub issues, the
+        /// SUMO nightly `latest-contradictions.json`, or `sumo audit
+        /// --json` output.  Every reported contradiction whose cited
+        /// axioms are all loaded is recorded in the KB's findings cache
+        /// (persisted with the LMDB store) and replayed: its axioms are
+        /// audited together and the derivation printed.  Contradictions
+        /// citing axioms this KB does not hold are listed and skipped.
+        #[arg(long, value_name = "PATH|URL")]
+        import: Option<String>,
+
         #[command(flatten)]
         kb: KbArgs,
     },

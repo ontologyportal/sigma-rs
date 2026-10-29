@@ -640,6 +640,7 @@ where
             batch,
             json,
             keep,
+            import,
             kb: _,
         } => {
             manager.thoroughness = thoroughness;
@@ -663,7 +664,7 @@ where
                 batch,
                 json,
             };
-            run_audit(session, &manager, file, sweep, keep)
+            run_audit(session, &manager, file, sweep, keep, import)
         }
 
         Cmd::Search {

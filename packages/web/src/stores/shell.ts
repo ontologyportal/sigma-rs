@@ -14,10 +14,8 @@ import {
   NARROW_LAYOUT_QUERY,
 } from "../constants";
 import { fetchAppRelease, fetchAppReleases } from "../api/github";
-import {
-  extractReleaseSection,
-  renderReleaseNotes,
-} from "../utils/releaseNotes";
+import { extractReleaseSection } from "../utils/releaseNotes";
+import { renderMarkdown } from "../utils/markdown";
 import { errMsg, fmtDate } from "../utils/format";
 
 /** The deployed build's identity, from `version.json`. */
@@ -247,7 +245,7 @@ export const useShellStore = defineStore("shell", {
         if (!release?.body) return;
         const section = extractReleaseSection(release.body, "Web Updates");
         if (!section) return;
-        this.versionDialog.notesHtml = renderReleaseNotes(section);
+        this.versionDialog.notesHtml = renderMarkdown(section);
         this.versionDialog.releaseUrl = release.html_url;
       } catch {
         /* best effort -- see above */
@@ -288,7 +286,7 @@ export const useShellStore = defineStore("shell", {
               version: r.tag_name.slice(RELEASE_TAG_PREFIX.length),
               date: r.published_at ? fmtDate(new Date(r.published_at)) : "",
               url: r.html_url,
-              notesHtml: notes.trim() ? renderReleaseNotes(notes) : null,
+              notesHtml: notes.trim() ? renderMarkdown(notes) : null,
             });
           }
           history.nextPage =

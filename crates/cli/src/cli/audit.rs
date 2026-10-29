@@ -62,6 +62,7 @@ pub fn run_audit<L>(
     file: Option<PathBuf>,
     sweep: Sweep,
     keep: Option<PathBuf>,
+    import: Option<String>,
 ) -> bool
 where
     L: ProvingLayer,
@@ -69,6 +70,10 @@ where
 {
     // `--keep` (TPTP dump) does not apply to the in-CLI audit transcript.
     let _ = keep;
+
+    if let Some(spec) = import {
+        return run_import(&session, manager, &spec, sweep.json);
+    }
 
     let thoroughness = manager.thoroughness;
     if !(thoroughness > 0.0 && thoroughness <= 1.0) {
@@ -127,9 +132,152 @@ where
             sampled_sweep(session.kb(), manager, scope.as_deref(), &sweep)
         }
     };
+    report(session.kb(), manager, &proofs, summary, sweep.json)
+}
+
+/// `sumo audit --import`: read a contradiction report from a local path or
+/// URL, record every contradiction whose cited axioms are all loaded, replay
+/// each recorded one as a focused audit of its axioms, and print the
+/// derivations.  Returns `true` when nothing was reproduced.
+fn run_import<L>(session: &Session<L>, manager: &KBManager, spec: &str, json: bool) -> bool
+where
+    L: ProvingLayer,
+    L::Opts: ProverOptsFor,
+{
+    let text = if spec.starts_with("http://") || spec.starts_with("https://") {
+        match sigmakee_rs_sdk::source::fetch_text(spec) {
+            Ok(t) => t,
+            Err(e) => {
+                log::error!("failed to fetch '{}': {}", spec, e);
+                return false;
+            }
+        }
+    } else {
+        match std::fs::read_to_string(spec) {
+            Ok(t) => t,
+            Err(e) => {
+                log::error!("failed to read '{}': {}", spec, e);
+                return false;
+            }
+        }
+    };
+    let outcome = match session.import_contradiction_report(&text, &format!("import:{spec}")) {
+        Ok(o) => o,
+        Err(e) => {
+            log::error!("{}", e);
+            return false;
+        }
+    };
+    say(
+        json,
+        format!(
+            "{style_bold}Import:{style_reset} {} -- {} contradiction(s) recorded, {} rejected",
+            spec,
+            outcome.imported.len(),
+            outcome.rejected.len()
+        ),
+    );
+    for r in &outcome.rejected {
+        say(
+            json,
+            format!("  {color_bright_yellow}rejected{color_reset}: {}", r.reason),
+        );
+        for a in &r.missing {
+            let loc = match (&a.file, a.line) {
+                (Some(f), Some(l)) => format!("{f}:{l}"),
+                (Some(f), None) => f.clone(),
+                _ => "?".to_string(),
+            };
+            say(
+                json,
+                format!("    {color_bright_black}[{}]{color_reset} {}", loc, a.kif),
+            );
+        }
+    }
+
+    let opts = <L::Opts as ProverOptsFor>::from_manager(manager);
+    let mut seen: HashSet<Vec<SentenceId>> = HashSet::new();
+    let mut proofs: Vec<Vec<KifProofStep>> = Vec::new();
+    let mut reproduced = 0usize;
+    let total = outcome.imported.len();
+    for (i, finding) in outcome.imported.iter().enumerate() {
+        let culprits = match sigmakee_rs_sdk::parse_sids([finding.key.as_str()]) {
+            Ok(c) => c,
+            Err(e) => {
+                log::error!("{}", e);
+                continue;
+            }
+        };
+        let started = std::time::Instant::now();
+        let mut r = session
+            .kb()
+            .audit_consistency(&culprits, &opts, manager.limit);
+        let locs: Vec<String> = finding
+            .culprits
+            .iter()
+            .map(|c| match (&c.file, c.line) {
+                (Some(f), Some(l)) => format!("{f}:{l}"),
+                _ => "?".to_string(),
+            })
+            .collect();
+        say(
+            json,
+            format!(
+                "  [{}/{}] {:?} in {} ms : {}",
+                i + 1,
+                total,
+                r.status,
+                started.elapsed().as_millis(),
+                locs.join(", ")
+            ),
+        );
+        let mut found = std::mem::take(&mut r.contradiction_proofs);
+        if found.is_empty() && !r.proof_kif.is_empty() {
+            found.push(std::mem::take(&mut r.proof_kif));
+        }
+        if !found.is_empty() {
+            reproduced += 1;
+        }
+        for steps in found {
+            let mut key: Vec<SentenceId> = steps.iter().filter_map(|s| s.source_sid).collect();
+            key.sort_unstable();
+            key.dedup();
+            if seen.insert(key) {
+                proofs.push(steps);
+            }
+        }
+    }
+    if total > 0 {
+        say(
+            json,
+            format!(
+                "{style_bold}Replay:{style_reset} {} of {} recorded contradiction(s) reproduced",
+                reproduced, total
+            ),
+        );
+    }
+    let summary = serde_json::json!({
+        "import": spec,
+        "recorded": total,
+        "reproduced": reproduced,
+        "rejected": serde_json::to_value(&outcome.rejected).unwrap_or_default(),
+    });
+    report(session.kb(), manager, &proofs, summary, json)
+}
+
+/// Print the contradictions an audit (or an import replay) produced -- the
+/// JSON summary under `json`, else the human rendering -- and return `true`
+/// when there are none.
+fn report<L: TopLayer>(
+    kb: &KnowledgeBase<L>,
+    manager: &KBManager,
+    proofs: &[Vec<KifProofStep>],
+    summary: serde_json::Value,
+    json: bool,
+) -> bool {
     let n = proofs.len();
-    if sweep.json {
-        let locations = sigmakee_rs_sdk::DiagnosticSource::sentence_locations(session.kb());
+    if json {
+        let locations = sigmakee_rs_sdk::DiagnosticSource::sentence_locations(kb);
         let contradictions: Vec<serde_json::Value> = proofs
             .iter()
             .map(|steps| {
@@ -163,7 +311,7 @@ where
     }
 
     if n > 0 {
-        let locations = sigmakee_rs_sdk::DiagnosticSource::sentence_locations(session.kb());
+        let locations = sigmakee_rs_sdk::DiagnosticSource::sentence_locations(kb);
         let plain =
             crate::style::is_ugly() || !std::io::IsTerminal::is_terminal(&std::io::stdout());
 

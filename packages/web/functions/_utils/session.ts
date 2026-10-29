@@ -11,6 +11,9 @@ export interface SessionEnv {
 interface SessionData {
   access_token: string;
   created_at: number;
+  /** The GitHub login, filled lazily by /api/me (or the first caller that
+   *  needs it) so per-user limits cost no GitHub call per request. */
+  login?: string;
 }
 
 // 30 days. Drives both the session cookie's own Max-Age and the KV record's
@@ -66,7 +69,11 @@ export async function createSession(
 export async function getSession(
   request: Request,
   env: SessionEnv,
-): Promise<{ sessionId: string; accessToken: string } | null> {
+): Promise<{
+  sessionId: string;
+  accessToken: string;
+  login: string | null;
+} | null> {
   const sessionId = getCookie(request, SESSION_COOKIE);
   if (!sessionId) return null;
 
@@ -76,11 +83,42 @@ export async function getSession(
 
   try {
     const data = JSON.parse(raw) as SessionData;
-    return { sessionId, accessToken: data.access_token };
+    return {
+      sessionId,
+      accessToken: data.access_token,
+      login: data.login ?? null,
+    };
   } catch {
     await env.SESSIONS.delete(key);
     return null;
   }
+}
+
+/** Record the GitHub login on an existing session. The record keeps its
+ *  original expiry: it is rewritten with an absolute `expiration` derived
+ *  from `created_at`, never a fresh TTL that would outlive the cookie. */
+export async function setSessionLogin(
+  sessionId: string,
+  login: string,
+  env: SessionEnv,
+): Promise<void> {
+  const key = sessionKey(sessionId);
+  const raw = await env.SESSIONS.get(key);
+  if (!raw) return;
+  let data: SessionData;
+  try {
+    data = JSON.parse(raw) as SessionData;
+  } catch {
+    return;
+  }
+  if (data.login === login) return;
+  const expiration = Math.floor(data.created_at / 1000) + SESSION_MAX_AGE_S;
+  // KV rejects an expiration less than 60 s away; such a session is about
+  // to lapse anyway, so skip the write.
+  if (expiration - Date.now() / 1000 < 120) return;
+  await env.SESSIONS.put(key, JSON.stringify({ ...data, login }), {
+    expiration,
+  });
 }
 
 /** Delete a session by id. The cookie itself is cleared separately -- see
@@ -96,17 +134,4 @@ export function deleteSession(
 /** The `Set-Cookie` header value that clears the session cookie. */
 export function clearSessionCookie(): string {
   return cookieHeader(SESSION_COOKIE, "", 0);
-}
-
-/**
- * Returns the GitHub access token for the current request's session,
- * or null if there is no session / it's not found in KV (e.g. expired,
- * or the user was never logged in).
- */
-export async function getGithubToken(
-  request: Request,
-  env: SessionEnv,
-): Promise<string | null> {
-  const session = await getSession(request, env);
-  return session?.accessToken ?? null;
 }

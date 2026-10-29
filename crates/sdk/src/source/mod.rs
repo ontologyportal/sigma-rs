@@ -22,6 +22,17 @@ pub(crate) use git::fetch_repo_sparse;
 pub(crate) use git::remote_branch_head;
 mod tptp;
 
+/// Fetch a remote text document (a contradiction report, say) over HTTP.
+#[cfg(feature = "http")]
+pub fn fetch_text(url: &str) -> SdkResult<String> {
+    let mut resp = ureq::get(url)
+        .call()
+        .map_err(|e| SdkError::Http(e.to_string()))?;
+    resp.body_mut()
+        .read_to_string()
+        .map_err(|e| SdkError::Http(e.to_string()))
+}
+
 /// A source to ingest.  Local file or arbitrary reader for now; remote URLs
 /// (`http(s)`/`git`) arrive behind the `remote` feature.
 pub enum Source {

@@ -1,14 +1,16 @@
 <script setup lang="ts">
 /** Audit tab: sweeps the KB (or audits one sentence) for contradictions,
- *  and replays the nightly master-branch report. The form, the runs and the
- *  replay each live in a composable; this view wires them together and
+ *  and lists the contradictions recorded for this KB -- found here or
+ *  imported from the configured sources -- each replayable. The form and
+ *  the runs live in composables; this view wires them together and
  *  presents the results. */
-import ImportProofReport from "../components/ImportProofReport.vue";
-import { computed, provide, ref, watch } from "vue";
+import { computed, onActivated, provide, ref, watch } from "vue";
+import type { AuditFinding } from "sigmakee/sdk";
 import { call } from "../services/sigma";
 import { errMsg, fmtNum } from "../utils/format";
 import { useKBStore } from "../stores/kb";
 import { useShellStore } from "../stores/shell";
+import { useContradictionsStore } from "../stores/contradictions";
 import { useTabQuery } from "../composables/useTabQuery";
 import { fmtSecs } from "../composables/useElapsed";
 import { auditSweepKey, useAuditSweep } from "../composables/useAuditSweep";
@@ -17,9 +19,9 @@ import {
   type AuditTarget,
   type Contradiction,
 } from "../composables/useAuditRun";
-import { useAuditReplay } from "../composables/useAuditReplay";
 import { updateParams } from "../router";
 import { batchBreakdown, contradictionKey } from "../utils/contradictionReport";
+import type { SharedProofReport } from "../utils/proofReport";
 import BusyButton from "../components/BusyButton.vue";
 import Card from "../components/Card.vue";
 import Col from "../components/Col.vue";
@@ -33,10 +35,28 @@ import SourceLoc from "../components/SourceLoc.vue";
 import AuditAdvancedForm from "../components/audit/AuditAdvancedForm.vue";
 import CheckLog from "../components/audit/CheckLog.vue";
 import ContradictionCard from "../components/audit/ContradictionCard.vue";
-import MasterReportPanel from "../components/audit/MasterReportPanel.vue";
+import RecordedContradictions from "../components/audit/RecordedContradictions.vue";
+import HistoryToggle from "../components/HistoryToggle.vue";
 
 const kb = useKBStore();
 const shell = useShellStore();
+const recorded = useContradictionsStore();
+
+// The engine drops findings whose axioms changed: re-read on every visit.
+onActivated(() => {
+  recorded.refresh().catch(() => {});
+});
+
+/** Compact layout: the recorded contradictions toggle open under the form,
+ *  as Ask/Tell's run history does. Opened on arrival at a specific finding. */
+const recordedOpen = ref(false);
+watch(
+  () => recorded.focusKey,
+  (key) => {
+    if (key) recordedOpen.value = true;
+  },
+  { immediate: true },
+);
 
 // -- focus (right-click "Audit this sentence" in the editor) ------------------
 
@@ -73,7 +93,7 @@ function clearFocus() {
   updateParams({});
 }
 
-// -- form, runs, replay -------------------------------------------------------
+// -- form and runs ------------------------------------------------------------
 
 const form = useAuditSweep(computed(() => !!focus.value));
 provide(auditSweepKey, form);
@@ -103,8 +123,6 @@ const {
   contradictions,
   batches,
   rawLines,
-  replayMode,
-  lastRunRecheck,
   run,
   progress,
   summary,
@@ -112,28 +130,44 @@ const {
   busyLabel,
 } = runs;
 
-const {
-  replayProofReport,
-  reportLoading,
-  report,
-  reportError,
-  replayBusy,
-  replayDone,
-  replayMessage,
-  loadedReplay,
-  recheckReason,
-  showMasterReport,
-  confirmReplay,
-  recheckContradictions,
-} = useAuditReplay(runs, form);
+/** Replay a recorded contradiction: audit its cited axioms together. */
+function replay(finding: AuditFinding) {
+  clearFocus();
+  return runs.runCulprits(finding);
+}
+
+/** A shared audit report confirmed in the Ask/Tell import dialog: record its
+ *  contradiction (when every cited axiom is in this KB) and replay it. */
+async function importShared(shared: SharedProofReport) {
+  if (shared.problem.command !== "audit" || auditing.value) return;
+  clearFocus();
+  try {
+    const outcome = await recorded.importJson(JSON.stringify(shared), "report");
+    const finding = outcome.imported[0];
+    if (finding) {
+      await runs.runCulprits(finding);
+      return;
+    }
+    const missing = outcome.rejected.flatMap((r) => r.missing);
+    runs.clearResults();
+    error.value = missing.length
+      ? `The report's contradiction was not recorded: ${missing.length} cited axiom${missing.length === 1 ? " is" : "s are"} not in this knowledge base (${missing
+          .map((a) => (a.file ? `${a.file}:${a.line ?? "?"}` : a.kif))
+          .join(", ")}).`
+      : (outcome.rejected[0]?.reason ??
+        "The report cites no contradiction this knowledge base holds.");
+  } catch (e) {
+    runs.clearResults();
+    error.value = errMsg(e);
+  }
+}
 
 watch(
   () => shell.auditReportRequest,
   (shared) => {
     if (!shared) return;
     shell.auditReportRequest = null;
-    clearFocus();
-    void replayProofReport(shared);
+    void importShared(shared);
   },
   { immediate: true },
 );
@@ -146,10 +180,14 @@ watch(
   },
 );
 const isCompact = computed(() => shell.isCompact);
-/** Advanced in the classic layout: the prover options sit in a column on
- *  the right, as on Ask/Tell; otherwise they toggle open in the form. */
+/** The classic layout keeps a column on the right: the recorded
+ *  contradictions, and (in Advanced) the prover options above them, as on
+ *  Ask/Tell. Compact stacks everything under the form. */
+const sideColumn = computed(() => !isCompact.value);
+/** Advanced in the classic layout: the prover options sit in the side
+ *  column; otherwise they toggle open in the form. */
 const optionsBeside = computed(
-  () => sweep.mode === "advanced" && !isCompact.value,
+  () => sweep.mode === "advanced" && sideColumn.value,
 );
 
 const canContinue = computed(
@@ -183,9 +221,11 @@ const headlineClass = computed(() =>
 const breakdown = computed(() => batchBreakdown(summary.value));
 
 const caveat = computed(() => {
-  if (found.value || replayMode.value) return "";
+  if (found.value) return "";
   if (summary.value.contradictory)
     return "The engine reported a contradiction without a citable derivation — see the raw engine output.";
+  if (run.replayOf)
+    return "The recorded contradiction was not re-derived within this check's limits. It stays recorded: a refutation is undone only by changing one of its axioms.";
   if (run.focused)
     return run.widest
       ? `Nothing within neighbourhoods of up to ${fmtNum(run.widest)} axioms. That doesn't prove this sentence consistent with the rest of the KB.`
@@ -194,10 +234,8 @@ const caveat = computed(() => {
 });
 
 const positionText = computed(() => {
-  if (lastRunRecheck.value)
-    return `Rechecked ${replayDone.value} of ${run.planned} reported targets against local edits`;
-  if (replayMode.value)
-    return `Replayed ${replayDone.value} of ${run.planned} reported subproblems (intermediate steps skipped)`;
+  if (run.replayOf)
+    return `Replayed a recorded contradiction (${run.replayOf.culprits.length} cited axiom${run.replayOf.culprits.length === 1 ? "" : "s"})`;
   if (run.focused) return "";
   const steps = `Seed ${run.seed} · steps ${fmtNum(run.start)}–${fmtNum(run.next)}`;
   if (!run.total) return steps;
@@ -230,34 +268,12 @@ function setAllCollapsed(fold: boolean) {
 
 <template>
   <Row>
-    <Col :span="optionsBeside ? 8 : 12">
+    <Col :span="sideColumn ? 8 : 12">
       <Card
         title="Consistency audit"
         description="Checks axioms' neighbourhoods (the axioms selected for each, as for a query) for contradictions. Any contradiction found is real, but finding none doesn't prove the KB consistent."
       >
         <template #header>
-          <ImportProofReport
-            :disabled="auditing || replayBusy"
-            :workflow-busy="replayBusy"
-            allow-issue
-            unified
-            @workflow-open="showMasterReport"
-          >
-            <template #workflow="{ close }">
-              <MasterReportPanel
-                :report="report"
-                :loading="reportLoading"
-                :error="reportError"
-                :busy="replayBusy"
-                :auditing="auditing"
-                :stop-requested="stopRequested"
-                :message="replayMessage"
-                @confirm="confirmReplay"
-                @stop="stopRequested = true"
-                @close="close"
-              />
-            </template>
-          </ImportProofReport>
           <Segmented
             v-model="sweep.mode"
             :options="[
@@ -344,7 +360,6 @@ function setAllCollapsed(fold: boolean) {
 
         <div class="actions mt">
           <BusyButton
-            :disabled="replayBusy"
             :busy="auditing"
             :label="runLabel"
             :busy-label="busyLabel"
@@ -352,7 +367,7 @@ function setAllCollapsed(fold: boolean) {
             @click="start(false)"
           />
           <button
-            v-if="canContinue && !auditing && !replayBusy"
+            v-if="canContinue && !auditing"
             class="btn ghost"
             type="button"
             title="Start a new sweep with a fresh random order"
@@ -376,29 +391,24 @@ function setAllCollapsed(fold: boolean) {
             :toggle="sweep.mode === 'advanced' && isCompact"
             :disabled="auditing"
           />
-          <button
-            v-if="loadedReplay"
-            class="btn ghost"
-            type="button"
-            :disabled="auditing || replayBusy || !!recheckReason"
-            title="Recheck the report's contradictions against your edits"
-            @click="recheckContradictions"
-          >
-            Recheck reported contradictions
-          </button>
+          <HistoryToggle
+            v-if="isCompact"
+            v-model:open="recordedOpen"
+            title="Recorded contradictions"
+          />
         </div>
-        <p v-if="replayMessage" class="hint mt-sm" role="status">
-          {{ replayMessage }}
-        </p>
-        <p v-if="loadedReplay && recheckReason" class="hint bad" role="alert">
-          Recheck unavailable: {{ recheckReason }} Your edits have not been
-          replaced.
-        </p>
         <ProverOptions
           v-if="sweep.mode === 'advanced' && isCompact && optionsOpen"
           profile="audit"
           hide-time
           :disabled="auditing"
+        />
+        <RecordedContradictions
+          v-if="isCompact && recordedOpen"
+          class="history-panel"
+          embedded
+          :busy="auditing"
+          @replay="replay"
         />
       </Card>
 
@@ -442,8 +452,14 @@ function setAllCollapsed(fold: boolean) {
         />
       </template>
     </Col>
-    <Col v-if="optionsBeside" :span="4" style="margin-left: 15px">
-      <ProverOptionsCard profile="audit" hide-time :disabled="auditing" />
+    <Col v-if="sideColumn" :span="4" style="margin-left: 15px">
+      <ProverOptionsCard
+        v-if="optionsBeside"
+        profile="audit"
+        hide-time
+        :disabled="auditing"
+      />
+      <RecordedContradictions :busy="auditing" @replay="replay" />
     </Col>
   </Row>
 </template>
@@ -522,5 +538,8 @@ function setAllCollapsed(fold: boolean) {
 }
 .fold-all {
   margin-left: auto;
+}
+.history-panel {
+  margin-top: 12px;
 }
 </style>

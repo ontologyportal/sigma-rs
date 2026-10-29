@@ -933,7 +933,7 @@ impl From<&sigmakee_rs_core::TestCase> for TestCaseView {
 /// One step of a cited derivation -- a refutation proof or an audit
 /// contradiction; both project to this single shape.
 #[cfg(any(feature = "external-prover", feature = "native-prover"))]
-#[derive(serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct ProofStepView {
     pub index: usize,
     pub rule: String,
@@ -1079,7 +1079,7 @@ impl AskResultView {
 /// One distinct contradiction an audit found -- a full derivation to `FALSE`,
 /// with the same three renderings as [`AskResultView`].
 #[cfg(any(feature = "external-prover", feature = "native-prover"))]
-#[derive(serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct ContradictionView {
     pub steps: Vec<ProofStepView>,
     pub graphviz: String,
@@ -1087,6 +1087,33 @@ pub struct ContradictionView {
     pub prose_missing: Vec<String>,
     /// See [`AskResultView::proof_tptp_prologue`].
     pub proof_tptp_prologue: String,
+}
+
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
+impl ContradictionView {
+    /// Render one contradiction derivation against the KB it refutes.
+    /// `locations` is the KB's sentence location map (built once per batch)
+    /// and `name` the graphviz digraph name.
+    pub fn of<L: TopLayer>(
+        kb: &KnowledgeBase<L>,
+        steps: &[KifProofStep],
+        locations: &std::collections::HashMap<SentenceId, Span>,
+        name: &str,
+    ) -> Self {
+        // A contradiction has no conjecture to restate -- it refutes the KB
+        // itself -- so the prose opens straight into the derivation.
+        let prose_report = kb.render_proof_prose_with(None, steps, DEFAULT_LANGUAGE, locations);
+        let tptp = Emitter::Tptp(TptpLang::Auto)
+            .emit(&steps.iter().map(|s| s.formula.clone()).collect::<Vec<_>>());
+        let proof_tptp_prologue = tptp.preamble.join("\n");
+        Self {
+            graphviz: sigmakee_rs_core::render_graphviz(steps, name, "Inconsistent"),
+            prose: prose_report.rendered,
+            prose_missing: prose_report.missing,
+            steps: ProofStepView::project(steps, locations, tptp),
+            proof_tptp_prologue,
+        }
+    }
 }
 
 /// Why one audit subproblem ended without a `Consistent` / `Inconsistent`
@@ -1241,26 +1268,7 @@ impl AuditResultView {
             .iter()
             .enumerate()
             .map(|(i, steps)| {
-                // A contradiction has no conjecture to restate -- it refutes
-                // the KB itself -- so the prose opens straight into the
-                // derivation.
-                let prose_report =
-                    kb.render_proof_prose_with(None, steps, DEFAULT_LANGUAGE, &locations);
-                let tptp = Emitter::Tptp(TptpLang::Auto)
-                    .emit(&steps.iter().map(|s| s.formula.clone()).collect::<Vec<_>>());
-                let proof_tptp_prologue = tptp.preamble.join("\n");
-
-                ContradictionView {
-                    graphviz: sigmakee_rs_core::render_graphviz(
-                        steps,
-                        &format!("contradiction-{}", i + 1),
-                        "Inconsistent",
-                    ),
-                    prose: prose_report.rendered,
-                    prose_missing: prose_report.missing,
-                    steps: ProofStepView::project(steps, &locations, tptp),
-                    proof_tptp_prologue,
-                }
+                ContradictionView::of(kb, steps, &locations, &format!("contradiction-{}", i + 1))
             })
             .collect();
         let batches = audit

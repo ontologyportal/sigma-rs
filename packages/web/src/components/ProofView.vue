@@ -4,8 +4,10 @@ import { useProverStore } from "../stores/prover";
 import { highlightTptp } from "../utils/highlight-tptp";
 import CiteRow from "./CiteRow.vue";
 import Disclosure from "./Disclosure.vue";
+import ExplainProof from "./ExplainProof.vue";
 import ProofGraph from "./ProofGraph.vue";
 import { AuditStep } from "sigmakee/sdk";
+import type { ExplainKind } from "../api/explain";
 
 const props = defineProps<{
   /** The `{index, rule, premises, kif, tptp, file, line}[]` transcript. */
@@ -26,6 +28,10 @@ const props = defineProps<{
   stepsSummary?: string;
   /** Whether that disclosure is open (default true). */
   stepsOpen?: boolean;
+  /** Offer an AI explanation of this proof, worded for this kind. */
+  explainKind?: ExplainKind;
+  /** Ask/Tell: the query the proof answers, for the explanation. */
+  explainQuery?: string;
 }>();
 
 const emit = defineEmits<{ stepsToggle: [open: boolean] }>();
@@ -106,6 +112,12 @@ const missingNote = computed(() =>
         </template>
       </ol>
     </component>
+    <ExplainProof
+      v-if="explainKind"
+      :kind="explainKind"
+      :steps="steps"
+      :query="explainQuery"
+    />
     <Disclosure summary="proof in plain English">
       <div class="prose">{{ prose || "" }}</div>
       <div v-if="missingNote" class="hint mt-sm">{{ missingNote }}</div>

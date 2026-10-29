@@ -133,76 +133,61 @@ Run the layout and traversal tests from the repository root:
 node --test packages/web/src/services/taxonomy-3d.test.mjs
 ```
 
-## Replaying the master contradiction audit
+## Recorded contradictions and contradiction sources
 
-In Audit, choose **Import contradiction**, then **Latest GitHub contradiction
-workflow** to inspect the latest completed master run. A finding makes the
-workflow fail, so failed runs are
-included. Choose **Confirm: replace work and replay** only after saving any
-local work you want to keep. It replaces the loaded KB, discards conflicting
-saved edits, restores the workflow's prover settings, and runs only the
-reported seed/step positions. The result compares cited axiom sets with the
-report and explicitly identifies missing or additional contradictions.
+Every contradiction an audit finds is recorded by the engine, keyed by the
+axioms its derivation cites. A recorded contradiction stays valid as long as
+every cited axiom is still in the knowledge base (first-order logic is
+monotone: adding axioms cannot undo a refutation) and is dropped the moment one
+of them is edited or unloaded. The Audit tab's **Recorded contradictions** card
+lists them with their origin and the time they were found; **Show proof**
+expands the derivation and **Replay** audits the cited axioms together to
+re-derive the contradiction against the current KB. The list is mirrored to
+OPFS and re-imported after every boot, so it survives reloads; a finding whose
+axioms changed meanwhile fails to re-resolve and does not come back.
 
-After loading a report, **Recheck reported contradictions** tests edits against
-the same source targets without downloading inputs, resetting settings, or
-discarding saved or live editor changes. The original workflow settings are
-used for each recheck. Targets follow source-formula slots, not the old sweep
-positions: changing formula content can reorder the seeded sweep.
+Contradictions reported elsewhere arrive through **Contradictions** on the
+Knowledge base tab, which lists _contradiction sources_ alongside the
+constituent sources:
 
-Tracking lasts for the current app/worker session, including navigation to the
-editor and back. A refresh, worker restart, or KB replacement requires loading
-a report again. Added or removed formulas permanently invalidate the session's
-steps, even if subsequently undone. Reordered or duplicated targets and ambiguous
-multi-formula replacements are rejected; make edits to one existing formula at
-a time. Temporary parse errors block rechecking until corrected. An edited target
-that expands into multiple normalized formulas cannot be safely remapped.
+- a **GitHub issue tracker** whose open issues titled `[Contradiction]` embed a
+  version 3 proof report (what **Report proof to GitHub** files);
+- a **report URL** serving the nightly `latest-contradictions.json`, a shared
+  version 3 report, or `sumo audit --json` output;
+- a **one-shot upload** of such a report, listed afterwards for provenance.
 
-Results distinguish targets that still produce contradictions, those that no
-longer reproduce a contradiction, and inconclusive checks (including timeouts).
-They do not certify that the entire KB is consistent. Rechecking a previously
-loaded, pinned report does not synchronize to a newer master commit.
+The SUMO nightly report and the `ontologyportal/sumo` tracker are watched by
+default. Each source carries the same update preference as a constituent
+source: **Auto-update** imports new contradictions on every load,
+**Auto-check** alerts and offers an **Import** button instead, **No check**
+leaves it alone, and **Check now** does it immediately. A reported
+contradiction is recorded only when every axiom it cites resolves to a
+sentence of this KB (by its text, else by file and line); the rest are counted
+as not applicable. New findings surface in the same sources-changed dialog the
+constituent updates use, and link to the Audit tab.
 
-The SUMO workflow publishes the same `contradictions.json` as both an Actions
-artifact and `.github/latest-contradictions.json` on its `audit-state` branch.
-The public copy avoids requiring an Actions artifact download token. The
-versioned JSON document records the run/attempt, SUMO commit, ordered
-constituents and SHA-256 hashes, engine source fingerprint, settings, and all
-distinct findings accumulated while those SUMO and engine inputs remain
-unchanged. Markdown reports from older workflows cannot be replayed.
+The engine replaces the old whole-KB replay: a report's contradiction is no
+longer re-run against the pinned nightly inputs but recorded against your own
+KB and replayed on it. Audit reports confirmed in Ask/Tell's **Import proof
+report** dialog follow the same path.
 
-Replay checks live master before download, before replacing work, after
-loading, and after execution. Any master commit change invalidates the report,
-even if the constituent files did not change. Inputs are fetched by immutable
-commit, checked against that commit's `.github/full-sumo.txt`, and hashed before
-any saved work is replaced. The loaded constituents stay pinned to that commit.
-
-Build `sigmakee` before deploying this feature: its build writes
-`dist/build-info.json`, which Vite embeds to identify the actual bundled WASM
-(including when `NO_REBUILD=1` reuses it). The workflow's pinned sigma-rs revision
-must have matching `Cargo.toml`, `Cargo.lock`, `.cargo/` configuration, and tracked `crates/` sources.
-Unknown or different engine inputs disable replay. Browser/native time and
-memory limits can still differ; a mismatch is reported rather than presented
-as successful reproduction. A new completed master audit is needed after the
-workflow changes are deployed.
-
-Replay regression tests (no GitHub writes or real KB replacement):
+Regression tests (no GitHub writes or engine):
 
 ```bash
-node --test packages/web/src/utils/auditReplay.test.mjs packages/web/src/services/audit-replay.test.mjs packages/web/src/views/AuditTab.test.mjs
+node --test packages/web/src/stores/contradictions.test.mjs packages/web/src/views/AuditTab.test.mjs
 ```
 
-After building the CLI and WASM package, a real-engine smoke test checks that
-the same synthetic contradiction is found at the same seed and step:
+After building the CLI and WASM package, the real-engine smoke tests still
+exercise the engine-level replay and recheck seams:
 
 ```bash
 node packages/web/e2e/audit-replay-engine.mjs
 node packages/web/e2e/audit-recheck-engine.mjs
 ```
 
-For an isolated visual preview of the confirmation flow (no real saved work
-or GitHub requests), run `node packages/web/e2e/audit-replay-preview.mjs` and
-open the printed address. Add `?stale=1` to inspect rejection of an old report.
+The CLI's counterpart is `sumo audit --import <PATH|URL>`, which records a
+report's applicable contradictions in the loaded KB (persisted with the LMDB
+store), replays each one and prints its derivation.
 
 ## Working on a SUMO branch
 
@@ -241,7 +226,6 @@ node --test packages/web/src/stores/kb.test.mjs packages/web/src/services/source
 node packages/web/e2e/branches.mjs
 ```
 
-
 ## Pushing saved edits
 
 In the editor, save your files, then open the GitHub panel. Select the files
@@ -265,6 +249,60 @@ node --test packages/web/src/api/push.test.mjs packages/web/src/components/edit/
 node packages/web/e2e/push.mjs
 ```
 
+## Explaining proofs with AI
+
+Signed-in users can choose **Explain with AI** below an Ask/Tell proof or an
+audit contradiction. For an Ask/Tell proof the model restates the query and
+explains how the premises yield it. For a contradiction it names the
+conflicting axioms by file and line, explains why they clash, and proposes one
+to three possible fixes. Explanations are generated only when you click, are
+cached by proof content, and can be wrong: check them against the proof steps.
+Proofs over 60 steps cannot be explained.
+
+The model runs in the site's Worker (`functions/api/explain.ts`, pipeline in
+`functions/_utils/explain-handler.ts`). It accepts only proof steps, never a
+free-form prompt, and requires a GitHub sign-in: the OAuth session cookie or,
+for personal-token sign-ins, the token as a bearer header. Spend is bounded by
+per-minute limits per user and per IP, a per-user daily count, and a global
+daily neuron budget that fails closed. The budget defaults to 9,000 neurons,
+inside Workers AI's free allocation of 10,000 per day, so explanations cost
+nothing. Explanations pause until 00:00 UTC once it is spent, or as soon as
+Workers AI reports the account's free allocation used up. Each user gets 20
+uncached explanations per day. The model is GLM 5.3 Flash at low
+reasoning effort, the best of the formats and settings compared by the
+experiment in `scripts/explain-eval/`; it needs a paid billing method on
+Workers AI (Workers Paid keeps the 10,000 free neurons per day). Caps and the
+model's neuron rates are recorded in `wrangler.jsonc`.
+
+To enable it on a deployment:
+
+1. Create the cache and counter namespace and uncomment the `EXPLAIN` KV
+   binding in `wrangler.jsonc` with the printed id:
+   ```sh
+   npx wrangler kv namespace create EXPLAIN
+   ```
+2. Deploy. The `AI` binding, rate limiters and `EXPLAIN_*` variables are
+   already configured. Without the `EXPLAIN` binding the endpoint reports
+   itself disabled and the button stays hidden.
+3. Optionally create an AI Gateway and set its id as `EXPLAIN_GATEWAY` for
+   request logs and a manual kill switch. The free allocation is shared by
+   all Workers AI use on the account; lower `EXPLAIN_DAILY_CAP` if anything
+   else uses it.
+
+Each uncached explanation writes three KV keys, so the Workers Free plan's KV
+write quota allows roughly 300 explanations per day, enough for the
+free neuron budget.
+
+For local development, `npm run dev` binds a local `EXPLAIN` namespace but no
+model. Add `--ai=AI` to the `dev:http` script to use Workers AI; it runs
+remotely, needs `npx wrangler login`, and is billed to that account.
+
+Tests:
+
+```sh
+npm run test:functions --workspace @sigma/web   # validation, prompt, handler
+npm run test:e2e:explain --workspace @sigma/web # browser, mocked /api
+```
 
 ## Sharing proof results
 
@@ -289,26 +327,20 @@ hashes, cited source axioms, the exact problem and settings, engine/prover build
 identities, and the selected proof. Complete KIF files and bulk external prover
 input/output are not included.
 
-To reproduce a report, choose **Import proof report** on Ask/Tell, or choose
-**Import contradiction** then **JSON report file** on Consistency audit.
-Review the source revisions, operation, settings
-and build compatibility. Confirm replacing your KB only after saving a separate
-copy of work you want to keep: replay discards edits to loaded and imported
-files. Opening or cancelling the dialog does not change your workspace.
+To reproduce a conjecture proof, choose **Import proof report** on Ask/Tell.
+Review the source revisions, operation, settings and build compatibility.
+Confirm replacing your KB only after saving a separate copy of work you want
+to keep: replay discards edits to loaded and imported files. Opening or
+cancelling the dialog does not change your workspace.
 
 The importer downloads files at their pinned commits, checks all hashes and
 parses the inputs before replacing the KB. It restores prover settings, reruns
 the recorded problem, and displays the new proof and reproduction outcome.
-For audit reports, confirmation closes the dialog and opens the Audit tab;
-loading progress, the check log and contradiction proofs appear there.
-On the Audit tab, **Import contradiction** then **GitHub issue** accepts an
-issue number or a URL from `ontologyportal/sumo`. It reads the embedded report and presents the same
-review and confirmation. Audit contradictions replay into the Audit tab's normal
-results; conjecture proofs replay in the report dialog.
-The GitHub issue choice opens a browser of SUMO issues with the `[Contradiction]`
-title prefix, including closed issues. Select an issue, then click **Load issue**
-to review its report and replay it; use **Load more issues** for later search
-pages. Issues without a compatible version 3 report cannot be replayed.
+An audit report confirmed there is not replayed against pinned inputs: its
+contradiction is recorded against your own KB (when every cited axiom is
+present) and replayed on the Audit tab -- see "Recorded contradictions and
+contradiction sources" above, which also covers `[Contradiction]` issues and
+report URLs as watched sources.
 Timeouts are inconclusive. A branch advancing after sharing does not invalidate
 the report. The engine fingerprint and external prover binaries must match;
 missing/incompatible builds block import before replacement. Files must be

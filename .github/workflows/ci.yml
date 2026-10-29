@@ -250,11 +250,14 @@ jobs:
       - name: Install Playwright's Chromium
         run: npx playwright install --with-deps chromium
 
-      - name: Type-check (vue-tsc + worker tsconfig)
+      - name: Type-check (vue-tsc + worker and functions tsconfigs)
         run: npm run typecheck -w @sigma/web
 
       - name: External prover bridge regression tests
         run: node --test packages/web/src/worker/external-prover-bridge.test.mjs
+
+      - name: Proof explanation endpoint tests
+        run: npm run test:functions -w @sigma/web
 
       # Local edits (sumo- and url-sourced) must survive a refresh and an
       # upstream change. Fully mocked -- no live GitHub calls.
