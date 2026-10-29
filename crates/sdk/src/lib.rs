@@ -101,6 +101,11 @@ pub use sigmakee_rs_core::{DynSink, LogLevel, ProgressEvent, ProgressSink};
 
 // FFI-safe view projections (see `session::views`): boundary-safe serde
 // structs a JS/RPC facade can serialize directly.
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
+pub use session::findings::{
+    finding_key, parse_contradiction_report, parse_sids, AuditCulpritView, AuditFindingView,
+    ImportOutcome, RejectedContradiction, ReportedContradiction,
+};
 pub use session::views::{
     man_kind_from_str, DiagnosticView, DocLangView, DocView, DomainView, EdgeView,
     HigherOrderCategoryView, KbStatsView, LangView, ManPageDetail, ManPageRefView,
@@ -115,6 +120,8 @@ pub use session::views::{
     CappedView, WordNetDiagnosticsView, WordNetMappingCountsView, WordNetSynsetRowView,
     WordNetTaxonomyMismatchView, WordNetUnsynsetTermView,
 };
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
+pub use sigmakee_rs_core::{AuditFinding, CitedAxiom, ImportRejection, ReportedStep};
 
 #[cfg(feature = "native-prover")]
 pub use session::{

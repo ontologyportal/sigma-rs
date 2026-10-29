@@ -323,8 +323,8 @@ mod tests {
         }]);
         assert!(layer.audit_findings().is_empty());
         let side = layer.audit_findings.side();
-        assert!(side.by_sid.get(&foo).map_or(true, |s| s.is_empty()));
-        assert!(side.by_sid.get(&baz).map_or(true, |s| s.is_empty()));
+        assert!(side.by_sid.get(&foo).is_none_or(|s| s.is_empty()));
+        assert!(side.by_sid.get(&baz).is_none_or(|s| s.is_empty()));
         assert!(side.by_sid.get(&bar).is_none());
     }
 

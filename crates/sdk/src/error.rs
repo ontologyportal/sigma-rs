@@ -108,6 +108,10 @@ pub enum SdkError {
     /// No problems were found
     #[error("No problems were found in the supplied source")]
     NoProblem,
+
+    /// A contradiction report could not be read.
+    #[error("Invalid contradiction report: {0}")]
+    Report(String),
 }
 
 /// Convenience alias used throughout the SDK.
@@ -164,6 +168,7 @@ impl SdkError {
             SdkError::Unsupported => Severity::Error,
             SdkError::MultipleProblems => Severity::Error,
             SdkError::NoProblem => Severity::Error,
+            SdkError::Report(_) => Severity::Error,
         }
     }
 }
