@@ -95,7 +95,7 @@ jobs:
           WS=()
           while IFS= read -r name; do
             WS+=("--workspace=$name")
-          done < <(npm query ".workspace" | jq -r '.[].name | select(. != "@sigma/vampire")')
+          done < <(npm query ".workspace" --package-lock-only | jq -r '.[].name | select(. != "@sigma/vampire" and . != "@sigma/eprover")')
           [ ${#WS[@]} -gt 0 ] || { echo "no workspaces resolved to bump"; exit 1; }
           printf 'bumping: %s\n' "${WS[@]}"
           npm version "$NEW" "${WS[@]}" --no-git-tag-version --allow-same-version
