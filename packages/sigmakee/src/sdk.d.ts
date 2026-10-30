@@ -386,6 +386,8 @@ export interface RankComponent {
  * independent of how the symbol was found (see {@link SearchHit.wordnet} /
  * {@link ManPage.wordnet}). */
 export interface WordNetMapping {
+  /** The synset's id, `"<offset>-<pos>"` (see {@link WordNetSense.id}). */
+  id: string;
   /** The synset's word(s) (near-synonyms share one synset), comma-joined. */
   words: string;
   /** WordNet part-of-speech tag: `"n"`, `"v"`, `"a"`, or `"r"`. */
@@ -515,6 +517,41 @@ export interface WordNetDiagnostics {
   missing_terms: Capped<WordNetSynsetRow>;
   terms_without_synsets: Capped<WordNetUnsynsetTerm>;
   taxonomy_mismatches: Capped<WordNetTaxonomyMismatch>;
+}
+/** A mapping-kind filter name for {@link Session.wordnetSenses}. */
+export type WordNetMappingKind =
+  | "unmapped"
+  | "equivalent"
+  | "subsuming"
+  | "instance"
+  | "anti_equivalent"
+  | "anti_subsuming"
+  | "anti_instance"
+  | "other";
+/** One `&%Term<suffix>` SUMO anchor on a {@link WordNetSense}. */
+export interface WordNetAnchor {
+  term: string;
+  /** Mapping kind in the mapping files' notation: `=` equivalent, `+`
+   * subsuming, `@` instance, or a rarer negated form. */
+  suffix: string;
+}
+/** One synset as {@link Session.wordnetSenses} returns it. */
+export interface WordNetSense {
+  /** `"<offset>-<pos>"`, e.g. `"02084071-n"`. */
+  id: string;
+  /** WordNet part-of-speech tag: `"n"`, `"v"`, `"a"`, or `"r"`. */
+  pos: string;
+  /** Zero-padded 8-digit synset offset. */
+  offset: string;
+  /** Sense tag (`"dog#n#1"`) for a word lookup; empty otherwise. */
+  label: string;
+  words: string[];
+  gloss: string;
+  mappings: WordNetAnchor[];
+  /** The `WordNetMappings30-*.txt` file holding this record. */
+  file: string;
+  /** 1-based line number within `file`. */
+  line: number;
 }
 export interface DocBlock {
   language: string;
@@ -688,6 +725,22 @@ export class Session {
    * capped at `limit` rows (default 50). `null` when no lexicon is
    * installed ({@link Session.loadWordNet}). */
   wordnetDiagnostics(limit?: number): WordNetDiagnostics | null;
+  /** One page of synsets plus the total: every synset for an empty query,
+   * a word's senses (else the senses of every lemma it prefixes), a synset
+   * id (`02084071`, `02084071-n`), or -- with `byTerm` -- every synset
+   * anchored to a SUMO term. `kinds` keeps synsets with an anchor of one of
+   * the named kinds, or `"unmapped"` ones; `pos` keeps one part of speech.
+   * Empty without a lexicon. */
+  wordnetSenses(
+    query: string,
+    opts?: {
+      byTerm?: boolean;
+      kinds?: WordNetMappingKind[];
+      pos?: string;
+      offset?: number;
+      limit?: number;
+    },
+  ): Capped<WordNetSense>;
   /** Load the WordNet-SUMO lexicon from already-fetched mapping-file text
    * (the browser fetches; there is no filesystem here). Separate from KIF
    * ingestion — once loaded, `search` gains WordNet synonym hits. Returns

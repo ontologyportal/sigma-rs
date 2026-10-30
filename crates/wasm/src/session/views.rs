@@ -79,6 +79,37 @@ impl Session {
         to_js(&session_guard.wordnet_diagnostics_view(limit as usize))
     }
 
+    /// Synsets for the WordNet mapping editor: one page (`offset`, `limit`)
+    /// of the matches as `{ items, total }`. An empty `query` browses every
+    /// synset; with `byTerm`, every synset anchored to SUMO term `query`;
+    /// otherwise `query` is a synset id (`02084071`, `02084071-n`) or a word
+    /// (its senses, else the senses of every lemma it prefixes). `kinds`
+    /// keeps synsets with an anchor of one of the named kinds (`equivalent`,
+    /// `subsuming`, `instance`, `anti_equivalent`, `anti_subsuming`,
+    /// `anti_instance`, `other`) or with none (`unmapped`); `pos` keeps one
+    /// part of speech. Each item is `{ id, pos, offset, label, words, gloss,
+    /// mappings: {term, suffix}[], file, line }`.
+    #[wasm_bindgen(js_name = wordnetSenses)]
+    pub fn wordnet_senses(
+        &self,
+        query: &str,
+        by_term: bool,
+        kinds: Option<Vec<String>>,
+        pos: Option<String>,
+        offset: u32,
+        limit: u32,
+    ) -> Result<JsValue, JsValue> {
+        let filter = sigmakee_rs_sdk::WordNetSenseFilter {
+            by_term,
+            kinds: kinds.unwrap_or_default(),
+            pos,
+            offset: offset as usize,
+            limit: limit as usize,
+        };
+        let session_guard = self.session.read().expect("kb lock not poisoned");
+        to_js(&session_guard.wordnet_senses_view(query, &filter))
+    }
+
     /// Structured "man page" for a symbol: kinds, documentation, taxonomy
     /// (parents/children), signature (arity/domains/range), and the full
     /// list of referencing formulas. Returns `null` if the symbol is unknown.

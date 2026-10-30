@@ -117,8 +117,9 @@ pub use session::views::{
 };
 #[cfg(feature = "lexicon")]
 pub use session::views::{
-    CappedView, WordNetDiagnosticsView, WordNetMappingCountsView, WordNetSynsetRowView,
-    WordNetTaxonomyMismatchView, WordNetUnsynsetTermView,
+    CappedView, WordNetAnchorView, WordNetDiagnosticsView, WordNetMappingCountsView,
+    WordNetSenseFilter, WordNetSenseView, WordNetSynsetRowView, WordNetTaxonomyMismatchView,
+    WordNetUnsynsetTermView,
 };
 #[cfg(any(feature = "external-prover", feature = "native-prover"))]
 pub use sigmakee_rs_core::{AuditFinding, CitedAxiom, ImportRejection, ReportedStep};

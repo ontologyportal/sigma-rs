@@ -43,8 +43,20 @@ function fixture() {
       return { saved: true };
     },
   };
+  const WN = "WordNetMappings/WordNetMappings30-noun.txt";
+  const wordnet = {
+    trackedFiles: [{ name: WN, origin: { kind: "sumo" }, text: "noun text" }],
+    fileText: (path) => (path === WN ? "noun text" : null),
+    async saveFile(path, text) {
+      saves.push(["wordnet", path, text]);
+    },
+  };
   const imports = {
     pinia: { defineStore },
+    "./wordnet": {
+      isWordNetFile: (n) => n === WN,
+      useWordNetStore: () => wordnet,
+    },
     "../constants": { EDITS_KEY: "edits", rawUrl: (p) => p },
     "../models/Origin": { originForKind: (kind) => ({ kind }) },
     "../api/github": {
@@ -64,6 +76,16 @@ function fixture() {
     },
   };
   const index = {
+    [`sumo:${WN}`]: {
+      name: WN,
+      origin: "sumo",
+      path: WN,
+      baseBlobSha: "wn-base",
+      savedBlobSha: "wn-saved",
+      savedAt: 1,
+      proposed: null,
+      prClosed: null,
+    },
     "sumo:tests/t1.kif.tq": {
       name: "tests/t1.kif.tq",
       origin: "sumo",
@@ -105,7 +127,27 @@ test("edited upstream tests and local test files are change rows", () => {
   assert.deepEqual(rows, [
     ["mine.kif.tq", "file", "local"],
     ["tests/t1.kif.tq", "sumo", "modified"],
+    ["WordNetMappings/WordNetMappings30-noun.txt", "sumo", "modified"],
   ]);
+});
+
+test("WordNet mapping files are tracked through the WordNet store", async () => {
+  const { store, saves } = fixture();
+  const row = {
+    name: "WordNetMappings/WordNetMappings30-noun.txt",
+    origin: "sumo",
+  };
+  assert.equal(store.trackedText(row), "noun text");
+  assert.equal(store.trackedOrigin(row).kind, "sumo");
+  await store.saveTracked(row, "upstream noun");
+  assert.deepEqual(plain(saves), [
+    ["wordnet", "WordNetMappings/WordNetMappings30-noun.txt", "upstream noun"],
+  ]);
+});
+
+test("the KB snapshot fingerprint ignores WordNet mapping edits", () => {
+  const { store } = fixture();
+  assert.equal(store.fingerprint, "sumo:tests/t1.kif.tq:b");
 });
 
 test("tracked text and saves go to the store that owns the file", async () => {

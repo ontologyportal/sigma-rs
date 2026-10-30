@@ -58,7 +58,9 @@ impl Pos {
         }
     }
 
-    fn from_ss_type(c: char) -> Option<Pos> {
+    /// Parse a one-letter tag (`n`/`v`/`a`/`r`, or the adjective-satellite
+    /// `s`, which folds into [`Pos::Adj`]).
+    pub fn from_ss_type(c: char) -> Option<Pos> {
         match c {
             'n' => Some(Pos::Noun),
             'v' => Some(Pos::Verb),
@@ -261,6 +263,22 @@ impl WordNet {
             .flatten()
             .filter_map(|id| self.synsets.get(id))
             .collect()
+    }
+
+    /// The synset with identity `id`, if loaded.
+    pub fn synset(&self, id: SynsetId) -> Option<&Synset> {
+        self.synsets.get(&id)
+    }
+
+    /// Every loaded synset, in no particular order.
+    pub fn synsets(&self) -> impl Iterator<Item = &Synset> {
+        self.synsets.values()
+    }
+
+    /// Every indexed lemma (lowercase, underscores intact), in no particular
+    /// order.
+    pub fn lemmas(&self) -> impl Iterator<Item = &str> {
+        self.lemma_index.keys().map(String::as_str)
     }
 }
 

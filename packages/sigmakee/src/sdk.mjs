@@ -525,6 +525,25 @@ export class Session {
   }
 
   /**
+   * Synsets for the WordNet mapping editor: one page of matches plus their
+   * total. An empty `query` browses every synset; `byTerm` lists the
+   * synsets anchored to a SUMO term; otherwise `query` is a synset id
+   * (`02084071`, `02084071-n`) or a word (its senses, else the senses of
+   * every lemma it prefixes). `kinds` keeps synsets with an anchor of one
+   * of the named kinds, or `"unmapped"` ones; `pos` keeps one part of
+   * speech. Empty if no lexicon is installed.
+   * @param {string} query
+   * @param {{ byTerm?: boolean, kinds?: string[], pos?: string, offset?: number, limit?: number }} [opts]
+   * @returns {import('./sdk').Capped<import('./sdk').WordNetSense>}
+   */
+  wordnetSenses(
+    query,
+    { byTerm = false, kinds, pos, offset = 0, limit = 100 } = {},
+  ) {
+    return this.#kb.wordnetSenses(query, byTerm, kinds, pos, offset, limit);
+  }
+
+  /**
    * Load the WordNet-SUMO lexicon from the contents of the four
    * `WordNetMappings30-*.txt` files — the browser fetches the bytes (there
    * is no filesystem here) and passes strings. `indexSense`

@@ -98,5 +98,6 @@ export const TABS = [
   "prover",
   "audit",
   "edit",
+  "wordnet",
 ] as const;
 export type TabName = (typeof TABS)[number];

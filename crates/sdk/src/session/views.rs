@@ -107,6 +107,8 @@ impl From<&sigmakee_rs_core::RankComponent> for RankComponentView {
 /// it was found.
 #[derive(serde::Serialize)]
 pub struct WordNetMappingView {
+    /// The synset's id, `"<offset>-<pos>"` (see [`WordNetSenseView::id`]).
+    pub id: String,
     /// The synset's word(s) (near-synonyms share one synset), comma-joined.
     pub words: String,
     /// WordNet part-of-speech tag: `"n"`, `"v"`, `"a"`, or `"r"`.
@@ -145,6 +147,7 @@ fn wordnet_mappings_for(
                 .iter()
                 .filter(move |a| a.term == symbol)
                 .map(move |anchor| WordNetMappingView {
+                    id: format!("{:08}-{}", synset.offset, synset.pos.as_char()),
                     words: synset
                         .words
                         .iter()
@@ -158,6 +161,212 @@ fn wordnet_mappings_for(
                 })
         })
         .collect()
+}
+
+/// One `&%Term<suffix>` anchor on a [`WordNetSenseView`].
+#[cfg(feature = "lexicon")]
+#[derive(serde::Serialize)]
+pub struct WordNetAnchorView {
+    pub term: String,
+    /// The mapping-kind suffix in the mappings files' own notation (`=`,
+    /// `+`, `@`, or another character).
+    pub suffix: String,
+}
+
+/// One synset as the WordNet mapping editor shows it: identity, words,
+/// gloss, every SUMO anchor, and the record's location in its mapping file.
+#[cfg(feature = "lexicon")]
+#[derive(serde::Serialize)]
+pub struct WordNetSenseView {
+    /// `"<offset>-<pos>"`, e.g. `"02084071-n"` -- unique across the four files.
+    pub id: String,
+    /// WordNet part-of-speech tag: `"n"`, `"v"`, `"a"`, or `"r"`.
+    pub pos: String,
+    /// The synset's 8-digit offset, zero-padded as in the mapping files.
+    pub offset: String,
+    /// Sense tag (`"dog#n#1"`) when found by word; empty for term/id lookups.
+    pub label: String,
+    /// Surface words, underscores converted to spaces.
+    pub words: Vec<String>,
+    pub gloss: String,
+    pub mappings: Vec<WordNetAnchorView>,
+    /// The `WordNetMappings30-*.txt` file this record came from.
+    pub file: String,
+    /// 1-based line number within `file`.
+    pub line: u32,
+}
+
+#[cfg(feature = "lexicon")]
+impl WordNetSenseView {
+    fn new(synset: &sigmakee_rs_core::lexicon::Synset, label: String) -> Self {
+        let pos = synset.pos.as_char();
+        Self {
+            id: format!("{:08}-{pos}", synset.offset),
+            pos: pos.to_string(),
+            offset: format!("{:08}", synset.offset),
+            label,
+            words: synset.words.iter().map(|w| w.replace('_', " ")).collect(),
+            gloss: synset.gloss.clone(),
+            mappings: synset
+                .sumo
+                .iter()
+                .map(|a| WordNetAnchorView {
+                    term: a.term.clone(),
+                    suffix: a.kind.suffix().to_string(),
+                })
+                .collect(),
+            file: synset.span.file.clone(),
+            line: synset.span.line,
+        }
+    }
+}
+
+/// Parse a synset id query: `02084071`, `02084071-n`, or `02084071n`. A bare
+/// offset yields every part of speech, since offsets are only unique per file.
+#[cfg(feature = "lexicon")]
+fn parse_synset_query(query: &str) -> Option<Vec<sigmakee_rs_core::lexicon::SynsetId>> {
+    use sigmakee_rs_core::lexicon::{Pos, SynsetId};
+    let digits = query
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(query.len());
+    if digits == 0 {
+        return None;
+    }
+    let offset: u32 = query[..digits].parse().ok()?;
+    let rest = query[digits..].trim_start_matches('-');
+    let poses = match rest.chars().collect::<Vec<_>>().as_slice() {
+        [] => vec![Pos::Noun, Pos::Verb, Pos::Adj, Pos::Adv],
+        [c] => vec![Pos::from_ss_type(c.to_ascii_lowercase())?],
+        _ => return None,
+    };
+    Some(
+        poses
+            .into_iter()
+            .map(|pos| SynsetId { pos, offset })
+            .collect(),
+    )
+}
+
+/// Lookup options for [`Session::wordnet_senses_view`].
+#[cfg(feature = "lexicon")]
+#[derive(Debug, Clone, Default)]
+pub struct WordNetSenseFilter {
+    /// Treat the query as a SUMO term and list the synsets anchored to it.
+    pub by_term: bool,
+    /// Keep only synsets with an anchor of one of these kinds (see
+    /// [`mapping_kind_name`]), or with none when `"unmapped"` is listed.
+    /// Empty keeps everything.
+    pub kinds: Vec<String>,
+    /// Keep only this part of speech (`"n"`, `"v"`, `"a"`, `"r"`).
+    pub pos: Option<String>,
+    /// Matches to skip, for paging.
+    pub offset: usize,
+    /// Most matches to return.
+    pub limit: usize,
+}
+
+/// The [`WordNetSenseFilter::kinds`] name of a mapping kind, matching the
+/// diagnostics report's count names.
+#[cfg(feature = "lexicon")]
+fn mapping_kind_name(kind: sigmakee_rs_core::lexicon::MappingKind) -> &'static str {
+    use sigmakee_rs_core::lexicon::MappingKind;
+    match kind {
+        MappingKind::Equivalent => "equivalent",
+        MappingKind::Subsuming => "subsuming",
+        MappingKind::Instance => "instance",
+        MappingKind::Other(':') => "anti_equivalent",
+        MappingKind::Other('[') => "anti_subsuming",
+        MappingKind::Other(']') => "anti_instance",
+        MappingKind::Other(_) => "other",
+    }
+}
+
+#[cfg(feature = "lexicon")]
+fn sense_passes(synset: &sigmakee_rs_core::lexicon::Synset, filter: &WordNetSenseFilter) -> bool {
+    if let Some(pos) = filter.pos.as_deref() {
+        if !pos.is_empty() && !pos.starts_with(synset.pos.as_char()) {
+            return false;
+        }
+    }
+    if filter.kinds.is_empty() {
+        return true;
+    }
+    let wants = |name: &str| filter.kinds.iter().any(|k| k == name);
+    if synset.sumo.is_empty() {
+        wants("unmapped")
+    } else {
+        synset.sumo.iter().any(|a| wants(mapping_kind_name(a.kind)))
+    }
+}
+
+/// Candidate synsets for `query` before filtering, each with its sense label
+/// (empty unless found by word) -- see [`Session::wordnet_senses_view`].
+#[cfg(feature = "lexicon")]
+fn sense_candidates<'a>(
+    wn: &'a sigmakee_rs_core::lexicon::WordNet,
+    query: &str,
+    by_term: bool,
+) -> Vec<(&'a sigmakee_rs_core::lexicon::Synset, String)> {
+    let unlabeled = |s| (s, String::new());
+    if query.is_empty() {
+        let mut all: Vec<_> = wn.synsets().collect();
+        all.sort_by_key(|s| (s.pos, s.offset));
+        return all.into_iter().map(unlabeled).collect();
+    }
+    if by_term {
+        return wn
+            .synsets_of_term(query)
+            .into_iter()
+            .map(unlabeled)
+            .collect();
+    }
+    if let Some(ids) = parse_synset_query(query) {
+        return ids
+            .into_iter()
+            .filter_map(|id| wn.synset(id))
+            .map(unlabeled)
+            .collect();
+    }
+    let exact = wn.senses(query);
+    if !exact.is_empty() {
+        return exact.iter().map(|s| (s.synset, s.label())).collect();
+    }
+    let prefix = query.to_lowercase().replace(' ', "_");
+    let mut lemmas: Vec<&str> = wn.lemmas().filter(|l| l.starts_with(&prefix)).collect();
+    lemmas.sort_by(|a, b| a.len().cmp(&b.len()).then(a.cmp(b)));
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for lemma in lemmas {
+        for sense in wn.senses(lemma) {
+            if seen.insert((sense.synset.pos, sense.synset.offset)) {
+                out.push((sense.synset, sense.label()));
+            }
+        }
+    }
+    out
+}
+
+/// The synsets matching `query` and `filter` -- see
+/// [`Session::wordnet_senses_view`].
+#[cfg(feature = "lexicon")]
+fn wordnet_senses(
+    wn: &sigmakee_rs_core::lexicon::WordNet,
+    query: &str,
+    filter: &WordNetSenseFilter,
+) -> CappedView<WordNetSenseView> {
+    let matches: Vec<_> = sense_candidates(wn, query.trim(), filter.by_term)
+        .into_iter()
+        .filter(|(s, _)| sense_passes(s, filter))
+        .collect();
+    CappedView {
+        total: matches.len(),
+        items: matches
+            .into_iter()
+            .skip(filter.offset)
+            .take(filter.limit)
+            .map(|(s, label)| WordNetSenseView::new(s, label))
+            .collect(),
+    }
 }
 
 // -- WordNet diagnostics ---------------------------------------------------
@@ -1393,6 +1602,29 @@ impl<L: TopLayer> Session<L> {
         })
     }
 
+    /// Synsets for the WordNet mapping editor: one page (`filter.offset`,
+    /// `filter.limit`) of the matches plus their total. An empty `query`
+    /// browses every synset in file order. With `filter.by_term`, every
+    /// synset anchored to SUMO term `query`. Otherwise `query` is a synset
+    /// id (`02084071`, `02084071-n`) or a word: its senses (with inflection
+    /// fallback, see `WordNet::senses`), else the senses of every lemma it
+    /// prefixes, shortest lemma first. `filter.kinds`/`filter.pos` narrow
+    /// the matches before paging. Empty when no lexicon is installed.
+    #[cfg(feature = "lexicon")]
+    pub fn wordnet_senses_view(
+        &self,
+        query: &str,
+        filter: &WordNetSenseFilter,
+    ) -> CappedView<WordNetSenseView> {
+        match self.lexicon.as_deref() {
+            Some(wn) => wordnet_senses(wn, query, filter),
+            None => CappedView {
+                items: Vec::new(),
+                total: 0,
+            },
+        }
+    }
+
     /// Summary counts describing the loaded KB (see [`KbStatsView`]).
     ///
     /// `symbols` counts ontology terms a reader would recognise: KIF
@@ -1883,6 +2115,169 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "lexicon")]
+    fn session_with_senses() -> Session<TranslationLayer> {
+        use sigmakee_rs_core::lexicon::{Pos, WordNet};
+
+        let mut s = session_with("(subclass Canine Animal)");
+        let noun = "\
+;; header comment
+02084071 05 n 03 dog 0 domestic_dog 0 Canis_familiaris 0 000 | a domesticated canine &%Canine+ &%DomesticDog=
+02085374 05 n 01 doghouse 0 000 | outbuilding for a dog &%Building+
+03100490 06 n 01 car 0 000 | a motor vehicle &%Automobile=
+03100500 06 n 01 widget 0 000 | an unnamed gadget
+03100510 06 n 01 rex 0 000 | a particular dog &%Dog@ &%Cat]
+";
+        let verb = "02084071 38 v 01 dog 0 000 | go after with the intent to catch &%Pursuing+\n";
+        let wn = std::sync::Arc::new(WordNet::from_texts(
+            [
+                (noun, Pos::Noun, "WordNetMappings30-noun.txt"),
+                (verb, Pos::Verb, "WordNetMappings30-verb.txt"),
+            ],
+            None,
+            None,
+        ));
+        s.set_lexicon(Some(wn));
+        s
+    }
+
+    #[cfg(feature = "lexicon")]
+    fn page(limit: usize) -> WordNetSenseFilter {
+        WordNetSenseFilter {
+            limit,
+            ..Default::default()
+        }
+    }
+
+    #[cfg(feature = "lexicon")]
+    fn ids(view: &CappedView<WordNetSenseView>) -> Vec<&str> {
+        view.items.iter().map(|v| v.id.as_str()).collect()
+    }
+
+    #[cfg(feature = "lexicon")]
+    #[test]
+    fn wordnet_senses_view_by_word_carries_location_and_every_anchor() {
+        let s = session_with_senses();
+        let senses = s.wordnet_senses_view("dog", &page(10));
+        assert_eq!(senses.total, 2);
+        let noun = senses
+            .items
+            .iter()
+            .find(|v| v.pos == "n")
+            .expect("noun sense");
+        assert_eq!(noun.id, "02084071-n");
+        assert_eq!(noun.offset, "02084071");
+        assert_eq!(noun.label, "dog#n#1");
+        assert_eq!(noun.words, ["dog", "domestic dog", "Canis familiaris"]);
+        assert_eq!(noun.gloss, "a domesticated canine");
+        assert_eq!(
+            noun.mappings
+                .iter()
+                .map(|m| format!("{}{}", m.term, m.suffix))
+                .collect::<Vec<_>>(),
+            ["Canine+", "DomesticDog="]
+        );
+        assert_eq!(noun.file, "WordNetMappings30-noun.txt");
+        assert_eq!(noun.line, 2);
+        assert!(senses.items.iter().any(|v| v.id == "02084071-v"));
+
+        let first = s.wordnet_senses_view("dog", &page(1));
+        assert_eq!((first.items.len(), first.total), (1, 2));
+    }
+
+    #[cfg(feature = "lexicon")]
+    #[test]
+    fn wordnet_senses_view_prefix_term_and_id_lookups() {
+        let s = session_with_senses();
+
+        let prefix = s.wordnet_senses_view("doghou", &page(10));
+        assert_eq!(prefix.items.len(), 1);
+        assert_eq!(prefix.items[0].words, ["doghouse"]);
+
+        let by_term = s.wordnet_senses_view(
+            "DomesticDog",
+            &WordNetSenseFilter {
+                by_term: true,
+                ..page(10)
+            },
+        );
+        assert_eq!(ids(&by_term), ["02084071-n"]);
+        assert!(by_term.items[0].label.is_empty());
+
+        assert_eq!(s.wordnet_senses_view("02084071", &page(10)).total, 2);
+        let verb = s.wordnet_senses_view("02084071-v", &page(10));
+        assert_eq!(verb.items[0].mappings[0].term, "Pursuing");
+
+        assert_eq!(s.wordnet_senses_view("02084071-x", &page(10)).total, 0);
+        assert_eq!(s.wordnet_senses_view("zzz", &page(10)).total, 0);
+    }
+
+    #[cfg(feature = "lexicon")]
+    #[test]
+    fn wordnet_senses_view_browses_everything_in_file_order_with_paging() {
+        let s = session_with_senses();
+        let all = s.wordnet_senses_view("  ", &page(100));
+        assert_eq!(all.total, 6);
+        assert_eq!(
+            ids(&all),
+            [
+                "02084071-n",
+                "02085374-n",
+                "03100490-n",
+                "03100500-n",
+                "03100510-n",
+                "02084071-v"
+            ]
+        );
+        let second = s.wordnet_senses_view(
+            "",
+            &WordNetSenseFilter {
+                offset: 2,
+                ..page(2)
+            },
+        );
+        assert_eq!(second.total, 6);
+        assert_eq!(ids(&second), ["03100490-n", "03100500-n"]);
+    }
+
+    #[cfg(feature = "lexicon")]
+    #[test]
+    fn wordnet_senses_view_filters_by_mapping_kind_and_pos() {
+        let s = session_with_senses();
+        let kinds = |kinds: &[&str]| WordNetSenseFilter {
+            kinds: kinds.iter().map(|k| k.to_string()).collect(),
+            ..page(100)
+        };
+        assert_eq!(
+            ids(&s.wordnet_senses_view("", &kinds(&["unmapped"]))),
+            ["03100500-n"]
+        );
+        assert_eq!(
+            ids(&s.wordnet_senses_view("", &kinds(&["equivalent"]))),
+            ["02084071-n", "03100490-n"]
+        );
+        assert_eq!(
+            ids(&s.wordnet_senses_view("", &kinds(&["instance", "anti_instance"]))),
+            ["03100510-n"]
+        );
+        assert_eq!(
+            ids(&s.wordnet_senses_view("dog", &kinds(&["subsuming"]))),
+            ["02084071-n", "02084071-v"]
+        );
+        let verbs = WordNetSenseFilter {
+            pos: Some("v".into()),
+            ..kinds(&["subsuming"])
+        };
+        assert_eq!(ids(&s.wordnet_senses_view("", &verbs)), ["02084071-v"]);
+    }
+
+    #[cfg(feature = "lexicon")]
+    #[test]
+    fn wordnet_senses_view_is_empty_without_a_lexicon() {
+        let s = session_with("(subclass Canine Animal)");
+        assert_eq!(s.wordnet_senses_view("dog", &page(10)).total, 0);
+    }
+
     /// The key behavior the WordNet-mappings field exists for: a hit found
     /// purely by plain documentation text (source "doc", nothing to do with
     /// WordNet) still lists the symbol's WordNet senses when it has any --
@@ -2097,6 +2492,7 @@ mod tests {
         let d = s.manpage_detail("Canine").expect("Canine has a man page");
         assert_eq!(d.wordnet.len(), 1);
         assert_eq!(d.wordnet[0].words, "dog");
+        assert_eq!(d.wordnet[0].id, "02084071-n");
         assert_eq!(d.wordnet[0].mapping, "subsuming");
         assert_eq!(d.wordnet[0].gloss, "a domesticated canine");
 

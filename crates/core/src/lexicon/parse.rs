@@ -404,6 +404,28 @@ oxen ox
     }
 
     #[test]
+    fn synset_by_id_and_lemma_listing() {
+        let wn = wn();
+        let dog = wn
+            .synset(SynsetId {
+                pos: Pos::Noun,
+                offset: 2084071,
+            })
+            .expect("dog synset");
+        assert!(dog.words.contains(&"dog".to_string()));
+        assert!(wn
+            .synset(SynsetId {
+                pos: Pos::Verb,
+                offset: 2084071,
+            })
+            .is_none());
+        assert!(wn.lemmas().any(|l| l == "dog"));
+        assert_eq!(wn.synsets().count(), wn.len());
+        assert_eq!(Pos::from_ss_type('s'), Some(Pos::Adj));
+        assert_eq!(Pos::from_ss_type('x'), None);
+    }
+
+    #[test]
     fn exception_table_fallback() {
         let wn = WordNet::from_texts(
             [(

@@ -38,6 +38,7 @@ import {
   useTestsStore,
   type SavedTest as SavedTarget,
 } from "./tests";
+import { isWordNetFile, useWordNetStore } from "./wordnet";
 
 const EDITS_DIR = "edits";
 
@@ -203,18 +204,25 @@ export const useChangesStore = defineStore("changes", {
 
     /** Stable fingerprint of what is tracked and at which content -- folded
      *  into the KB snapshot cache's own fingerprint so a revert cannot be
-     *  shadowed by a snapshot taken before it. */
+     *  shadowed by a snapshot taken before it. The WordNet mapping files are
+     *  left out: the snapshot never holds the lexicon. */
     fingerprint: (state) =>
       Object.values(state.index)
+        .filter((r) => !isWordNetFile(r.name))
         .map((r) => `${r.origin}:${r.name}:${r.savedBlobSha || ""}`)
         .sort()
         .join("|"),
 
-    /** Rows for every loaded constituent and imported test with something
-     *  unpushed (see `ChangeRow`), sorted by origin then name. */
+    /** Rows for every loaded constituent, imported test, and fetched WordNet
+     *  mapping file with something unpushed (see `ChangeRow`), sorted by
+     *  origin then name. */
     rows(state): ChangeRow[] {
       const kb = useKBStore();
-      const files = [...kb.constituents, ...useTestsStore().tests];
+      const files = [
+        ...kb.constituents,
+        ...useTestsStore().tests,
+        ...useWordNetStore().trackedFiles,
+      ];
       const loaded = new Set(files.map((c) => key(c.name, c.origin.kind)));
       const rows: ChangeRow[] = [];
       for (const rec of Object.values(state.index)) {
@@ -262,9 +270,11 @@ export const useChangesStore = defineStore("changes", {
     },
   },
   actions: {
-    /** The current text of a tracked file: a loaded constituent's, or an
-     *  imported test's. */
+    /** The current text of a tracked file: a loaded constituent's, an
+     *  imported test's, or a WordNet mapping file's. */
     trackedText(row: { name: string; origin: OriginKind }): string {
+      if (isWordNetFile(row.name))
+        return useWordNetStore().fileText(row.name) ?? "";
       if (isTestFile(row.name))
         return (
           useTestsStore().tests.find(
@@ -274,19 +284,27 @@ export const useChangesStore = defineStore("changes", {
       return useKBStore().find(row.name, row.origin)?.text ?? "";
     },
 
-    /** The full source of a loaded constituent or test. */
+    /** The full source of a loaded constituent, test, or mapping file. */
     trackedOrigin(row: { name: string; origin: OriginKind }) {
-      return [...useKBStore().constituents, ...useTestsStore().tests].find(
-        (c) => c.name === row.name && c.origin.kind === row.origin,
-      )?.origin;
+      return [
+        ...useKBStore().constituents,
+        ...useTestsStore().tests,
+        ...useWordNetStore().trackedFiles,
+      ].find((c) => c.name === row.name && c.origin.kind === row.origin)
+        ?.origin;
     },
 
     /** Save `text` as a tracked file through the store that owns it -- the
-     *  KB for a constituent, the tests store for a test. */
+     *  KB for a constituent, the tests store for a test, the WordNet store
+     *  for a mapping file. */
     async saveTracked(
       row: { name: string; origin: OriginKind },
       text: string,
     ): Promise<void> {
+      if (isWordNetFile(row.name)) {
+        await useWordNetStore().saveFile(row.name, text);
+        return;
+      }
       if (!isTestFile(row.name)) {
         await useKBStore().updateConstituentText(
           row.name,

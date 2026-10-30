@@ -37,6 +37,7 @@ const TAB_GROUPS: TabGroup[] = [
     label: "Develop",
     tabs: [
       ["edit", "Edit"],
+      ["wordnet", "WordNet"],
       ["diagnostics", "Diagnostics"],
     ],
   },

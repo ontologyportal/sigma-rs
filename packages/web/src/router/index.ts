@@ -49,6 +49,11 @@ export const router = createRouter({
       component: () => import("../views/EditTab.vue"),
     },
     {
+      name: "wordnet",
+      path: "/wordnet",
+      component: () => import("../views/WordNetTab.vue"),
+    },
+    {
       name: "diagnostics",
       path: "/diagnostics",
       component: () => import("../views/DiagnosticsTab.vue"),
@@ -56,7 +61,6 @@ export const router = createRouter({
     { name: "kb", path: "/kb", component: () => import("../views/KbTab.vue") },
     // Sub-tabs of the Knowledge base tab.
     { path: "/sources", redirect: { name: "kb", query: { view: "sources" } } },
-    { path: "/wordnet", redirect: { name: "kb", query: { view: "wordnet" } } },
     {
       name: "problems",
       path: "/problems",

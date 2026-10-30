@@ -135,7 +135,8 @@ function boldifyDoc(text: unknown): string {
           class="sym open"
           @click.prevent="navigate('browse', { q: query, sym: h.symbol })"
           >{{ h.symbol }}</a
-        >{{ " " }}<span class="kinds"
+        >{{ " "
+        }}<span class="kinds"
           >{{ kindsText(h) }} ·
           <span
             class="rank"
@@ -149,10 +150,9 @@ function boldifyDoc(text: unknown): string {
             >rank {{ h.rank.toFixed(0) }}</span
           ></span
         >
-        <pre
-          v-if="expandedRanks.has(h)"
-          class="rank-breakdown"
-        >{{ rankTooltip(h) }}</pre>
+        <pre v-if="expandedRanks.has(h)" class="rank-breakdown">{{
+          rankTooltip(h)
+        }}</pre>
         <div v-if="h.text" class="snippet" v-html="boldifyDoc(h.text)"></div>
         <WordNetEntry
           v-for="(m, j) in relevantWordnet(h.wordnet, query)"
@@ -181,7 +181,8 @@ function boldifyDoc(text: unknown): string {
               class="sym open"
               @click.prevent="navigate('browse', { q: query, sym: h.symbol })"
               >{{ h.symbol }}</a
-            >{{ " " }}<span class="kinds"
+            >{{ " "
+            }}<span class="kinds"
               >{{ kindsText(h) }} ·
               <span
                 class="rank"
@@ -195,10 +196,9 @@ function boldifyDoc(text: unknown): string {
                 >rank {{ h.rank.toFixed(0) }}</span
               ></span
             >
-            <pre
-              v-if="expandedRanks.has(h)"
-              class="rank-breakdown"
-            >{{ rankTooltip(h) }}</pre>
+            <pre v-if="expandedRanks.has(h)" class="rank-breakdown">{{
+              rankTooltip(h)
+            }}</pre>
             <div
               v-if="h.text"
               class="snippet"
@@ -230,7 +230,8 @@ function boldifyDoc(text: unknown): string {
               class="sym open"
               @click.prevent="navigate('browse', { q: query, sym: h.symbol })"
               >{{ h.symbol }}</a
-            >{{ " " }}<span class="kinds"
+            >{{ " "
+            }}<span class="kinds"
               >{{ kindsText(h) }} ·
               <span
                 class="rank"
@@ -244,10 +245,9 @@ function boldifyDoc(text: unknown): string {
                 >rank {{ h.rank.toFixed(0) }}</span
               ></span
             >
-            <pre
-              v-if="expandedRanks.has(h)"
-              class="rank-breakdown"
-            >{{ rankTooltip(h) }}</pre>
+            <pre v-if="expandedRanks.has(h)" class="rank-breakdown">{{
+              rankTooltip(h)
+            }}</pre>
             <div
               v-if="h.text"
               class="snippet"

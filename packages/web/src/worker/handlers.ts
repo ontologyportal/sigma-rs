@@ -35,6 +35,9 @@ import type {
   SumoSymbols,
   WordNetDiagnostics,
   WordNetFiles,
+  WordNetSense,
+  WordNetMappingKind,
+  Capped,
 } from "sigmakee/sdk";
 import { WasmLsp } from "sigmakee";
 import { verifyReportSources, type ReportFile } from "../utils/auditReplay";
@@ -234,6 +237,21 @@ export const handlers = {
     diagnostics: WordNetDiagnostics | null;
   } {
     return { diagnostics: active().wordnetDiagnostics(limit ?? 50) };
+  },
+  /** One page of synsets for the WordNet mapping editor (see
+   *  `Session.wordnetSenses`). */
+  wordnetSenses({
+    query,
+    ...opts
+  }: {
+    query: string;
+    byTerm?: boolean;
+    kinds?: WordNetMappingKind[];
+    pos?: string;
+    offset?: number;
+    limit?: number;
+  }): { senses: Capped<WordNetSense> } {
+    return { senses: active().wordnetSenses(query, opts) };
   },
   stats(): { stats: KbStats } {
     return { stats: active().kb.stats() };
