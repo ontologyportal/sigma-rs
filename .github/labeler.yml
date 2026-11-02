@@ -1,0 +1,38 @@
+backend:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "crates/core/**"
+          - "crates/sdk/**"
+          - "crates/wasm/**"
+
+supr:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "crates/core/src/prover/**"
+          - "packages/vampire/**"
+          - "packages/eprover/**"
+
+nlp:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "crates/core/src/lexicon/**"
+
+web-ui:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "packages/web/**"
+
+cli:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "crates/cli/**"
+
+vscode:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "packages/vscode/**"
+
+testing-deployment:
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".github/workflows/**"
