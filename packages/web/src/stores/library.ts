@@ -16,6 +16,7 @@ import {
   type OriginKind,
   type RemoteOrigin,
 } from "../models/Origin";
+import { gitlabTree } from "../api/gitlab";
 import { fetchRepoTree } from "../api/github";
 import { fetchText } from "../services/sources";
 import { errMsg } from "../utils/format";
@@ -26,6 +27,8 @@ import { isTestFile } from "./tests";
 
 /** A registered git repository + branch (GitHub only for now). */
 export interface RepoRef {
+  service?: "github" | "gitlab";
+  server?: string;
   owner: string;
   repo: string;
   branch: string;
@@ -70,17 +73,30 @@ export const DEFAULT_REPO: RepoRef = {
   branch: SUMO.branch,
 };
 
-export const repoId = (r: RepoRef) => `github:${r.owner}/${r.repo}@${r.branch}`;
+export const repoId = (r: RepoRef) =>
+  `${r.service ?? "github"}:${r.service === "gitlab" && r.server && r.server !== "https://gitlab.com" ? r.server + "/" : ""}${r.owner}/${r.repo}@${r.branch}`;
 export const sameRepo = (a: RepoRef, b: RepoRef) => repoId(a) === repoId(b);
 export const isDefaultRepo = (r: RepoRef) => sameRepo(r, DEFAULT_REPO);
 export const originForRepo = (r: RepoRef) =>
-  new GitOrigin("github", r.owner, r.repo, r.branch);
+  new GitOrigin(r.service ?? "github", r.owner, r.repo, r.branch, r.server);
 
 /** localStorage holds whatever an older build wrote; these two guards are
  *  the only gate between that and the store's state. */
 function isRepoRef(v: unknown): v is RepoRef {
   const r = v as RepoRef | null;
-  return !!r && !!r.owner && !!r.repo && !!r.branch;
+  return (
+    !!r &&
+    (r.service === undefined ||
+      r.service === "github" ||
+      r.service === "gitlab") &&
+    (r.server === undefined || typeof r.server === "string") &&
+    typeof r.owner === "string" &&
+    !!r.owner &&
+    typeof r.repo === "string" &&
+    !!r.repo &&
+    typeof r.branch === "string" &&
+    !!r.branch
+  );
 }
 
 function isLibraryEntry(v: unknown): v is LibraryEntry {
@@ -226,7 +242,9 @@ export const useLibraryStore = defineStore("library", {
       if (this.catalogs[id] && this.catalogRefs[id] === ref && !force) return;
       delete this.catalogErrors[id];
       try {
-        const tree = await fetchRepoTree(repo.owner, repo.repo, ref, { force });
+        const tree = await (repo.service === "gitlab"
+          ? gitlabTree(repo, ref)
+          : fetchRepoTree(repo.owner, repo.repo, ref, { force }));
         this.catalogs[id] = tree
           .filter((e) => e.type === "blob" && isLibraryFile(e.path))
           .map((e) => ({
@@ -261,12 +279,15 @@ export const useLibraryStore = defineStore("library", {
       { replace = false, ref }: { replace?: boolean; ref?: string } = {},
     ): Promise<void> {
       const repo: RepoRef = {
+        ...(r.service === "gitlab"
+          ? { service: "gitlab" as const, server: originForRepo(r).server }
+          : {}),
         owner: r.owner.trim(),
         repo: r.repo.trim(),
         branch: r.branch.trim() || "main",
       };
       if (!repo.owner || !repo.repo)
-        throw new Error("Enter a GitHub user and repository name.");
+        throw new Error("Enter a repository owner or namespace and name.");
       if (!replace && this.repos.some((x) => sameRepo(x, repo)))
         throw new Error(
           `${repo.owner}/${repo.repo}@${repo.branch} is already registered.`,

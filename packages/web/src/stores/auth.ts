@@ -5,6 +5,7 @@
  */
 
 import { defineStore } from "pinia";
+import { gitlabRequest } from "../api/gitlab";
 import { whoami } from "../api/github";
 
 export interface GithubUser {
@@ -18,6 +19,8 @@ export const useAuthStore = defineStore("auth", {
     /** The token to send with GitHub API calls, or null when signed out. */
     token: null as string | null,
     user: null as GithubUser | null,
+    gitlabUser: null as { login: string; server: string } | null,
+    gitlabDialogOpen: false,
     loginDialogOpen: false,
     logoutDialogOpen: false,
   }),
@@ -45,6 +48,23 @@ export const useAuthStore = defineStore("auth", {
      *  Best-effort: a 401 (not logged in) or a network failure both just
      *  leave the page signed out. */
     async init() {
+      await Promise.all([this.initGithub(), this.initGitlab()]);
+    },
+
+    /** Restore only GitLab profile metadata; credentials remain on the server. */
+    async initGitlab() {
+      const initialUser = this.gitlabUser;
+      try {
+        const result = await gitlabRequest<{
+          user: { login: string; server: string } | null;
+        }>("session");
+        if (this.gitlabUser === initialUser) this.gitlabUser = result.user;
+      } catch {
+        // Preserve the displayed account if a network interruption prevents checking it.
+      }
+    },
+
+    async initGithub() {
       try {
         const res = await fetch("/api/me");
         if (res.ok) {

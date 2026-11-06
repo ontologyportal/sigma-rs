@@ -15,13 +15,18 @@ const source = ts.transpileModule(
   },
 ).outputText;
 
-function fixture(whoami, fetch = async () => ({ ok: false })) {
+function fixture(
+  whoami,
+  fetch = async () => ({ ok: false }),
+  gitlab = async () => ({ user: null }),
+) {
   setActivePinia(createPinia());
   const exports = {};
   vm.runInNewContext(source, {
     exports,
     require: (name) => {
       if (name === "pinia") return { defineStore };
+      if (name === "../api/gitlab") return { gitlabRequest: gitlab };
       if (name === "../api/github") return { whoami };
       throw new Error(name);
     },
@@ -115,4 +120,41 @@ test("logout clears a personal token even without the local OAuth backend", asyn
   assert.equal(store.token, null);
   assert.equal(store.user, null);
   assert.equal(store.signedIn, false);
+});
+
+test("GitLab session restores after a reload without granting GitHub authentication", async () => {
+  const store = fixture(undefined, undefined, async (operation) => {
+    assert.equal(operation, "session");
+    return { user: { login: "shaun.rose", server: "https://gitlab.nps.edu" } };
+  });
+  await store.init();
+  assert.equal(store.gitlabUser.login, "shaun.rose");
+  assert.equal(store.gitlabUser.server, "https://gitlab.nps.edu");
+  assert.equal(store.user, null);
+  assert.equal(store.token, null);
+  assert.equal(store.signedIn, false);
+});
+
+test("late session restoration cannot erase a fresh GitLab sign-in", async () => {
+  let resolve;
+  const store = fixture(
+    undefined,
+    undefined,
+    () =>
+      new Promise((r) => {
+        resolve = r;
+      }),
+  );
+  const pending = store.initGitlab();
+  store.gitlabUser = { login: "new-login", server: "https://gitlab.nps.edu" };
+  resolve({ user: null });
+  await pending;
+  assert.equal(store.gitlabUser.login, "new-login");
+});
+
+test("expired GitLab sessions clear the displayed profile", async () => {
+  const store = fixture();
+  store.gitlabUser = { login: "alice", server: "https://gitlab.nps.edu" };
+  await store.initGitlab();
+  assert.equal(store.gitlabUser, null);
 });

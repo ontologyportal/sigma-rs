@@ -3,6 +3,7 @@
  *  GitHub source, the URL for a remote file, the added date for a local
  *  upload. The commit is fetched lazily, only while the dialog is open. */
 import { ref, watch } from "vue";
+import { gitlabHead } from "../../api/gitlab";
 import { fetchRepoLastCommit } from "../../api/github.ts";
 import { GitOrigin, RemoteOrigin, LocalOrigin } from "../../models/Origin";
 import type { SourceGroup } from "../../stores/kb";
@@ -26,7 +27,10 @@ watch(
     if (!open || !group || group.origin.kind !== "sumo") return;
     const g = group.origin as GitOrigin;
     commitLoading.value = true;
-    fetchRepoLastCommit(g.owner, g.repo, g.branch)
+    (g.service === "gitlab"
+      ? gitlabHead(g)
+      : fetchRepoLastCommit(g.owner, g.repo, g.branch)
+    )
       .then((c) => (commit.value = c))
       .catch(
         (e) => (commitError.value = e instanceof Error ? e.message : String(e)),

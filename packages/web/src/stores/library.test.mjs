@@ -81,9 +81,18 @@ function fixture({ persisted = null, pin = { value: undefined } } = {}) {
     "../models/Origin": {
       GitOrigin: class {
         kind = "sumo";
+        constructor(service, owner, repo, branch, server) {
+          Object.assign(this, { service, owner, repo, branch, server });
+        }
       },
       LocalOrigin: class {
         kind = "file";
+      },
+    },
+    "../api/gitlab": {
+      async gitlabTree(repo, ref) {
+        trees.push(`gitlab:${repo.owner}/${repo.repo}@${ref}`);
+        return [{ type: "blob", path: "private.kif", size: 0 }];
       },
     },
     "../api/github": {
@@ -262,4 +271,46 @@ test("a catalog failure preserves the previous registered branch", async () => {
     /404/,
   );
   assert.equal(JSON.stringify(f.store.repos), before);
+});
+
+test("GitLab catalogs persist provider and use the authenticated repository API", async () => {
+  const f = fixture();
+  await f.store.addRepo({
+    service: "gitlab",
+    owner: "group/subgroup",
+    repo: "kb",
+    branch: "work/private",
+  });
+  assert.ok(f.trees.includes("gitlab:group/subgroup/kb@work/private"));
+  const id = f.store.repoId({
+    service: "gitlab",
+    owner: "group/subgroup",
+    repo: "kb",
+    branch: "work/private",
+  });
+  assert.equal(f.store.catalogs[id][0].path, "private.kif");
+  assert.equal(
+    JSON.parse(f.stored.get("library")).repos.at(-1).service,
+    "gitlab",
+  );
+});
+
+test("custom GitLab servers persist with distinct repository IDs", async () => {
+  const f = fixture();
+  const custom = {
+    service: "gitlab",
+    server: "https://gitlab.nps.edu",
+    owner: "fsg",
+    repo: "kb",
+    branch: "main",
+  };
+  await f.store.addRepo(custom);
+  assert.equal(
+    JSON.parse(f.stored.get("library")).repos.at(-1).server,
+    custom.server,
+  );
+  assert.notEqual(
+    f.store.repoId(custom),
+    f.store.repoId({ ...custom, server: "https://gitlab.com" }),
+  );
 });

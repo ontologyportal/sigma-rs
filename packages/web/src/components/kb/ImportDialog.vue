@@ -9,6 +9,7 @@
  *  imported file immediately. Emits `imported` with a one-line summary the
  *  tab logs. */
 import { computed, ref, watch } from "vue";
+import GitLabLogin from "../GitLabLogin.vue";
 import {
   GitOrigin,
   LocalOrigin,
@@ -54,13 +55,15 @@ const emit = defineEmits<{
 const kb = useKBStore();
 const library = useLibraryStore();
 
-type Mode = "local" | "url" | "github";
+type Mode = "local" | "url" | "github" | "gitlab";
 const MODES: { id: Mode; label: string }[] = [
   { id: "local", label: "Local" },
   { id: "url", label: "Website" },
   { id: "github", label: "GitHub" },
+  { id: "gitlab", label: "GitLab" },
 ];
 const mode = ref<Mode>("local");
+const server = ref(library.defaultRepo.server ?? "");
 const busy = ref(false);
 const status = useStatus();
 
@@ -178,6 +181,10 @@ async function doImport() {
       else message += ".";
     } else {
       const r: RepoRef = {
+        service: mode.value === "gitlab" ? "gitlab" : "github",
+        ...(mode.value === "gitlab" && server.value
+          ? { server: server.value }
+          : {}),
         owner: owner.value,
         repo: repo.value,
         branch: branch.value,
@@ -273,9 +280,12 @@ watch(
     </div>
 
     <div v-else class="mt">
+      <GitLabLogin v-if="mode === 'gitlab'" v-model:server="server" />
       <div class="repo-grid">
         <div>
-          <label for="importOwner">User</label>
+          <label for="importOwner">{{
+            mode === "gitlab" ? "Namespace (including subgroups)" : "User"
+          }}</label>
           <input id="importOwner" v-model="owner" type="text" />
         </div>
         <div>
@@ -311,7 +321,7 @@ watch(
     <label v-if="accept === 'kif'" class="check mt">
       <input v-model="loadNow" type="checkbox" :disabled="busy" />
       Also load into the knowledge base
-      <span v-if="mode === 'github'" class="hint"
+      <span v-if="mode === 'github' || mode === 'gitlab'" class="hint"
         >(loads every listed file)</span
       >
     </label>

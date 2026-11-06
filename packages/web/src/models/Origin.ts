@@ -7,7 +7,14 @@ export type OriginKind = "sumo" | "file" | "url";
 
 /** The persisted shape of an `Origin` (see `serializeOrigin` / `parseOrigin`). */
 export type OriginJson =
-  | { kind: "sumo"; owner: string; repo: string; branch: string }
+  | {
+      kind: "sumo";
+      service?: "github" | "gitlab";
+      server?: string;
+      owner: string;
+      repo: string;
+      branch: string;
+    }
   | { kind: "file" }
   | { kind: "url"; url: string };
 
@@ -15,7 +22,7 @@ export abstract class Origin {
   abstract readonly kind: OriginKind;
 }
 
-/** A file tracked in a git-hosted repository (GitHub only for now). The
+/** A file tracked in a git-hosted repository (GitHub or GitLab.com). The
  *  upstream `ontologyportal/sumo` repo is the default; its files are named by
  *  bare repo path, another repo's files by `owner/repo/path`. */
 export class GitOrigin extends Origin {
@@ -24,18 +31,22 @@ export class GitOrigin extends Origin {
   owner: string;
   repo: string;
   branch: string;
+  server?: string;
 
   constructor(
     service: "github" | "gitlab",
     owner: string,
     repo: string,
     branch: string,
+    server?: string,
   ) {
     super();
     this.service = service;
     this.owner = owner;
     this.repo = repo;
     this.branch = branch;
+    if (service === "gitlab")
+      this.server = server ? new URL(server).origin : "https://gitlab.com";
   }
 
   static default(): GitOrigin {
@@ -44,11 +55,12 @@ export class GitOrigin extends Origin {
 
   /** `github:owner/repo@branch` -- the library's repo key. */
   get id(): string {
-    return `${this.service}:${this.owner}/${this.repo}@${this.branch}`;
+    return `${this.service}:${this.server && this.server !== "https://gitlab.com" ? this.server + "/" : ""}${this.owner}/${this.repo}@${this.branch}`;
   }
 
   get isDefault(): boolean {
     return (
+      this.service === "github" &&
       this.owner === SUMO.owner &&
       this.repo === SUMO.repo &&
       this.branch === SUMO.branch
@@ -56,23 +68,27 @@ export class GitOrigin extends Origin {
   }
 
   get label(): string {
-    return `${this.owner}/${this.repo}@${this.branch}`;
+    return `${this.service === "gitlab" ? `GitLab${this.server && this.server !== "https://gitlab.com" ? " (" + this.server + ")" : ""}: ` : ""}${this.owner}/${this.repo}@${this.branch}`;
   }
 
   /** `path`'s raw URL at `ref` (a commit SHA), or at the branch tip. */
   rawUrl(path: string, ref: string = this.branch): string {
+    if (this.service === "gitlab")
+      return `${this.server}/${this.owner}/${this.repo}/-/raw/${encodeURIComponent(ref)}/${path.split("/").map(encodeURIComponent).join("/")}`;
     return `https://raw.githubusercontent.com/${this.owner}/${this.repo}/${ref}/${path}`;
   }
 
   /** The KB name of a repo path: bare for the default repo, prefixed with
    *  `owner/repo/` for any other so names never collide across repos. */
   nameFor(path: string): string {
-    return this.isDefault ? path : `${this.owner}/${this.repo}/${path}`;
+    return this.isDefault
+      ? path
+      : `${this.service === "gitlab" ? `gitlab/${this.server && this.server !== "https://gitlab.com" ? encodeURIComponent(this.server) + "/" : ""}` : ""}${this.owner}/${this.repo}/${path}`;
   }
 
   /** Inverse of `nameFor`. */
   pathOf(name: string): string {
-    const prefix = `${this.owner}/${this.repo}/`;
+    const prefix = `${this.service === "gitlab" ? `gitlab/${this.server && this.server !== "https://gitlab.com" ? encodeURIComponent(this.server) + "/" : ""}` : ""}${this.owner}/${this.repo}/`;
     return !this.isDefault && name.startsWith(prefix)
       ? name.slice(prefix.length)
       : name;
@@ -121,7 +137,20 @@ export function serializeOrigin(o: Origin): OriginJson {
   switch (o.kind) {
     case "sumo": {
       const g = o as GitOrigin;
-      return { kind: "sumo", owner: g.owner, repo: g.repo, branch: g.branch };
+      return {
+        kind: "sumo",
+        ...(g.service === "gitlab"
+          ? {
+              service: "gitlab" as const,
+              ...(g.server && g.server !== "https://gitlab.com"
+                ? { server: g.server }
+                : {}),
+            }
+          : {}),
+        owner: g.owner,
+        repo: g.repo,
+        branch: g.branch,
+      };
     }
     case "file":
       return { kind: "file" };
@@ -162,10 +191,11 @@ export function parseOrigin(
   switch (json?.kind) {
     case "sumo":
       return new GitOrigin(
-        "github",
+        json.service === "gitlab" ? "gitlab" : "github",
         json.owner || SUMO.owner,
         json.repo || SUMO.repo,
         json.branch || SUMO.branch,
+        json.server,
       );
     case "url":
       return new RemoteOrigin(json.url || name);
@@ -195,8 +225,14 @@ export function sourceLabel(o: Origin): string {
 export function originId(json: OriginJson | Origin): string {
   switch (json.kind) {
     case "sumo": {
-      const g = json as { owner: string; repo: string; branch: string };
-      return `github:${g.owner}/${g.repo}@${g.branch}`;
+      const g = json as {
+        service?: string;
+        server?: string;
+        owner: string;
+        repo: string;
+        branch: string;
+      };
+      return `${g.service === "gitlab" ? "gitlab" : "github"}:${g.service === "gitlab" && g.server && g.server !== "https://gitlab.com" ? g.server + "/" : ""}${g.owner}/${g.repo}@${g.branch}`;
     }
     case "file":
       return "file";

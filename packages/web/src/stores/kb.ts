@@ -24,6 +24,7 @@ import {
   serializeOrigin,
   sourceLabel,
 } from "../models/Origin";
+import { gitlabHead } from "../api/gitlab";
 import { fetchRepoLastCommit } from "../api/github";
 import { call } from "../services/sigma";
 import { fetchAllTexts, fetchText, fromOrigin } from "../services/sources";
@@ -492,12 +493,11 @@ export const useKBStore = defineStore("kb", {
       onProgress?: (done: number, total: number) => void,
     ): Promise<{ added: number; failed: string[] }> {
       if (!paths.length) throw new Error("Choose a constituent set to load.");
-      const { sha } = await fetchRepoLastCommit(
-        origin.owner,
-        origin.repo,
-        origin.branch,
-        { force: true },
-      );
+      const { sha } = await (origin.service === "gitlab"
+        ? gitlabHead(origin)
+        : fetchRepoLastCommit(origin.owner, origin.repo, origin.branch, {
+            force: true,
+          }));
       if (!sha) throw new Error(`Cannot resolve ${origin.label}.`);
       const entries = paths.map((path) => ({
         name: origin.nameFor(path),
@@ -516,7 +516,13 @@ export const useKBStore = defineStore("kb", {
         return { ...entry, text };
       });
       await useLibraryStore().addRepo(
-        { owner: origin.owner, repo: origin.repo, branch: origin.branch },
+        {
+          service: origin.service,
+          server: origin.server,
+          owner: origin.owner,
+          repo: origin.repo,
+          branch: origin.branch,
+        },
         { replace: true, ref: sha },
       );
       await this.replaceAll();
@@ -741,9 +747,11 @@ export const useKBStore = defineStore("kb", {
       const g = group.origin as GitOrigin;
       let latest: { sha: string | null };
       try {
-        latest = await fetchRepoLastCommit(g.owner, g.repo, g.branch, {
-          force: manual,
-        });
+        latest = await (g.service === "gitlab"
+          ? gitlabHead(g)
+          : fetchRepoLastCommit(g.owner, g.repo, g.branch, {
+              force: manual,
+            }));
       } catch {
         if (manual)
           this.updateAlerts.push({

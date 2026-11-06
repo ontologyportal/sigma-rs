@@ -5,6 +5,8 @@
  *  panel. */
 import { computed, onActivated, onMounted, ref, watch } from "vue";
 import { onBeforeRouteLeave } from "vue-router";
+import GitLabLogin from "../components/GitLabLogin.vue";
+import { gitlabRequest, coordinates } from "../api/gitlab";
 import { fetchRepoBranches } from "../api/github";
 import { Constituent } from "../models/Constituent";
 import { GitOrigin } from "../models/Origin";
@@ -87,6 +89,12 @@ const presetMenuOpen = ref(false);
 const importOpen = ref(false);
 const loadedOrigin = kb.constituents.find((c) => c.origin.kind === "sumo")
   ?.origin as GitOrigin | undefined;
+const service = ref<"github" | "gitlab">(
+  loadedOrigin?.service ?? library.defaultRepo.service ?? "github",
+);
+const listedService = ref(service.value);
+const server = ref(loadedOrigin?.server ?? library.defaultRepo.server ?? "");
+const listedServer = ref(server.value);
 const owner = ref(loadedOrigin?.owner ?? library.defaultRepo.owner);
 const repo = ref(loadedOrigin?.repo ?? library.defaultRepo.repo);
 const branch = ref(loadedOrigin?.branch ?? library.defaultRepo.branch);
@@ -94,6 +102,11 @@ const branchBtn = ref<HTMLElement | null>(null);
 const branchMenuOpen = ref(false);
 const repository = ref(`${owner.value}/${repo.value}`);
 const listedRepo = ref(repository.value);
+watch(service, () => {
+  repository.value = "";
+  branches.value = [];
+  branchError.value = "";
+});
 const branches = ref<string[]>([]);
 const branchSearch = ref("");
 const branchesBusy = ref(false);
@@ -106,10 +119,34 @@ const filteredBranches = computed(() =>
 
 async function listBranches() {
   if (branchesBusy.value) return;
-  const value = repository.value.trim();
-  if (!/^[\w.-]+\/[\w.-]+$/.test(value)) {
+  let value = repository.value.trim();
+  if (service.value === "gitlab" && /^https?:\/\//i.test(value)) {
+    try {
+      const project = new URL(value);
+      if (project.protocol !== "https:" || project.username || project.password)
+        throw new Error();
+      const parts = project.pathname.split("/").filter(Boolean);
+      const separator = parts.indexOf("-");
+      value = (separator < 0 ? parts : parts.slice(0, separator))
+        .join("/")
+        .replace(/\.git$/, "");
+      server.value = project.origin;
+      repository.value = value;
+    } catch {
+      branchError.value =
+        "Enter an HTTPS GitLab project URL or namespace/project path.";
+      return;
+    }
+  }
+  if (
+    !(
+      service.value === "gitlab"
+        ? /^[\w.-]+(?:\/[\w.-]+)+$/
+        : /^[\w.-]+\/[\w.-]+$/
+    ).test(value)
+  ) {
     branchError.value =
-      "Enter a repository such as ontologyportal/sumo or your-username/sumo.";
+      "Enter a project path including its name, such as group/project. A group URL alone has no branches.";
     return;
   }
   branchesBusy.value = true;
@@ -117,8 +154,23 @@ async function listBranches() {
   branches.value = [];
   branchSearch.value = "";
   try {
-    const [account, name] = value.split("/");
-    branches.value = await fetchRepoBranches(account, name);
+    const parts = value.split("/");
+    const name = parts.pop()!;
+    const account = parts.join("/");
+    branches.value =
+      service.value === "gitlab"
+        ? await gitlabRequest<string[]>(
+            "branches",
+            coordinates({
+              owner: account,
+              repo: name,
+              branch: branch.value,
+              server: server.value || undefined,
+            }),
+          )
+        : await fetchRepoBranches(account, name);
+    listedService.value = service.value;
+    listedServer.value = server.value;
     listedRepo.value = value;
   } catch (e) {
     branchError.value = e instanceof Error ? e.message : String(e);
@@ -136,11 +188,19 @@ async function toggleBranches() {
 }
 
 async function selectBranch(name: string) {
-  const [account, repositoryName] = listedRepo.value.split("/");
+  const parts = listedRepo.value.split("/");
+  const repositoryName = parts.pop()!;
+  const account = parts.join("/");
   branchMenuOpen.value = false;
   await loadPreset(
     currentPaths.value.length ? "current" : "minimal",
-    new GitOrigin("github", account, repositoryName, name),
+    new GitOrigin(
+      listedService.value,
+      account,
+      repositoryName,
+      name,
+      listedServer.value || undefined,
+    ),
   );
 }
 onBeforeRouteLeave(() => !presetsBusy.value);
@@ -168,13 +228,14 @@ async function loadPreset(key: string, target?: GitOrigin) {
   const origin =
     target ??
     new GitOrigin(
-      "github",
+      service.value,
       owner.value.trim(),
       repo.value.trim(),
       branch.value.trim(),
+      server.value || undefined,
     );
   if (!origin.owner || !origin.repo || !origin.branch) {
-    tableLog.set("Enter a GitHub owner, repository, and branch.", true);
+    tableLog.set("Enter an owner or namespace, repository, and branch.", true);
     return;
   }
   if (
@@ -191,6 +252,8 @@ async function loadPreset(key: string, target?: GitOrigin) {
       tableLog.set(`Fetching ${preset.label} — ${n}/${total}…`),
     );
     if (!failed.length) {
+      service.value = origin.service;
+      server.value = origin.server ?? "";
       owner.value = origin.owner;
       repo.value = origin.repo;
       branch.value = origin.branch;
@@ -295,16 +358,24 @@ async function loadPreset(key: string, target?: GitOrigin) {
           <summary>Use another repository or fork</summary>
           <form @submit.prevent="listBranches">
             <label
-              >GitHub repository
+              >Host
+              <select v-model="service" :disabled="branchesBusy">
+                <option value="github">GitHub</option>
+                <option value="gitlab">GitLab</option>
+              </select></label
+            >
+            <GitLabLogin v-if="service === 'gitlab'" v-model:server="server" />
+            <label
+              >Repository
               <input
                 v-model="repository"
-                placeholder="your-username/sumo"
+                placeholder="namespace/project or full project URL"
                 :disabled="branchesBusy"
               />
             </label>
             <p class="hint">
-              Use account/repository, for example ontologyportal/sumo. For your
-              fork, replace ontologyportal with your GitHub username.
+              Enter namespace/project, including any subgroups, or paste the
+              full GitLab project URL.
             </p>
             <button class="btn ghost" type="submit" :disabled="branchesBusy">
               Show branches
