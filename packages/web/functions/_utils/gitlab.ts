@@ -137,3 +137,13 @@ export async function gitlabFetch(
 export function sameOrigin(request: Request) {
   return request.headers.get("Origin") === new URL(request.url).origin;
 }
+
+/** Forget this browser's GitLab connection without revoking a personal token. */
+export async function endGitlabSession(
+  request: Request,
+  env: Pick<GitLabEnv, "SESSIONS">,
+): Promise<string> {
+  const id = getCookie(request, SESSION_COOKIE);
+  if (id) await env.SESSIONS.delete(`gitlab:${id}`);
+  return cookieHeader(SESSION_COOKIE, "", 0);
+}

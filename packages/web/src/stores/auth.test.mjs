@@ -132,7 +132,8 @@ test("GitLab session restores after a reload without granting GitHub authenticat
   assert.equal(store.gitlabUser.server, "https://gitlab.nps.edu");
   assert.equal(store.user, null);
   assert.equal(store.token, null);
-  assert.equal(store.signedIn, false);
+  assert.equal(store.githubSignedIn, false);
+  assert.equal(store.signedIn, true);
 });
 
 test("late session restoration cannot erase a fresh GitLab sign-in", async () => {
@@ -157,4 +158,78 @@ test("expired GitLab sessions clear the displayed profile", async () => {
   store.gitlabUser = { login: "alice", server: "https://gitlab.nps.edu" };
   await store.initGitlab();
   assert.equal(store.gitlabUser, null);
+});
+
+test("successful GitHub token sign-in ends the previous GitLab connection", async () => {
+  const calls = [];
+  const store = fixture(
+    async () => profile,
+    undefined,
+    async (op) => {
+      calls.push(op);
+      return {};
+    },
+  );
+  store.gitlabUser = { login: "company", server: "https://gitlab.example.org" };
+  await store.loginWithToken("github-token");
+  assert.deepEqual(calls, ["logout"]);
+  assert.equal(store.provider, "github");
+  assert.equal(store.gitlabUser, null);
+});
+
+test("failed GitHub validation preserves the current GitLab account", async () => {
+  const store = fixture(async () => {
+    throw new Error("bad token");
+  });
+  store.gitlabUser = { login: "company", server: "https://gitlab.example.org" };
+  await assert.rejects(store.loginWithToken("bad"), /bad token/);
+  assert.equal(store.provider, "gitlab");
+});
+
+test("GitLab sign-in clears the GitHub token only after success", async () => {
+  let reject = true;
+  const store = fixture(
+    async () => profile,
+    undefined,
+    async () => {
+      if (reject) throw new Error("bad token");
+      return { login: "company", server: "https://gitlab.example.org" };
+    },
+  );
+  await store.loginWithToken("github-token");
+  await assert.rejects(
+    store.loginWithGitlabToken("https://gitlab.example.org", "bad"),
+    /bad token/,
+  );
+  assert.equal(store.provider, "github");
+  reject = false;
+  await store.loginWithGitlabToken("https://gitlab.example.org", "valid");
+  assert.equal(store.provider, "gitlab");
+  assert.equal(store.token, null);
+  assert.equal(store.user, null);
+});
+
+test("legacy dual sessions restore only GitHub and end the GitLab session", async () => {
+  const calls = [];
+  const store = fixture(
+    undefined,
+    async () => ({
+      ok: true,
+      json: async () => ({
+        name: "GitHub user",
+        login: "github",
+        token: "github-token",
+      }),
+    }),
+    async (op) => {
+      calls.push(op);
+      return {
+        user: { login: "company", server: "https://gitlab.example.org" },
+      };
+    },
+  );
+  await store.init();
+  assert.equal(store.provider, "github");
+  assert.equal(store.gitlabUser, null);
+  assert.deepEqual(calls, ["session", "logout"]);
 });

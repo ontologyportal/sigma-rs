@@ -16,8 +16,8 @@ import {
   type OriginKind,
   type RemoteOrigin,
 } from "../models/Origin";
-import { gitlabTree } from "../api/gitlab";
-import { fetchRepoTree } from "../api/github";
+import { gitlabTree, gitlabRequest, coordinates } from "../api/gitlab";
+import { fetchRepoTree, fetchRepoBranches } from "../api/github";
 import { fetchText } from "../services/sources";
 import { errMsg } from "../utils/format";
 import { useBootStore } from "./boot";
@@ -226,6 +226,66 @@ export const useLibraryStore = defineStore("library", {
         LIBRARY_KEY,
         JSON.stringify({ repos: this.repos, entries: this.entries }),
       );
+    },
+
+    /** Repair persisted sources before boot reads any saved constituents. */
+    async recoverSavedRepos(): Promise<void> {
+      const kb = useKBStore();
+      const repos = [...this.repos];
+      for (const row of kb.saved) {
+        if (row.origin.kind !== "sumo") continue;
+        if (!repos.some((r) => sameRepo(r, row.origin as RepoRef)))
+          repos.push(row.origin as RepoRef);
+      }
+      let session: { user: { server: string } | null } | undefined;
+      if (repos.some((r) => r.service === "gitlab")) {
+        try {
+          session = await gitlabRequest("session");
+        } catch {
+          // Unknown session state is not evidence that access was lost.
+        }
+      }
+      for (const repo of repos) {
+        if (isDefaultRepo(repo)) continue;
+        let target: RepoRef | undefined;
+        const signedOut =
+          repo.service === "gitlab" &&
+          session !== undefined &&
+          session.user?.server !== (repo.server || "https://gitlab.com");
+        if (signedOut) target = DEFAULT_REPO;
+        else {
+          try {
+            const branches =
+              repo.service === "gitlab"
+                ? await gitlabRequest<string[]>("branches", coordinates(repo))
+                : await fetchRepoBranches(repo.owner, repo.repo);
+            if (!branches.includes(repo.branch) && branches.includes("master"))
+              target = { ...repo, branch: "master" };
+          } catch {
+            // A 404 may hide a private project; only a successful list proves deletion.
+          }
+        }
+        if (!target) continue;
+        try {
+          await this.loadCatalog(target, { force: true, ref: target.branch });
+        } catch {
+          // Keep the saved source if its replacement is temporarily unavailable.
+          continue;
+        }
+        await kb.recoverSavedRepo(
+          originForRepo(repo),
+          originForRepo(target),
+          signedOut,
+          this.catalogs[repoId(target)]!.map((entry) => entry.path),
+        );
+        this.repos = this.repos.filter((r) => !sameRepo(r, repo));
+        if (!this.repos.some((r) => sameRepo(r, target!)))
+          this.repos.push(target);
+        delete this.catalogs[repoId(repo)];
+        delete this.catalogRefs[repoId(repo)];
+        delete this.catalogErrors[repoId(repo)];
+        this.persist();
+      }
     },
 
     /** List a repo's KIF and test files -- one tree read per repo, shared

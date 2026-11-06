@@ -51,6 +51,8 @@ function fixture({
         invalidToken ? { message: "Unauthorized" } : { username: "alice" },
         { status: invalidToken ? 401 : 200 },
       );
+    if (url === "https://github.com/login/oauth/access_token")
+      return Response.json({ access_token: "github-oauth-token" });
     if (url.endsWith("/oauth/token"))
       return Response.json({ access_token: "secret", expires_in: 7200 });
     if (url.endsWith("/oauth/revoke")) return Response.json({});
@@ -533,4 +535,109 @@ test("branch 404 identifies the selected server and project", async () => {
   assert.match(result.body.error, /fsg\/sumo/);
   assert.match(result.body.error, /gitlab.nps.edu/);
   assert.match(result.body.error, /token cannot access/);
+});
+
+test("successful GitLab token sign-in clears the browser's GitHub session", async () => {
+  const f = fixture();
+  f.kv.set(
+    "session:github-session",
+    JSON.stringify({ access_token: "github-token", created_at: Date.now() }),
+  );
+  const handler = f.load(new URL("./gitlab.ts", import.meta.url));
+  const result = await handler.onRequestPost({
+    env: f.env,
+    request: new Request("https://app.test/api/gitlab", {
+      method: "POST",
+      headers: {
+        Origin: "https://app.test",
+        "Content-Type": "application/json",
+        Cookie: "session_id=github-session",
+      },
+      body: JSON.stringify({ operation: "login", token: "gitlab-token" }),
+    }),
+  });
+  assert.equal(result.status, 200);
+  assert.equal(f.kv.has("session:github-session"), false);
+  assert.ok(
+    result.headers
+      .getSetCookie()
+      .some((c) => c.startsWith("session_id=;") && c.includes("Max-Age=0")),
+  );
+});
+
+test("GitHub OAuth callback clears the previous GitLab session", async () => {
+  const f = fixture();
+  f.env.GITHUB_OAUTH_CLIENT_ID = "client";
+  f.env.GITHUB_OAUTH_CLIENT_SECRET = "secret";
+  const callback = f.load(
+    new URL("./github-auth-callback.ts", import.meta.url),
+  );
+  const result = await callback.onRequestGet({
+    env: f.env,
+    request: new Request(
+      "https://app.test/api/github-auth-callback?state=abc&code=code",
+      { headers: { Cookie: `oauth_state=abc; gitlab_session=${f.id}` } },
+    ),
+  });
+  assert.equal(result.status, 302);
+  assert.equal(f.kv.has(`gitlab:${f.id}`), false);
+  assert.ok(
+    result.headers
+      .getSetCookie()
+      .some((c) => c.startsWith("gitlab_session=;") && c.includes("Max-Age=0")),
+  );
+});
+
+test("GitLab OAuth callback ends an existing GitHub session after exchange", async () => {
+  const f = fixture();
+  f.kv.set(
+    "session:github-id",
+    JSON.stringify({ access_token: "github-token" }),
+  );
+  const callback = f.load(
+    new URL("./gitlab-auth-callback.ts", import.meta.url),
+  );
+  const result = await callback.onRequestGet({
+    env: f.env,
+    request: new Request(
+      "https://app.test/api/gitlab-auth-callback?state=state&code=code",
+      {
+        headers: {
+          Cookie:
+            "gitlab_state=state; gitlab_verifier=verifier; session_id=github-id",
+        },
+      },
+    ),
+  });
+  assert.equal(result.status, 302);
+  assert.equal(f.kv.has("session:github-id"), false);
+  assert.ok(
+    result.headers
+      .getSetCookie()
+      .some((c) => c.startsWith("session_id=;") && c.includes("Max-Age=0")),
+  );
+});
+
+test("failed GitLab token sign-in keeps the existing GitHub session", async () => {
+  const f = fixture({ invalidToken: true });
+  f.kv.set(
+    "session:github-id",
+    JSON.stringify({ access_token: "github-token" }),
+  );
+  const handler = f.load(new URL("./gitlab.ts", import.meta.url));
+  const result = await handler.onRequestPost({
+    env: f.env,
+    request: new Request("https://app.test/api/gitlab", {
+      method: "POST",
+      headers: {
+        Origin: "https://app.test",
+        "Content-Type": "application/json",
+        Cookie: "session_id=github-id",
+      },
+      body: JSON.stringify({ operation: "login", token: "invalid" }),
+    }),
+  });
+  assert.equal(result.status, 401);
+  assert.ok(f.kv.has("session:github-id"));
+  assert.equal(result.headers.getSetCookie().length, 0);
 });

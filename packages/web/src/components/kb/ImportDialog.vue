@@ -36,8 +36,10 @@ const props = withDefaults(
     modelValue: boolean;
     /** Which local/URL files to take: `.kif` constituents or test files. */
     accept?: ImportAccept;
+    /** Limit the dialog to file imports or additional repository sources. */
+    sources?: "all" | "files" | "repos";
   }>(),
-  { accept: "kif" },
+  { accept: "kif", sources: "all" },
 );
 
 /** The `<input type=file>` accept list and the wording for `accept`. */
@@ -57,12 +59,21 @@ const library = useLibraryStore();
 
 type Mode = "local" | "url" | "github" | "gitlab";
 const MODES: { id: Mode; label: string }[] = [
-  { id: "local", label: "Local" },
-  { id: "url", label: "Website" },
+  { id: "local", label: "Files & folders" },
+  { id: "url", label: "File URL" },
   { id: "github", label: "GitHub" },
   { id: "gitlab", label: "GitLab" },
 ];
-const mode = ref<Mode>("local");
+const availableModes = computed(() =>
+  MODES.filter((m) =>
+    props.sources === "files"
+      ? m.id === "local" || m.id === "url"
+      : props.sources === "repos"
+        ? m.id === "github" || m.id === "gitlab"
+        : true,
+  ),
+);
+const mode = ref<Mode>(props.sources === "repos" ? "github" : "local");
 const server = ref(library.defaultRepo.server ?? "");
 const busy = ref(false);
 const status = useStatus();
@@ -218,7 +229,11 @@ function close() {
 watch(
   () => props.modelValue,
   (open) => {
-    if (open) status.clear();
+    if (open) {
+      status.clear();
+      if (!availableModes.value.some((m) => m.id === mode.value))
+        mode.value = availableModes.value[0].id;
+    }
   },
 );
 </script>
@@ -226,13 +241,26 @@ watch(
 <template>
   <BaseDialog
     :model-value="modelValue"
-    title="Import into the library"
+    :title="
+      sources === 'repos'
+        ? 'Add repository'
+        : sources === 'files'
+          ? 'Import files'
+          : 'Import into the library'
+    "
     width="min(520px, 92vw)"
     @update:model-value="emit('update:modelValue', $event)"
   >
+    <p class="hint import-description">
+      {{
+        sources === "repos"
+          ? "Add a repository to the library alongside your existing sources."
+          : "Add files to the library, then choose which ones to load."
+      }}
+    </p>
     <div class="inline tight segments" role="group" aria-label="Import source">
       <button
-        v-for="m in MODES"
+        v-for="m in availableModes"
         :key="m.id"
         class="btn ghost"
         type="button"
@@ -335,7 +363,7 @@ watch(
       <span class="spacer"></span>
       <BusyButton
         :busy="busy"
-        label="Import"
+        :label="sources === 'repos' ? 'Add repository' : 'Import'"
         busy-label="Importing…"
         @click="doImport"
       />
@@ -344,6 +372,10 @@ watch(
 </template>
 
 <style scoped>
+.import-description {
+  margin: 0 0 18px;
+  line-height: 1.5;
+}
 .segments > button[aria-pressed="true"] {
   color: var(--accent);
   border-color: var(--accent);

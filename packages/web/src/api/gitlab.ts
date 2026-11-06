@@ -5,10 +5,12 @@ import { blobSha } from "../stores/changes";
 export async function gitlabRequest<T>(
   operation: string,
   data: object = {},
+  signal?: AbortSignal,
 ): Promise<T> {
   const r = await fetch("/api/gitlab", {
     method: "POST",
     credentials: "same-origin",
+    signal,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ...data, operation }),
   });

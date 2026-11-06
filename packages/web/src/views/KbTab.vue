@@ -5,7 +5,8 @@
  *  panel. */
 import { computed, onActivated, onMounted, ref, watch } from "vue";
 import { onBeforeRouteLeave } from "vue-router";
-import GitLabLogin from "../components/GitLabLogin.vue";
+import ProviderIcon from "../components/ProviderIcon.vue";
+import { useAuthStore } from "../stores/auth";
 import { gitlabRequest, coordinates } from "../api/gitlab";
 import { fetchRepoBranches } from "../api/github";
 import { Constituent } from "../models/Constituent";
@@ -16,6 +17,7 @@ import { useStatus } from "../composables/useStatus";
 import { useTabQuery } from "../composables/useTabQuery";
 import { updateParams } from "../router";
 import { formatSize } from "../utils/format";
+import BaseDialog from "../components/BaseDialog.vue";
 import Card from "../components/Card.vue";
 import DropMenu from "../components/DropMenu.vue";
 import StatusLine from "../components/StatusLine.vue";
@@ -26,6 +28,7 @@ import SourcesCard from "../components/kb/SourcesCard.vue";
 import WordNetPanel from "../components/kb/WordNetPanel.vue";
 import SubTabs from "../components/SubTabs.vue";
 
+const auth = useAuthStore();
 const kb = useKBStore();
 const library = useLibraryStore();
 
@@ -54,6 +57,22 @@ function setView(v: View) {
 }
 
 const tableLog = useStatus();
+
+const activeRepository = computed(() => {
+  const loaded = kb.constituents.find((c) => c.origin.kind === "sumo")
+    ?.origin as GitOrigin | undefined;
+  const source = loaded ?? library.defaultRepo;
+  const provider = source.service ?? "github";
+  const host =
+    provider === "gitlab"
+      ? source.server || "https://gitlab.com"
+      : "https://github.com";
+  return {
+    provider,
+    name: `${source.owner}/${source.repo}`,
+    url: `${host}/${source.owner.split("/").map(encodeURIComponent).join("/")}/${encodeURIComponent(source.repo)}`,
+  };
+});
 
 const summary = computed(() => {
   const loaded = kb.constituents.length;
@@ -87,6 +106,24 @@ const presetsBusy = ref(false);
 const presetBtn = ref<HTMLElement | null>(null);
 const presetMenuOpen = ref(false);
 const importOpen = ref(false);
+function selectRepoProvider(provider: "github" | "gitlab") {
+  if (
+    branchesBusy.value ||
+    presetsBusy.value ||
+    (provider === "gitlab" && !auth.gitlabUser)
+  )
+    return;
+  service.value = provider;
+  if (provider === "gitlab") server.value = auth.gitlabUser!.server;
+}
+function switchRepository() {
+  if (service.value === "gitlab" && !auth.gitlabUser) service.value = "github";
+  branchMenuOpen.value = false;
+  branches.value = [];
+  branchError.value = "";
+  repoFormOpen.value = true;
+}
+const repoFormOpen = ref(false);
 const loadedOrigin = kb.constituents.find((c) => c.origin.kind === "sumo")
   ?.origin as GitOrigin | undefined;
 const service = ref<"github" | "gitlab">(
@@ -111,10 +148,39 @@ const branches = ref<string[]>([]);
 const branchSearch = ref("");
 const branchesBusy = ref(false);
 const branchError = ref("");
+watch(
+  [service, server, repository],
+  () => {
+    branches.value = [];
+    branchError.value = "";
+  },
+  { flush: "sync" },
+);
 const filteredBranches = computed(() =>
   branches.value.filter((name) =>
     name.toLowerCase().includes(branchSearch.value.toLowerCase()),
   ),
+);
+
+watch(
+  () => str(query.value.chooseRepo),
+  (provider) => {
+    if (provider !== "github" && provider !== "gitlab") return;
+    service.value =
+      provider === "gitlab" && !auth.gitlabUser ? "github" : provider;
+    if (provider === "gitlab") server.value = str(query.value.server);
+    repository.value = "";
+    branches.value = [];
+    branchError.value = "";
+    repoFormOpen.value = true;
+    void updateParams({
+      ...query.value,
+      chooseRepo: undefined,
+      server: undefined,
+    });
+    branchMenuOpen.value = false;
+  },
+  { immediate: true },
 );
 
 async function listBranches() {
@@ -179,9 +245,32 @@ async function listBranches() {
   }
 }
 
+async function loadSelectedRepository() {
+  if (branchesBusy.value || presetsBusy.value) return;
+  if (service.value === "gitlab" && !auth.gitlabUser) return;
+  await listBranches();
+  if (branchError.value) return;
+  const initialBranch = branches.value.includes("master")
+    ? "master"
+    : branches.value.includes("main")
+      ? "main"
+      : "";
+  if (!initialBranch) {
+    branchError.value = "This repository has no master or main branch.";
+    return;
+  }
+  await selectBranch(initialBranch);
+}
+
 async function toggleBranches() {
   branchMenuOpen.value = !branchMenuOpen.value;
   if (branchMenuOpen.value) {
+    const active = kb.constituents.find((c) => c.origin.kind === "sumo")
+      ?.origin as GitOrigin | undefined;
+    const source = active ?? library.defaultRepo;
+    service.value = source.service ?? "github";
+    await Promise.resolve();
+    server.value = source.server ?? "";
     repository.value = `${owner.value}/${repo.value}`;
     await listBranches();
   }
@@ -257,6 +346,7 @@ async function loadPreset(key: string, target?: GitOrigin) {
       owner.value = origin.owner;
       repo.value = origin.repo;
       branch.value = origin.branch;
+      repoFormOpen.value = false;
     }
 
     tableLog.set(
@@ -279,39 +369,68 @@ async function loadPreset(key: string, target?: GitOrigin) {
   <Card
     v-show="view === 'constituents'"
     title="Constituents"
+    class="constituents-card"
     :description="summary"
   >
     <template #header>
-      <span class="inline tight">
+      <a
+        class="active-repository"
+        :href="activeRepository.url"
+        :title="activeRepository.url"
+        target="_blank"
+        rel="noopener noreferrer"
+        aria-label="Current repository"
+      >
+        <ProviderIcon :provider="activeRepository.provider" :size="22" />
+        <span>{{ activeRepository.name }}</span>
+      </a>
+    </template>
+    <div class="constituent-actions">
+      <div class="import-actions">
         <button
-          ref="branchBtn"
-          class="btn ghost branch-button"
-          type="button"
-          :title="branch"
-          :disabled="presetsBusy"
-          :aria-expanded="branchMenuOpen"
-          aria-haspopup="menu"
-          @click="toggleBranches"
-        >
-          <span>Branch:</span> <span class="branch-name">{{ branch }}</span>
-          <span aria-hidden="true">▾</span>
-        </button>
-        <button
-          ref="presetBtn"
           class="btn ghost"
           type="button"
           :disabled="presetsBusy"
-          :aria-expanded="presetMenuOpen"
-          aria-haspopup="menu"
-          @click="presetMenuOpen = !presetMenuOpen"
+          @click="importOpen = true"
+          title="Import local files, a folder, or a file URL"
         >
-          {{ presetsBusy ? "Loading…" : "Load a standard set ▾" }}
+          Import files
         </button>
-        <button class="btn ghost" type="button" @click="importOpen = true">
-          Import…
+        <button
+          class="btn ghost"
+          type="button"
+          :disabled="presetsBusy"
+          @click="switchRepository"
+          title="Switch the active knowledge base to a GitHub or GitLab repository"
+        >
+          Switch repository
         </button>
-      </span>
-    </template>
+      </div>
+      <button
+        ref="branchBtn"
+        class="btn ghost branch-button"
+        type="button"
+        :title="branch"
+        :disabled="presetsBusy"
+        :aria-expanded="branchMenuOpen"
+        aria-haspopup="menu"
+        @click="toggleBranches"
+      >
+        <span>Branch:</span> <span class="branch-name">{{ branch }}</span>
+        <span aria-hidden="true">▾</span>
+      </button>
+      <button
+        ref="presetBtn"
+        class="btn ghost"
+        type="button"
+        :disabled="presetsBusy"
+        :aria-expanded="presetMenuOpen"
+        aria-haspopup="menu"
+        @click="presetMenuOpen = !presetMenuOpen"
+      >
+        {{ presetsBusy ? "Loading…" : "Load a standard set ▾" }}
+      </button>
+    </div>
     <DropMenu v-model="branchMenuOpen" :anchor="branchBtn">
       <div class="branch-picker" @keydown.esc="branchMenuOpen = false">
         <strong>{{ listedRepo }}</strong>
@@ -354,34 +473,6 @@ async function loadPreset(key: string, target?: GitOrigin) {
           Selecting a branch loads your current files, or Minimal SUMO if no
           single source is loaded.
         </p>
-        <details>
-          <summary>Use another repository or fork</summary>
-          <form @submit.prevent="listBranches">
-            <label
-              >Host
-              <select v-model="service" :disabled="branchesBusy">
-                <option value="github">GitHub</option>
-                <option value="gitlab">GitLab</option>
-              </select></label
-            >
-            <GitLabLogin v-if="service === 'gitlab'" v-model:server="server" />
-            <label
-              >Repository
-              <input
-                v-model="repository"
-                placeholder="namespace/project or full project URL"
-                :disabled="branchesBusy"
-              />
-            </label>
-            <p class="hint">
-              Enter namespace/project, including any subgroups, or paste the
-              full GitLab project URL.
-            </p>
-            <button class="btn ghost" type="submit" :disabled="branchesBusy">
-              Show branches
-            </button>
-          </form>
-        </details>
       </div>
     </DropMenu>
     <DropMenu v-model="presetMenuOpen" :anchor="presetBtn">
@@ -399,7 +490,96 @@ async function loadPreset(key: string, target?: GitOrigin) {
     <StatusLine class="mt-sm" :text="tableLog.text" :error="tableLog.error" />
   </Card>
 
-  <ImportDialog v-model="importOpen" @imported="(msg) => tableLog.set(msg)" />
+  <BaseDialog
+    v-model="repoFormOpen"
+    title="Switch repository"
+    width="min(520px, 92vw)"
+    :dismissible="!presetsBusy"
+  >
+    <div class="repository-dialog">
+      <p class="hint">
+        Choose the repository to use as your knowledge base. Switching replaces
+        the current source and loads master or main automatically.
+      </p>
+      <form
+        id="switch-repository-form"
+        @submit.prevent="loadSelectedRepository"
+      >
+        <div
+          class="repo-provider-tabs"
+          role="tablist"
+          aria-label="Repository provider"
+        >
+          <button
+            v-for="provider in ['github', 'gitlab'] as const"
+            :key="provider"
+            :id="`repo-${provider}-tab`"
+            type="button"
+            role="tab"
+            :aria-selected="service === provider"
+            aria-controls="repo-provider-panel"
+            :disabled="
+              branchesBusy ||
+              presetsBusy ||
+              (provider === 'gitlab' && !auth.gitlabUser)
+            "
+            :title="
+              provider === 'gitlab' && !auth.gitlabUser
+                ? 'Sign in with GitLab to switch to a GitLab repository'
+                : undefined
+            "
+            @click="selectRepoProvider(provider)"
+          >
+            <ProviderIcon :provider="provider" :size="22" />
+            {{ provider === "github" ? "GitHub" : "GitLab" }}
+          </button>
+        </div>
+        <div
+          id="repo-provider-panel"
+          role="tabpanel"
+          :aria-labelledby="`repo-${service}-tab`"
+          class="repo-provider-panel"
+        >
+          <label
+            >Repository
+            <input
+              v-model="repository"
+              placeholder="namespace/project or full project URL"
+              :disabled="branchesBusy"
+            />
+          </label>
+          <p class="hint">
+            Enter namespace/project, including any subgroups, or paste the full
+            GitLab project URL.
+          </p>
+        </div>
+      </form>
+      <p v-if="branchError" class="hint" role="alert">{{ branchError }}</p>
+    </div>
+    <template #actions>
+      <button
+        class="btn ghost"
+        :disabled="presetsBusy"
+        @click="repoFormOpen = false"
+      >
+        Cancel
+      </button>
+      <button
+        class="btn"
+        :disabled="!repository.trim() || branchesBusy || presetsBusy"
+        type="submit"
+        form="switch-repository-form"
+      >
+        {{ presetsBusy || branchesBusy ? "Loading..." : "Switch repository" }}
+      </button>
+    </template>
+  </BaseDialog>
+
+  <ImportDialog
+    v-model="importOpen"
+    sources="files"
+    @imported="(msg) => tableLog.set(msg)"
+  />
 
   <SourcesCard v-show="view === 'sources'" />
 
@@ -415,6 +595,102 @@ async function loadPreset(key: string, target?: GitOrigin) {
 </template>
 
 <style scoped>
+.constituents-card :deep(.card-head) {
+  align-items: center;
+}
+
+.active-repository {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  font-size: 17px;
+  font-weight: 600;
+  text-decoration: none;
+  color: var(--fg);
+}
+.active-repository span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.active-repository:hover {
+  text-decoration: underline;
+}
+.constituent-actions {
+  margin: 14px 0;
+}
+
+.repo-provider-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg);
+}
+.repo-provider-tabs button {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 12px;
+  font: inherit;
+  font-weight: 600;
+  color: var(--muted);
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  cursor: pointer;
+}
+.repo-provider-tabs button[aria-selected="true"] {
+  background: var(--card);
+  color: var(--fg);
+  border-color: var(--line);
+}
+.repo-provider-tabs button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.repo-provider-tabs button:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+.repo-provider-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.repository-dialog,
+.repository-dialog form,
+.repository-dialog label {
+  display: grid;
+  gap: 12px;
+}
+.repository-dialog {
+  gap: 18px;
+}
+.repository-dialog input,
+.repository-dialog select {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.constituent-actions,
+.import-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+@media (max-width: 640px) {
+  .constituent-actions {
+    gap: 10px;
+  }
+}
+
 .branch-button {
   display: inline-flex;
   align-items: center;

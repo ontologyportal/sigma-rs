@@ -1,4 +1,4 @@
-import { getCookie, cookieHeader } from "../_utils/session";
+import { getCookie, cookieHeader, endSession } from "../_utils/session";
 import {
   type GitLabEnv,
   sessionFor,
@@ -77,7 +77,12 @@ export const onRequestPost: PagesFunction<GitLabEnv> = async ({
       }
       return reply({ user: login ? { login, server: current.server } : null });
     }
-    const server = normalizeServer(input.server);
+    const server = normalizeServer(
+      input.server ??
+        (input.operation === "logout"
+          ? (await sessionFor(request, env))?.server
+          : undefined),
+    );
     const fetchGitlab = (
       path: string,
       token: string | null,
@@ -132,16 +137,14 @@ export const onRequestPost: PagesFunction<GitLabEnv> = async ({
       );
       const oldId = getCookie(request, SESSION_COOKIE);
       if (oldId) await env.SESSIONS.delete(`gitlab:${oldId}`);
-      return Response.json(
-        { login: user.username, server },
-        {
-          headers: {
-            "Set-Cookie": cookie,
-            "Cache-Control": "no-store",
-            Vary: "Cookie",
-          },
-        },
-      );
+      const githubCookie = await endSession(request, env);
+      const headers = new Headers({
+        "Cache-Control": "no-store",
+        Vary: "Cookie",
+      });
+      headers.append("Set-Cookie", cookie);
+      headers.append("Set-Cookie", githubCookie);
+      return Response.json({ login: user.username, server }, { headers });
     }
     if (input.operation === "logout") {
       if (token && session?.kind === "oauth")

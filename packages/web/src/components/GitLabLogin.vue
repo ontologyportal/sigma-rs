@@ -6,8 +6,15 @@ import { useStatus } from "../composables/useStatus";
 import BusyButton from "./BusyButton.vue";
 import StatusLine from "./StatusLine.vue";
 
-const props = defineProps<{ server?: string; fixedServer?: boolean }>();
-const emit = defineEmits<{ "update:server": [server: string] }>();
+const props = defineProps<{
+  server?: string;
+  fixedServer?: boolean;
+  dialog?: boolean;
+}>();
+const emit = defineEmits<{
+  "update:server": [server: string];
+  busy: [busy: boolean];
+}>();
 const auth = useAuthStore();
 const serverUrl = ref(props.server ?? auth.gitlabUser?.server ?? "");
 const connected = computed(() => {
@@ -40,6 +47,7 @@ const busy = ref(false);
 const status = useStatus();
 const oauthConfigured = ref(false);
 let active = true;
+let pending: AbortController | null = null;
 onMounted(async () => {
   await auth.initGitlab();
   if (!serverUrl.value && auth.gitlabUser) {
@@ -57,6 +65,8 @@ onMounted(async () => {
 });
 onBeforeUnmount(() => {
   active = false;
+  pending?.abort();
+  emit("busy", false);
   token.value = "";
 });
 
@@ -84,17 +94,12 @@ async function connect() {
     return;
   }
   busy.value = true;
+  emit("busy", true);
+  pending = new AbortController();
   try {
-    const user = await gitlabRequest<{ login: string; server?: string }>(
-      "login",
-      {
-        token: value,
-        server,
-      },
-    );
+    const user = await auth.loginWithGitlabToken(server, value, pending.signal);
     if (active) {
       serverUrl.value = user.server ?? server;
-      auth.gitlabUser = { login: user.login, server: serverUrl.value };
       emit("update:server", serverUrl.value);
       status.set(`Connected to ${serverUrl.value} as ${user.login}.`);
     }
@@ -102,36 +107,27 @@ async function connect() {
     if (active) status.fail(e);
   } finally {
     if (active) busy.value = false;
-  }
-}
-
-async function disconnect() {
-  if (busy.value) return;
-  busy.value = true;
-  token.value = "";
-  try {
-    await gitlabRequest("logout", {
-      server: serverUrl.value.trim() || "https://gitlab.com",
-    });
-    if (
-      auth.gitlabUser?.server ===
-      new URL(serverUrl.value || "https://gitlab.com").origin
-    )
-      auth.gitlabUser = null;
-    if (active)
-      status.set(
-        "Disconnected GitLab. Personal tokens remain valid; saved local files remain in this browser.",
-      );
-  } catch (e) {
-    if (active) status.fail(e);
-  } finally {
-    if (active) busy.value = false;
+    emit("busy", false);
   }
 }
 </script>
 
 <template>
-  <div class="gitlab-login mt-sm">
+  <div v-if="!dialog" class="gitlab-connection inline tight mt-sm">
+    <span class="hint">{{
+      connected
+        ? `GitLab: ${connected.login}`
+        : "Connect your GitLab account to access private projects and push changes."
+    }}</span>
+    <button
+      type="button"
+      class="btn ghost"
+      @click="auth.openLoginDialog('gitlab', serverUrl)"
+    >
+      {{ connected ? "Manage account" : "Sign in with GitLab" }}
+    </button>
+  </div>
+  <div v-else class="gitlab-login mt-sm">
     <p v-if="connected" class="hint" role="status">
       Connected to {{ connected.server }} as {{ connected.login }}.
     </p>
@@ -146,10 +142,6 @@ async function disconnect() {
       access token below.
     </p>
     <div>
-      <p class="hint">
-        Connect with an expiring personal access token with the
-        <code>api</code> scope.
-      </p>
       <label>
         GitLab server URL
         <input
@@ -179,18 +171,38 @@ async function disconnect() {
         @click="connect"
       />
     </div>
-    <button
-      type="button"
-      class="btn ghost mt-sm"
-      :disabled="busy"
-      @click="disconnect"
-    >
-      Disconnect GitLab
-    </button>
-    <p class="hint">
-      Imported files and saved edits may stay in this browser after
-      disconnecting.
-    </p>
     <StatusLine :text="status.text" :error="status.error" />
   </div>
 </template>
+
+<style scoped>
+.gitlab-login {
+  margin-top: 22px;
+}
+.gitlab-login .hint {
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 0 0 18px;
+}
+.gitlab-login label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  margin: 16px 0;
+}
+.gitlab-login input {
+  font-weight: 400;
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 8px;
+}
+.gitlab-login :deep(.btn) {
+  width: 100%;
+  margin-top: 2px;
+}
+.gitlab-connection {
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+</style>

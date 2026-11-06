@@ -535,6 +535,55 @@ export const useKBStore = defineStore("kb", {
       return result;
     },
 
+    /** Retire a stale source at boot, keeping unpushed work in the local library. */
+    async recoverSavedRepo(
+      from: GitOrigin,
+      to: GitOrigin,
+      useDefaults: boolean,
+      paths: string[],
+    ) {
+      const library = useLibraryStore();
+      const changes = useChangesStore();
+      const affected = this.saved.filter(
+        (row) => originId(row.origin) === from.id,
+      );
+      for (const row of affected) {
+        const edit = await changes.readEdit(row.name, "sumo");
+        if (edit !== null) {
+          const name = `recovered/${encodeURIComponent(from.id)}/${from.pathOf(row.name)}`;
+          await library.writeLocal(name, edit);
+        }
+      }
+      const replacements = useDefaults
+        ? Constituent.defaults().map((c) => ({
+            name: c.name,
+            origin: serializeOrigin(c.origin),
+          }))
+        : affected
+            .filter((row) => paths.includes(from.pathOf(row.name)))
+            .map((row) => ({
+              name: to.nameFor(from.pathOf(row.name)),
+              origin: serializeOrigin(to),
+            }));
+      const kept = this.saved.filter((row) => originId(row.origin) !== from.id);
+      for (const row of replacements)
+        if (
+          !kept.some(
+            (other) =>
+              other.name === row.name &&
+              originId(other.origin) === originId(row.origin),
+          )
+        )
+          kept.push(row);
+      for (const row of affected) await changes.forget(row.name, "sumo");
+      this.saved = kept;
+      delete this.updateBaselines[from.id];
+      delete this.updatePrefs[from.id];
+      persistSaved(this.saved);
+      persistUpdateBaselines(this.updateBaselines);
+      persistUpdatePrefs(this.updatePrefs);
+    },
+
     async resetToMerge() {
       const changes = useChangesStore();
       const merge = this.find(MERGE, "sumo");

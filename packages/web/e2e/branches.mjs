@@ -72,41 +72,71 @@ try {
   await page.goto(new URL("kb", server.resolvedUrls.local[0]).href);
   const button = page.getByRole("button", { name: /^Branch:/ });
   await button.waitFor({ timeout: 120000 });
-  await button.click();
-  await page
-    .getByText("Use another repository or fork", { exact: true })
-    .click();
-  await page
-    .getByLabel("GitHub repository", { exact: true })
-    .fill("alice/sumo");
-  await page
-    .getByRole("button", { name: "Show branches", exact: true })
-    .click();
-  await page
-    .locator(".branch-picker strong")
-    .filter({ hasText: "alice/sumo" })
+  const importButton = page.getByRole("button", {
+    name: "Import files",
+    exact: true,
+  });
+  assert.ok(
+    (await importButton.boundingBox()).x < (await button.boundingBox()).x,
+  );
+  await importButton.click();
+  const dialog = page.locator("dialog[open]");
+  await dialog
+    .getByRole("button", { name: "Files & folders", exact: true })
     .waitFor();
-  page.once("dialog", (dialog) => dialog.dismiss());
+  assert.equal(
+    await dialog.getByRole("button", { name: "GitLab", exact: true }).count(),
+    0,
+  );
+  await dialog.getByRole("button", { name: "File URL", exact: true }).click();
+  await dialog.getByLabel("Address of a .kif file").waitFor();
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  assert.equal(
+    await page
+      .getByRole("button", { name: "Add repository", exact: true })
+      .count(),
+    0,
+  );
   await page
-    .getByRole("menuitemradio", { name: "work/ontology", exact: true })
+    .getByRole("button", { name: "Switch repository", exact: true })
     .click();
+  const repoDialog = page.locator("dialog[open]");
+  assert.equal(
+    await repoDialog
+      .getByRole("tab", { name: "GitHub", exact: true })
+      .getAttribute("aria-selected"),
+    "true",
+  );
+  assert.ok(
+    await repoDialog
+      .getByRole("tab", { name: "GitLab", exact: true })
+      .isDisabled(),
+  );
+  await repoDialog.getByLabel("Repository", { exact: true }).fill("alice/sumo");
+  assert.equal(await repoDialog.getByLabel("Starting branch").count(), 0);
+  const dismissed = new Promise((resolve) =>
+    page.once("dialog", async (confirmation) => {
+      await confirmation.dismiss();
+      resolve();
+    }),
+  );
+  await repoDialog
+    .getByRole("button", { name: "Switch repository", exact: true })
+    .click();
+  await dismissed;
+  assert.match(await button.innerText(), /master/);
+  page.once("dialog", (confirmation) => confirmation.accept());
+  await repoDialog
+    .getByRole("button", { name: "Switch repository", exact: true })
+    .click();
+  await page.waitForFunction(
+    () =>
+      JSON.parse(localStorage.getItem("sumoFiles"))[0]?.origin.owner ===
+      "alice",
+  );
   assert.match(await button.innerText(), /master/);
   await button.click();
-  await page
-    .getByText("Use another repository or fork", { exact: true })
-    .click();
-  await page
-    .getByLabel("GitHub repository", { exact: true })
-    .fill("alice/sumo");
-  await page
-    .getByRole("button", { name: "Show branches", exact: true })
-    .click();
-  await page
-    .locator(".branch-picker strong")
-    .filter({ hasText: "alice/sumo" })
-    .waitFor();
-  await page.getByLabel("Find a branch").fill("ontology");
-  page.once("dialog", (dialog) => dialog.accept());
+  page.once("dialog", (confirmation) => confirmation.accept());
   await page
     .getByRole("menuitemradio", { name: "work/ontology", exact: true })
     .click();
@@ -136,10 +166,6 @@ try {
   await page.reload();
   await button.waitFor({ timeout: 120000 });
   assert.match(await button.innerText(), /work\/ontology/);
-  assert.equal(
-    await page.locator("tbody").getByText("GitHub", { exact: true }).count(),
-    0,
-  );
   const before = await page.evaluate(() => localStorage.getItem("sumoFiles"));
   failDownloads = true;
   await button.click();

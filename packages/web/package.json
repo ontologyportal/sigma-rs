@@ -20,6 +20,7 @@
     "lint:fix": "eslint . --fix",
     "lint": "eslint .",
     "test:e2e": "node e2e/smoke.mjs",
+    "test:e2e:auth": "node e2e/auth-workflow.mjs",
     "test:e2e:proof-graph": "node e2e/proof-graph.mjs",
     "test:e2e:editor-hover": "node e2e/editor-hover.mjs",
     "test:asset-cache": "node --test scripts/asset-cache.test.mjs",

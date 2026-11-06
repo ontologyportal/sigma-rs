@@ -211,6 +211,13 @@ retain the selected repository and branch across browser restarts. Source
 update preferences still determine whether subsequent upstream commits are
 automatically loaded.
 
+At startup, a saved GitLab source falls back to the original SUMO repository
+when its server has no active session. If a successful branch listing confirms
+that a saved branch was deleted, the app switches to that repository's `master`
+branch when it exists and removes the stale selection and source metadata.
+Unpushed constituent edits are preserved as local library files under
+`recovered/`. Network failures do not erase saved selections.
+
 Public branches require no login (signing in can raise GitHub's API limit).
 Create and push your branch and commits with Git, or use the existing web
 contribution flow to publish edits as a branch and pull request. On another
@@ -362,7 +369,7 @@ For local development, start `npm run web` and open **https://localhost:8788**.
 This HTTPS URL serves both the app and its authentication API. The Vite-only
 server on port 8080 does not serve the GitLab API.
 
-In Knowledge base, choose **Import into the library > GitLab**. Enter the
+In Knowledge base, open **Switch repository**, select **GitLab**, enter the project, and click **Switch repository**. It loads `master`, or `main` when `master` is absent. Enter the
 GitLab server URL, namespace (including any subgroups), repository name, and branch.
 The server is a free-text HTTPS URL; there is no predefined list of company
 servers. A pasted group URL is normalized to its server origin. For example,
@@ -378,8 +385,16 @@ Public repositories can be read without signing in. For private repositories
 and pushing saved edits, connect with your token or choose **Sign in with GitLab**. You can also select
 GitLab in the branch selector under **Use another repository or fork**.
 
-The header shows your GitLab account and restores its connection after a reload.
-GitHub and GitLab account indicators are separate. In the branch selector, you
+After connecting, click your name and choose **Choose repository**. This opens
+the Knowledge base repository selector with your connected provider and server.
+Paste the project URL, click **Show branches**, and choose a branch. Loading a
+branch uses the existing confirmation before replacing the knowledge base.
+
+The header has one **Sign in** / account control. The **GitHub** tab offers **Continue with GitHub** and a visible access-token form. The **GitLab** tab shows the server URL and personal access-token form directly. One account can be connected at a time.
+A successful provider switch ends the previous connection, while a failed token
+check leaves the current account signed in. GitLab sessions restore after reload;
+GitHub personal tokens remain page-scoped. Repository panels open the same
+sign-in modal instead of presenting separate login forms. In the branch selector, you
 can paste the full project URL; the server and namespace/project path are
 extracted automatically. Groups themselves do not have branches.
 
@@ -435,3 +450,14 @@ GitLab regression checks (mocked, no repository writes):
 ```bash
 node --test packages/web/functions/api/gitlab.test.mjs packages/web/src/models/Origin.test.mjs packages/web/src/services/sources.test.mjs packages/web/src/components/edit/ContributePanel.test.mjs
 ```
+
+Sign-in workflow browser checks (mocked providers, no real credentials):
+
+```bash
+npm run test:e2e:auth --workspace @sigma/web
+```
+
+The Constituents header offers **Import files** for local files, folders, or a
+single file URL. **Switch repository** selects the GitHub or GitLab repository
+used by the knowledge base. It loads `master` or `main` automatically; use **Branch** afterward to choose another branch. After confirmation, it replaces the
+previous source and its file list rather than adding another copy of SUMO.

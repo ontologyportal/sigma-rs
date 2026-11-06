@@ -28,6 +28,17 @@ function fixture({
   const auth = vue.reactive({ gitlabUser: null, initGitlab: async () => {} });
   let cleanup;
   let mount;
+  Object.assign(auth, {
+    async loginWithGitlabToken(server, token) {
+      calls.push(["login", { server, token }]);
+      if (fail) throw new Error("Token rejected");
+      auth.gitlabUser = { login: "alice", server };
+      return auth.gitlabUser;
+    },
+    async logout() {
+      auth.gitlabUser = null;
+    },
+  });
   const imports = {
     vue: {
       ...vue,
@@ -58,12 +69,13 @@ function fixture({
   vm.runInNewContext(source, {
     exports,
     URL,
+    AbortController,
     require: (name) => imports[name] ?? {},
   });
   const scope = vue.effectScope();
   const ui = scope.run(() =>
     exports.default.setup(
-      { server },
+      { server, dialog: true },
       { expose: () => {}, emit: (...args) => calls.push(["emit", ...args]) },
     ),
   );
@@ -89,7 +101,10 @@ test("personal token form submits once and clears its password before waiting fo
     await f.ui.connect();
     await pending;
     assert.equal(f.calls.filter((c) => c[0] === "login").length, 1);
-    assert.equal(f.calls[0][1].token, "glpat-example");
+    assert.equal(
+      f.calls.find((c) => c[0] === "login")[1].token,
+      "glpat-example",
+    );
     assert.ok(f.calls.some((c) => c[0] === "status" && c[1].includes("alice")));
     assert.equal(f.ui.busy.value, false);
   } finally {
@@ -107,24 +122,6 @@ test("rejected and empty tokens do not linger in the form", async () => {
     assert.equal(f.ui.token.value, "");
     assert.ok(f.calls.some((c) => c[0] === "error"));
     assert.equal(f.ui.busy.value, false);
-  } finally {
-    f.stop();
-  }
-});
-
-test("disconnect clears the field and requests only session logout", async () => {
-  const f = fixture();
-  try {
-    f.ui.token.value = "glpat-unsent";
-    await f.ui.disconnect();
-    assert.equal(f.ui.token.value, "");
-    assert.equal(f.calls[0][0], "logout");
-    assert.ok(
-      f.calls.some(
-        (c) =>
-          c[0] === "status" && c[1].includes("Personal tokens remain valid"),
-      ),
-    );
   } finally {
     f.stop();
   }
@@ -193,7 +190,7 @@ test("connecting and disconnecting update the global GitLab account", async () =
     assert.equal(f.auth.gitlabUser.login, "alice");
     assert.equal(f.auth.gitlabUser.server, "https://gitlab.nps.edu");
     assert.equal(f.ui.connected.value.login, "alice");
-    await f.ui.disconnect();
+    await f.auth.logout();
     assert.equal(f.auth.gitlabUser, null);
     assert.equal(f.ui.connected.value, null);
   } finally {

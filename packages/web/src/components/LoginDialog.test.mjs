@@ -10,7 +10,7 @@ const { descriptor } = parse(
 );
 const source = ts.transpileModule(
   descriptor.scriptSetup.content +
-    "\nexports.controls = { tokenOpen, tokenInput, token, busy, error, toggleToken, useToken };",
+    "\nexports.controls = { token, busy, error, selectProvider, useToken, moveTab, providerTabs, gitlabBusy, chooseRepository };",
   {
     compilerOptions: {
       module: ts.ModuleKind.CommonJS,
@@ -22,6 +22,8 @@ const source = ts.transpileModule(
 function fixture(loginWithToken = async () => {}) {
   const exports = {};
   let reset;
+  const navigation = [];
+  const auth = { loginWithToken, loginProvider: "github" };
   const imports = {
     vue: {
       ref: (value) => ({ value }),
@@ -31,7 +33,8 @@ function fixture(loginWithToken = async () => {}) {
       },
       onBeforeUnmount() {},
     },
-    "../stores/auth": { useAuthStore: () => ({ loginWithToken }) },
+    "../stores/auth": { useAuthStore: () => auth },
+    "../router": { navigate: (...args) => navigation.push(args) },
     "../utils/format": { errMsg: (e) => e.message },
   };
   vm.runInNewContext(source, {
@@ -39,23 +42,10 @@ function fixture(loginWithToken = async () => {}) {
     require: (name) => imports[name],
     AbortController,
   });
-  return { ...exports.controls, reset: () => reset() };
+  return { ...exports.controls, auth, navigation, reset: () => reset() };
 }
 
-test("token form starts collapsed and focuses the input when expanded", async () => {
-  const f = fixture();
-  let focused = 0;
-  f.tokenInput.value = { focus: () => focused++ };
-  assert.equal(f.tokenOpen.value, false);
-  await f.toggleToken();
-  assert.equal(f.tokenOpen.value, true);
-  assert.equal(focused, 1);
-  await f.toggleToken();
-  assert.equal(f.tokenOpen.value, false);
-  assert.equal(focused, 1);
-});
-
-test("closing the dialog collapses the form and cancels pending validation", async () => {
+test("closing the dialog clears the token and cancels pending validation", async () => {
   let signal;
   let complete;
   const f = fixture((_, pendingSignal) => {
@@ -64,13 +54,11 @@ test("closing the dialog collapses the form and cancels pending validation", asy
       complete = resolve;
     });
   });
-  await f.toggleToken();
   f.token.value = "test-token";
   const pending = f.useToken();
   assert.equal(f.busy.value, true);
   f.reset();
   assert.equal(signal.aborted, true);
-  assert.equal(f.tokenOpen.value, false);
   assert.equal(f.token.value, "");
   assert.equal(f.busy.value, false);
   complete();
@@ -81,10 +69,52 @@ test("validation errors leave the form open for correction", async () => {
   const f = fixture(async () => {
     throw new Error("Token rejected");
   });
-  await f.toggleToken();
   f.token.value = "test-token";
   await f.useToken();
-  assert.equal(f.tokenOpen.value, true);
   assert.equal(f.error.value, "Token rejected");
   assert.equal(f.busy.value, false);
+});
+
+test("provider tabs clear credentials and cannot switch during sign-in", () => {
+  const f = fixture();
+  f.token.value = "secret";
+  f.error.value = "old error";
+  f.selectProvider("gitlab");
+  assert.equal(f.auth.loginProvider, "gitlab");
+  assert.equal(f.token.value, "");
+  assert.equal(f.error.value, "");
+  f.gitlabBusy.value = true;
+  f.selectProvider("github");
+  assert.equal(f.auth.loginProvider, "gitlab");
+});
+test("keyboard navigation selects and focuses the next provider tab", async () => {
+  const f = fixture();
+  let focused = false;
+  f.providerTabs.value = {
+    querySelector: () => ({
+      focus: () => {
+        focused = true;
+      },
+    }),
+  };
+  await f.moveTab({ key: "ArrowRight", preventDefault() {} });
+  assert.equal(f.auth.loginProvider, "gitlab");
+  assert.equal(focused, true);
+  await f.moveTab({ key: "Home", preventDefault() {} });
+  assert.equal(f.auth.loginProvider, "github");
+});
+
+test("choose repository leaves sign-in and opens the connected provider's selector", () => {
+  const f = fixture();
+  f.auth.provider = "gitlab";
+  f.auth.gitlabUser = {
+    login: "company-user",
+    server: "https://gitlab.nps.edu",
+  };
+  f.auth.loginDialogOpen = true;
+  f.chooseRepository();
+  assert.equal(f.auth.loginDialogOpen, false);
+  assert.equal(f.navigation[0][0], "kb");
+  assert.equal(f.navigation[0][1].chooseRepo, "gitlab");
+  assert.equal(f.navigation[0][1].server, "https://gitlab.nps.edu");
 });
