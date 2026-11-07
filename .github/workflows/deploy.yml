@@ -1,12 +1,12 @@
 # Web application deployment
 #
-# This action triggers on any push or PR to main and builds and 
+# This action triggers on any push or PR to main and builds and
 # deploys the web application to remote server (Cloudflare)
 name: Web Application Deployment
 
 on:
   push:
-    branches: ['main']
+    branches: ["main"]
 
 permissions:
   contents: read
@@ -59,7 +59,7 @@ jobs:
 
       - name: Verify emscripten install
         run: emcc -v
-      
+
       - name: Install gawk and cmake
         run: sudo apt-get update && sudo apt-get install -y gawk cmake
 
@@ -109,9 +109,9 @@ jobs:
         # Built twice because the mount point is baked into the bundle: Pages
         # serves this under /browse/, Cloudflare at its root. See vite.config.js.
         env:
-          SKIP_VAMPIRE: '1'
-          SKIP_EPROVER: '1'
-          NO_REBUILD: '1'
+          SKIP_VAMPIRE: "1"
+          SKIP_EPROVER: "1"
+          NO_REBUILD: "1"
         run: |
           VITE_BASE=/ npm run build --workspace @sigma/web
           # The deploy gate below keys off this file.
@@ -142,7 +142,7 @@ jobs:
             --outdir packages/web/worker-dist
           # wrangler's output filename here has varied between versions
           # (index.js vs _worker.js) -- normalize to a fixed name so
-          # wrangler.jsonc's `main` doesn't need to track that.
+          # wrangler.deploy.jsonc's `main` doesn't need to track that.
           cd packages/web/worker-dist
           if [ -f _worker.js ]; then
             mv _worker.js worker.js
@@ -166,7 +166,7 @@ jobs:
           workingDirectory: packages/web
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: deploy
+          command: deploy --config wrangler.deploy.jsonc
 
       # Local runs (act) and forks have no Cloudflare credentials, so the
       # deploy above is skipped. `wrangler pages deploy` has no --dry-run to

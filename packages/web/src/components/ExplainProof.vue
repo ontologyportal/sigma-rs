@@ -55,7 +55,7 @@ const html = computed(() =>
 );
 
 const title = computed(() => {
-  if (!auth.signedIn) return "Sign in with GitHub to explain proofs";
+  if (!auth.githubSignedIn) return "Sign in with GitHub to explain proofs";
   return props.kind === "contradiction"
     ? "Ask an AI model which axioms conflict, why, and how they might be fixed"
     : "Ask an AI model to explain how this proof reaches the query";
@@ -81,7 +81,7 @@ const errorText = computed(() => {
 });
 
 function onClick() {
-  if (!auth.signedIn) {
+  if (!auth.githubSignedIn) {
     auth.openLoginDialog();
     return;
   }
@@ -105,7 +105,7 @@ function onClick() {
         :title="tooLarge || title"
         @click="onClick"
       />
-      <span v-if="!auth.signedIn" class="hint">Sign in to use</span>
+      <span v-if="!auth.githubSignedIn" class="hint">Sign in to use</span>
       <span v-else-if="tooLarge" class="hint">{{ tooLarge }}</span>
       <span v-if="errorText" class="hint bad" role="alert">{{
         errorText

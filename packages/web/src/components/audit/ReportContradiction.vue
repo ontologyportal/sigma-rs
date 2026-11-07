@@ -192,7 +192,7 @@ const reportLabel = computed(() =>
       </button>
       <template v-if="!created && !preparing && title">
         <button
-          v-if="!auth.signedIn"
+          v-if="!auth.githubSignedIn"
           class="btn"
           type="button"
           @click="auth.openLoginDialog()"

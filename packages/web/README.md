@@ -211,6 +211,13 @@ retain the selected repository and branch across browser restarts. Source
 update preferences still determine whether subsequent upstream commits are
 automatically loaded.
 
+At startup, a saved GitLab source falls back to the original SUMO repository
+when its server has no active session. If a successful branch listing confirms
+that a saved branch was deleted, the app switches to that repository's `master`
+branch when it exists and removes the stale selection and source metadata.
+Unpushed constituent edits are preserved as local library files under
+`recovered/`. Network failures do not erase saved selections.
+
 Public branches require no login (signing in can raise GitHub's API limit).
 Create and push your branch and commits with Git, or use the existing web
 contribution flow to publish edits as a branch and pull request. On another
@@ -272,12 +279,12 @@ uncached explanations per day. The model is GLM 5.3 Flash at low
 reasoning effort, the best of the formats and settings compared by the
 experiment in `scripts/explain-eval/`; it needs a paid billing method on
 Workers AI (Workers Paid keeps the 10,000 free neurons per day). Caps and the
-model's neuron rates are recorded in `wrangler.jsonc`.
+model's neuron rates are recorded in `wrangler.deploy.jsonc`.
 
 To enable it on a deployment:
 
 1. Create the cache and counter namespace and uncomment the `EXPLAIN` KV
-   binding in `wrangler.jsonc` with the printed id:
+   binding in `wrangler.deploy.jsonc` with the printed id:
    ```sh
    npx wrangler kv namespace create EXPLAIN
    ```
@@ -293,8 +300,10 @@ Each uncached explanation writes three KV keys, so the Workers Free plan's KV
 write quota allows roughly 300 explanations per day, enough for the
 free neuron budget.
 
-For local development, `npm run dev` binds a local `EXPLAIN` namespace but no
-model. Add `--ai=AI` to the `dev:http` script to use Workers AI; it runs
+For local development, `npm run web` (from the repository root) and `npm run dev`
+use `wrangler.jsonc`, with local session/cache storage and no remote bindings.
+No Cloudflare login is required. Deployment uses `wrangler.deploy.jsonc`, which
+keeps Workers AI enabled in production. Add `--ai=AI` to the `dev:http` script to use Workers AI; it runs
 remotely, needs `npx wrangler login`, and is billed to that account.
 
 Tests:
@@ -353,3 +362,102 @@ Sharing regression checks:
 node --test packages/web/src/utils/proofReport.test.mjs packages/web/src/services/proof-report.test.mjs
 node packages/web/e2e/share-proof.mjs
 ```
+
+## GitLab repositories
+
+For local development, start `npm run web` and open **https://localhost:8788**.
+This HTTPS URL serves both the app and its authentication API. The Vite-only
+server on port 8080 does not serve the GitLab API.
+
+In Knowledge base, open **Switch repository**, select **GitLab**, enter the project, and click **Switch repository**. It loads `master`, or `main` when `master` is absent. Enter the
+GitLab server URL, namespace (including any subgroups), repository name, and branch.
+The server is a free-text HTTPS URL; there is no predefined list of company
+servers. A pasted group URL is normalized to its server origin. For example,
+`https://gitlab.example.edu/team/` uses server `https://gitlab.example.edu`
+and namespace `team`.
+Choose **Use personal access token** to paste an expiring GitLab PAT with the
+`api` scope. This works without OAuth app credentials or Cloudflare login. The
+app validates the token with GitLab, clears the password field, and stores it
+in its server-side session for at most two hours. In local development this
+storage is local to Wrangler. Disconnecting deletes the session without
+revoking your PAT; revoke it in GitLab yourself when needed.
+Public repositories can be read without signing in. For private repositories
+and pushing saved edits, connect with your token or choose **Sign in with GitLab**. You can also select
+GitLab in the branch selector under **Use another repository or fork**.
+
+After connecting, click your name and choose **Choose repository**. This opens
+the Knowledge base repository selector with your connected provider and server.
+Paste the project URL, click **Show branches**, and choose a branch. Loading a
+branch uses the existing confirmation before replacing the knowledge base.
+
+The header has one **Sign in** / account control. The **GitHub** tab offers **Continue with GitHub** and a visible access-token form. The **GitLab** tab shows the server URL and personal access-token form directly. One account can be connected at a time.
+A successful provider switch ends the previous connection, while a failed token
+check leaves the current account signed in. GitLab sessions restore after reload;
+GitHub personal tokens remain page-scoped. Repository panels open the same
+sign-in modal instead of presenting separate login forms. In the branch selector, you
+can paste the full project URL; the server and namespace/project path are
+extracted automatically. Groups themselves do not have branches.
+
+Save edits in the editor, open the repository changes panel, select the files,
+and choose **Push to BRANCH**. The destination is the files' source branch;
+selections spanning multiple sources cannot be pushed together. Updates are
+one commit with per-file conflict checks. Remote changes and protected-branch
+restrictions leave your local edits intact. Resolve or reload conflicting files
+before retrying. GitLab merge requests are not created by this integration.
+
+The GitLab OAuth application requires the `api` scope because writing commits
+through GitLab's REST API is not covered by `write_repository` (which covers
+Git-over-HTTP). This grants broader API access to resources accessible to your
+account. The app exposes only repository reads and commit creation through its
+GitLab endpoint. Sign in only with an account whose repositories you intend to
+trust this deployment to access.
+
+Optional OAuth setup (not needed for personal access tokens):
+
+1. Register a confidential OAuth application on GitLab.com with the `api` scope.
+2. Register the exact HTTPS callback URL, for example
+   `https://your-host/api/gitlab-auth-callback` (local development:
+   `https://localhost:8788/api/gitlab-auth-callback`).
+3. Configure `GITLAB_OAUTH_CLIENT_ID`, `GITLAB_OAUTH_CLIENT_SECRET`, and
+   `GITLAB_OAUTH_REDIRECT_URI` in Cloudflare Pages, or `packages/web/.dev.vars`
+   for development. Never put the secret in a `VITE_` variable.
+4. Bind the existing `SESSIONS` KV namespace to the Pages deployment.
+
+GitLab tokens remain server-side, addressed by a Secure, HttpOnly cookie,
+and expire after at most two hours; sign in again when needed. The login uses
+PKCE and state validation. GitLab and GitHub sessions are separate. Choose
+**Disconnect GitLab** in the import dialog to delete the session. For OAuth sessions it also attempts to revoke GitLab access.
+Personal tokens are not revoked. OAuth revocation is best-effort if GitLab is unreachable; you can also
+revoke the application in your GitLab account settings.
+
+Imported contents and saved edits may persist in this browser's existing KB
+cache and local file storage. Disconnecting does not delete that work. Use a
+trusted browser profile and clear this site's data to remove saved private
+contents. GitLab inputs cannot currently be exported through proof-report
+sharing. GitLab.com and self-hosted GitLab servers are supported through personal
+access tokens. Tokens are bound to the server they were connected to; they
+are never reused on another server or followed through redirects. Repository
+identities retain the server so files from different instances do not collide.
+Switching to another server requires connecting with a token from that server.
+OAuth remains available for GitLab.com when configured. HTTPS server URLs
+use the standard port; IP literals, local hostnames, credentials, query strings,
+and fragments are rejected. GitLab installations must be served at the
+server root rather than a URL subpath. Server operators should restrict
+outbound network access according to their deployment policy.
+
+GitLab regression checks (mocked, no repository writes):
+
+```bash
+node --test packages/web/functions/api/gitlab.test.mjs packages/web/src/models/Origin.test.mjs packages/web/src/services/sources.test.mjs packages/web/src/components/edit/ContributePanel.test.mjs
+```
+
+Sign-in workflow browser checks (mocked providers, no real credentials):
+
+```bash
+npm run test:e2e:auth --workspace @sigma/web
+```
+
+The Constituents header offers **Import files** for local files, folders, or a
+single file URL. **Switch repository** selects the GitHub or GitLab repository
+used by the knowledge base. It loads `master` or `main` automatically; use **Branch** afterward to choose another branch. After confirmation, it replaces the
+previous source and its file list rather than adding another copy of SUMO.

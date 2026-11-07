@@ -81,9 +81,18 @@ function fixture({ persisted = null, pin = { value: undefined } } = {}) {
     "../models/Origin": {
       GitOrigin: class {
         kind = "sumo";
+        constructor(service, owner, repo, branch, server) {
+          Object.assign(this, { service, owner, repo, branch, server });
+        }
       },
       LocalOrigin: class {
         kind = "file";
+      },
+    },
+    "../api/gitlab": {
+      async gitlabTree(repo, ref) {
+        trees.push(`gitlab:${repo.owner}/${repo.repo}@${ref}`);
+        return [{ type: "blob", path: "private.kif", size: 0 }];
       },
     },
     "../api/github": {
@@ -110,7 +119,7 @@ function fixture({ persisted = null, pin = { value: undefined } } = {}) {
   });
   const store = exports.useLibraryStore();
   const library = () => root.dirs.get("library");
-  return { store, root, library, stored, trees };
+  return { store, root, library, stored, trees, imports };
 }
 
 // Store values live in the vm realm; copy into host arrays for deepEqual.
@@ -262,4 +271,129 @@ test("a catalog failure preserves the previous registered branch", async () => {
     /404/,
   );
   assert.equal(JSON.stringify(f.store.repos), before);
+});
+
+test("GitLab catalogs persist provider and use the authenticated repository API", async () => {
+  const f = fixture();
+  await f.store.addRepo({
+    service: "gitlab",
+    owner: "group/subgroup",
+    repo: "kb",
+    branch: "work/private",
+  });
+  assert.ok(f.trees.includes("gitlab:group/subgroup/kb@work/private"));
+  const id = f.store.repoId({
+    service: "gitlab",
+    owner: "group/subgroup",
+    repo: "kb",
+    branch: "work/private",
+  });
+  assert.equal(f.store.catalogs[id][0].path, "private.kif");
+  assert.equal(
+    JSON.parse(f.stored.get("library")).repos.at(-1).service,
+    "gitlab",
+  );
+});
+
+test("custom GitLab servers persist with distinct repository IDs", async () => {
+  const f = fixture();
+  const custom = {
+    service: "gitlab",
+    server: "https://gitlab.nps.edu",
+    owner: "fsg",
+    repo: "kb",
+    branch: "main",
+  };
+  await f.store.addRepo(custom);
+  assert.equal(
+    JSON.parse(f.stored.get("library")).repos.at(-1).server,
+    custom.server,
+  );
+  assert.notEqual(
+    f.store.repoId(custom),
+    f.store.repoId({ ...custom, server: "https://gitlab.com" }),
+  );
+});
+
+const privateRepo = {
+  service: "gitlab",
+  server: "https://gitlab.example.org",
+  owner: "team",
+  repo: "sumo",
+  branch: "deleted",
+};
+function recoveryFixture({
+  session = { user: null },
+  branches = ["master"],
+  branchError,
+} = {}) {
+  const f = fixture({ persisted: { repos: [privateRepo], entries: [] } });
+  const recovered = [];
+  f.imports["./kb"].useKBStore = () => ({
+    saved: [],
+    pinnedRef: () => undefined,
+    recoverSavedRepo: async (...args) => recovered.push(args),
+  });
+  f.imports["../api/gitlab"].coordinates = (repo) => repo;
+  f.imports["../api/gitlab"].gitlabRequest = async (op) => {
+    if (op === "session") {
+      if (session instanceof Error) throw session;
+      return session;
+    }
+    if (branchError) throw branchError;
+    return branches;
+  };
+  return { ...f, recovered };
+}
+test("signed-out GitLab restores original SUMO and retires the persisted selection", async () => {
+  const f = recoveryFixture();
+  f.store.catalogs[f.store.repoId(privateRepo)] = [{ path: "old.kif" }];
+  await f.store.recoverSavedRepos();
+  assert.equal(f.store.repos[0].owner, "o");
+  assert.equal(f.store.repos[0].branch, "b");
+  assert.equal(f.recovered[0][2], true);
+  assert.equal(f.store.catalogs[f.store.repoId(privateRepo)], undefined);
+  assert.equal(JSON.parse(f.stored.get("library")).repos[0].owner, "o");
+});
+test("confirmed deleted branch switches to master on the same GitLab server", async () => {
+  const f = recoveryFixture({
+    session: { user: { server: privateRepo.server } },
+  });
+  await f.store.recoverSavedRepos();
+  assert.equal(f.store.repos[0].branch, "master");
+  assert.equal(f.store.repos[0].server, privateRepo.server);
+  assert.equal(f.recovered[0][2], false);
+  assert.equal(JSON.parse(f.stored.get("library")).repos[0].branch, "master");
+});
+test("existing branches, missing master, and network or permission failures preserve saved selection", async () => {
+  for (const options of [
+    { branches: ["deleted", "master"] },
+    { branches: ["main"] },
+    { branchError: new Error("404") },
+    { session: new Error("offline"), branchError: new Error("offline") },
+  ]) {
+    const f = recoveryFixture({
+      session: { user: { server: privateRepo.server } },
+      ...options,
+    });
+    await f.store.recoverSavedRepos();
+    assert.equal(f.store.repos[0].branch, "deleted");
+    assert.equal(f.recovered.length, 0);
+  }
+});
+test("unavailable fallback leaves persisted selection intact", async () => {
+  const f = recoveryFixture();
+  f.imports["../api/github"].fetchRepoTree = async () => {
+    throw new Error("offline");
+  };
+  await f.store.recoverSavedRepos();
+  assert.equal(f.store.repos[0].branch, "deleted");
+  assert.equal(f.recovered.length, 0);
+});
+test("deleted GitHub branches also fall back to master", async () => {
+  const f = recoveryFixture();
+  f.store.repos = [{ owner: "team", repo: "sumo", branch: "gone" }];
+  f.imports["../api/github"].fetchRepoBranches = async () => ["master"];
+  await f.store.recoverSavedRepos();
+  assert.equal(f.store.repos[0].branch, "master");
 });

@@ -135,3 +135,13 @@ export function deleteSession(
 export function clearSessionCookie(): string {
   return cookieHeader(SESSION_COOKIE, "", 0);
 }
+
+/** End this browser's session without changing provider-side authorization. */
+export async function endSession(
+  request: Request,
+  env: SessionEnv,
+): Promise<string> {
+  const id = getCookie(request, SESSION_COOKIE);
+  if (id) await deleteSession(id, env);
+  return clearSessionCookie();
+}

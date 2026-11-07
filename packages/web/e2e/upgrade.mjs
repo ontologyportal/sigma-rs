@@ -173,6 +173,31 @@ async function gotoApp(page, url) {
   }
 }
 
+/** Navigate through whichever responsive layout the old or new build shows. */
+async function openTab(page, name, label, group) {
+  await page.waitForSelector(".tabnav", { timeout: BOOT_TIMEOUT });
+  if (await page.locator("nav.tabs").isVisible()) {
+    await page.locator("nav.tabs button", { hasText: label }).first().click();
+  } else if (await page.locator("nav.tab-rail").isVisible()) {
+    const direct = page.locator("nav.tab-rail button", { hasText: label });
+    if (
+      (await direct.count()) &&
+      !(await direct.first().getAttribute("aria-haspopup"))
+    ) {
+      await direct.first().click();
+    } else {
+      await page.locator("nav.tab-rail button", { hasText: group }).click();
+      await page
+        .getByRole("menuitem", { name: new RegExp(`^${label}`) })
+        .click();
+    }
+  } else {
+    await page
+      .getByRole("combobox", { name: "Section", exact: true })
+      .selectOption(name);
+  }
+}
+
 async function boot(page, base, query = "") {
   try {
     await gotoApp(page, base + query);
@@ -183,11 +208,7 @@ async function boot(page, base, query = "") {
   }
   try {
     // Open the knowledge base tab
-    await page.waitForSelector("nav.tabs", { timeout: BOOT_TIMEOUT });
-    await page
-      .locator("nav.tabs button", { hasText: "Knowledge base" })
-      .first()
-      .click();
+    await openTab(page, "kb", "Knowledge base", "Manage");
   } catch (e) {
     throw new Error("failed to open Knowledge base tab", {
       cause: e,
@@ -220,7 +241,7 @@ async function boot(page, base, query = "") {
  *  the KB tab. */
 async function editorText(page, name) {
   try {
-    await page.locator("nav.tabs button", { hasText: "Edit" }).first().click();
+    await openTab(page, "edit", "Edit", "Develop");
     await page
       .getByRole("button", { name: "Open a file from the KB tab", exact: true })
       .or(
@@ -283,7 +304,7 @@ async function editAndSave(page, name, marker) {
  *  loaded constituent (a link) or not (plain text). */
 async function citations(page, base, term) {
   await gotoApp(page, `${base}?sym=${encodeURIComponent(term)}&view=formulas`);
-  await page.waitForSelector("nav.tabs", { timeout: BOOT_TIMEOUT });
+  await page.waitForSelector(".tabnav", { timeout: BOOT_TIMEOUT });
   const refs = page.locator(".ref-loc");
   await refs.first().waitFor({ timeout: 30_000 });
   // Man-page sections render incrementally; let them settle.
@@ -342,6 +363,14 @@ async function runCase(name, { seed, before, after }) {
         body: JSON.stringify({ tree: [], truncated: false }),
       }),
     );
+    await page.route("**/api/gitlab", (route) => {
+      const operation = route.request().postDataJSON()?.operation;
+      if (operation === "session")
+        return route.fulfill({ json: { user: null } });
+      if (operation === "capabilities")
+        return route.fulfill({ json: { oauthConfigured: false } });
+      return route.abort();
+    });
     await page.route(COMMITS_GLOB, (route) =>
       route.fulfill({
         contentType: "application/json",
@@ -384,7 +413,10 @@ async function runCase(name, { seed, before, after }) {
       .screenshot({ path: path.join(shots, `upgrade-${name}-FAIL.png`) })
       .catch(() => {});
     if (HEADED) await page.waitForTimeout(3000).catch(() => {});
-    const msg = e.message.split("\n")[0];
+    const details = [];
+    for (let cause = e; cause; cause = cause.cause)
+      details.push(cause.message.split("\n")[0]);
+    const msg = details.join(": ");
     console.log(`FAIL ${name}: ${msg}`);
     results.push({ name, ok: false, msg });
   } finally {

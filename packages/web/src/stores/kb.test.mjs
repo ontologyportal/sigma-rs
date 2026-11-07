@@ -95,7 +95,7 @@ function fixture({ cached = {}, downloads = [], sha = "commit" } = {}) {
     performance,
     setTimeout,
   });
-  return { store: exports.useKBStore(), fetched, events };
+  return { store: exports.useKBStore(), fetched, events, imports };
 }
 
 const branchOrigin = {
@@ -222,4 +222,53 @@ test("replacing the KB clears unavailable files and alerts from the previous bra
   assert.equal(store.unavailable.length, 0);
   assert.equal(store.updateAlerts.length, 0);
   assert.equal(store.changedOnLoad.length, 0);
+});
+
+test("boot recovery remaps saved files, clears branch metadata and saves edits locally first", async () => {
+  const f = fixture();
+  f.imports["../models/Origin"].originId = (o) => o.id;
+  const from = { id: "deleted", pathOf: (name) => name.replace("old/", "") };
+  const to = { id: "master", nameFor: (path) => `new/${path}` };
+  f.store.saved = [
+    { name: "old/Merge.kif", origin: from },
+    { name: "local.kif", origin: { kind: "file", id: "local" } },
+  ];
+  f.store.updateBaselines.deleted = "stale-sha";
+  f.store.updatePrefs.deleted = "auto-update";
+  f.imports["./changes"].useChangesStore = () => ({
+    readEdit: async () => "unsent edit",
+    forget: async () => f.events.push("forget"),
+  });
+  f.imports["./library"].useLibraryStore = () => ({
+    writeLocal: async (name, text) => f.events.push([name, text]),
+  });
+  await f.store.recoverSavedRepo(from, to, false, ["Merge.kif"]);
+  assert.deepEqual(f.events[0], ["recovered/deleted/Merge.kif", "unsent edit"]);
+  assert.equal(f.events[1], "forget");
+  assert.equal(f.store.saved[0].name, "local.kif");
+  assert.equal(f.store.saved[1].name, "new/Merge.kif");
+  assert.equal(f.store.updateBaselines.deleted, undefined);
+  assert.equal(f.store.updatePrefs.deleted, undefined);
+});
+test("signed-out recovery uses original SUMO defaults and preserves other sources", async () => {
+  const f = fixture();
+  f.imports["../models/Origin"].originId = (o) => o.id;
+  const from = { id: "private" };
+  const to = { id: "upstream" };
+  f.store.saved = [
+    { name: "private.kif", origin: from },
+    { name: "local.kif", origin: { id: "local", kind: "file" } },
+  ];
+  f.imports["../models/Constituent"].Constituent.defaults = () => [
+    { name: "Merge.kif", origin: to },
+  ];
+  f.imports["./changes"].useChangesStore = () => ({
+    readEdit: async () => null,
+    forget: async () => {},
+  });
+  await f.store.recoverSavedRepo(from, to, true, ["Merge.kif"]);
+  assert.deepEqual(
+    Array.from(f.store.saved, (row) => row.name),
+    ["local.kif", "Merge.kif"],
+  );
 });

@@ -459,7 +459,7 @@ const wnActionable = computed(
 );
 
 function onPropose() {
-  if (!auth.signedIn) {
+  if (!auth.githubSignedIn) {
     auth.openLoginDialog();
     return;
   }

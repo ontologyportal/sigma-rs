@@ -118,6 +118,7 @@ export const useBootStore = defineStore("boot", {
         // A cache hit is a short, fixed sequence (restore, WordNet fetch +
         // install, cache restored); a miss is one step per saved constituent
         // plus two for WordNet.
+        await useLibraryStore().recoverSavedRepos();
         this.resetProgress(4);
         const restored = await tryRestore((msg) => this.progress(msg));
         if (!restored) {

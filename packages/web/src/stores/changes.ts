@@ -21,6 +21,7 @@
  */
 
 import { defineStore } from "pinia";
+import { gitlabTree, gitlabText } from "../api/gitlab";
 import { EDITS_KEY, rawUrl } from "../constants";
 import { GitOrigin, originForKind, type OriginKind } from "../models/Origin";
 import {
@@ -78,7 +79,13 @@ export interface ChangeRecord {
   proposed: ProposedInfo | null;
   prClosed: PrClosedInfo | null;
   /** Destination of a directly pushed local upload or URL file. */
-  pushed?: { owner: string; repo: string; branch: string };
+  pushed?: {
+    service?: "github" | "gitlab";
+    server?: string;
+    owner: string;
+    repo: string;
+    branch: string;
+  };
 }
 
 /**
@@ -364,7 +371,7 @@ export const useChangesStore = defineStore("changes", {
       try {
         tree = await fetchSumoTree({ force });
       } catch {
-        return;
+        tree = [];
       }
       this.upstreamShas = Object.fromEntries(
         tree.filter((e) => e.type === "blob").map((e) => [e.path, e.sha]),
@@ -382,7 +389,10 @@ export const useChangesStore = defineStore("changes", {
         try {
           let pending = sourceTrees.get(git.id);
           if (!pending) {
-            pending = fetchRepoTree(git.owner, git.repo, git.branch, { force });
+            pending =
+              git.service === "gitlab"
+                ? gitlabTree(git)
+                : fetchRepoTree(git.owner, git.repo, git.branch, { force });
             sourceTrees.set(git.id, pending);
           }
           const entries = await pending;
@@ -571,7 +581,13 @@ export const useChangesStore = defineStore("changes", {
         path: string;
         blobSha: string;
       }[],
-      target: { owner: string; repo: string; branch: string },
+      target: {
+        service?: "github" | "gitlab";
+        server?: string;
+        owner: string;
+        repo: string;
+        branch: string;
+      },
     ) {
       for (const entry of entries) {
         const rec = this.record(entry.name, entry.origin);
@@ -586,6 +602,8 @@ export const useChangesStore = defineStore("changes", {
             proposed: rec?.proposed ?? null,
             prClosed: rec?.prClosed ?? null,
             pushed: {
+              service: target.service,
+              server: target.server,
               owner: target.owner,
               repo: target.repo,
               branch: target.branch,
@@ -645,6 +663,8 @@ export const useChangesStore = defineStore("changes", {
       const rec = Object.values(this.index).find((rec) => rec.path === path);
       const origin = rec ? this.trackedOrigin(rec) : undefined;
       const git = origin?.kind === "sumo" ? (origin as GitOrigin) : undefined;
+      if (git?.service === "gitlab")
+        return gitlabText(git, git.pathOf(rec!.name));
       const sha = this.upstreamSha(path);
       if (sha) {
         const text = await fetchBlobText(sha, git?.owner, git?.repo);

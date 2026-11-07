@@ -1,6 +1,7 @@
 /** Resolving a constituent's text from wherever its `Origin` says it lives:
  *  a git repo, an arbitrary URL, or the OPFS-backed local library. */
 
+import { gitlabText } from "../api/gitlab";
 import type { GitOrigin, Origin, RemoteOrigin } from "../models/Origin";
 import { useChangesStore } from "../stores/changes";
 import { useLibraryStore } from "../stores/library";
@@ -31,7 +32,9 @@ export async function fromOrigin(
         : await useChangesStore().readEdit(name, "sumo");
       if (edited !== null) return edited;
       const git = origin as GitOrigin;
-      return fetchText(git.rawUrl(git.pathOf(name), ref));
+      return git.service === "gitlab"
+        ? gitlabText(git, git.pathOf(name), ref)
+        : fetchText(git.rawUrl(git.pathOf(name), ref));
     }
     case "url": {
       const edited = await useChangesStore().readEdit(name, "url");

@@ -183,7 +183,7 @@ async function prepare(nextMode: "share" | "issue") {
         </p>
         <p v-if="issueError" class="bad" role="alert">{{ issueError }}</p>
         <button
-          v-if="!auth.signedIn"
+          v-if="!auth.githubSignedIn"
           class="btn"
           type="button"
           @click="auth.openLoginDialog()"

@@ -46,7 +46,9 @@ onMounted(() => sync(props.modelValue));
     @close="onClose"
     @cancel="!dismissible && $event.preventDefault()"
   >
-    <h3 v-if="title">{{ title }}</h3>
+    <slot name="heading"
+      ><h3 v-if="title">{{ title }}</h3></slot
+    >
     <slot />
     <div v-if="$slots.actions" class="dialog-actions">
       <slot name="actions" />

@@ -17,10 +17,10 @@ async function confirm() {
 </script>
 
 <template>
-  <BaseDialog v-model="auth.logoutDialogOpen" title="Log out of GitHub?">
+  <BaseDialog v-model="auth.logoutDialogOpen" title="Sign out?">
     <p class="hint">
-      You will need to log in again to submit changes or raise the API rate
-      limit.
+      Sign out of {{ auth.accountName }}? Your saved files and local edits will
+      stay in this browser.
     </p>
     <template #actions>
       <span></span>
@@ -33,7 +33,7 @@ async function confirm() {
           Cancel
         </button>
         <button class="btn" type="button" :disabled="busy" @click="confirm">
-          Log out
+          Sign out
         </button>
       </span>
     </template>

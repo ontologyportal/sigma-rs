@@ -24,10 +24,14 @@ function fixture({
   fail = false,
   mixed = false,
   signedIn = true,
+  service = "github",
+  server,
 } = {}) {
   const calls = [];
   const origin = {
     kind: "sumo",
+    service,
+    server,
     owner: "alice",
     repo: "sumo",
     branch: "work/ontology",
@@ -74,6 +78,13 @@ function fixture({
       }),
     },
     "../../stores/kb": { useKBStore: () => ({ constituents: [] }) },
+    "../../api/gitlab": {
+      async gitlabPush(target, files, title) {
+        calls.push(["gitlab", { target, files, title }]);
+        if (fail) throw new Error("GitLab denied");
+        return { url: "https://gitlab.com/commit", blobShas: ["saved"] };
+      },
+    },
     "../../api/github": {
       async pushFiles(args) {
         calls.push(["push", args]);
@@ -153,6 +164,60 @@ test("failed pushes retain local changes and report the failure", async () => {
     assert.equal(f.panel.result.value.text, "Remote changed");
     assert.ok(!f.calls.some((c) => c[0] === "mark"));
     assert.equal(f.panel.submitBusy.value, false);
+  } finally {
+    f.scope.stop();
+  }
+});
+
+test("GitLab pushes use their own session, source branch and saved text", async () => {
+  const f = fixture({ service: "gitlab", signedIn: false });
+  try {
+    await f.panel.push();
+    const args = f.calls.find((c) => c[0] === "gitlab")[1];
+    assert.equal(args.target.service, "gitlab");
+    assert.equal(args.target.branch, "work/ontology");
+    assert.equal(args.files[0].content, "(saved)");
+    assert.ok(f.calls.some((c) => c[0] === "mark"));
+    assert.ok(!f.calls.some((c) => c[0] === "push" || c[0] === "login"));
+  } finally {
+    f.scope.stop();
+  }
+});
+
+test("GitLab failures and unsaved edits preserve tracked changes", async () => {
+  for (const options of [{ fail: true }, { dirty: true }]) {
+    const f = fixture({ service: "gitlab", ...options });
+    try {
+      await f.panel.push();
+      assert.ok(!f.calls.some((c) => c[0] === "mark"));
+    } finally {
+      f.scope.stop();
+    }
+  }
+});
+
+test("GitLab changes cannot be submitted to GitHub as a pull request", async () => {
+  const f = fixture({ service: "gitlab" });
+  try {
+    await f.panel.submit();
+    assert.ok(!f.calls.some((c) => c[0] === "pr" || c[0] === "push"));
+    assert.ok(f.calls.some((c) => c[0] === "status" && /GitLab/.test(c[1])));
+  } finally {
+    f.scope.stop();
+  }
+});
+
+test("custom GitLab pushes keep the source server", async () => {
+  const f = fixture({
+    service: "gitlab",
+    server: "https://gitlab.nps.edu",
+    signedIn: false,
+  });
+  try {
+    await f.panel.push();
+    const request = f.calls.find((c) => c[0] === "gitlab")[1];
+    assert.equal(request.target.server, "https://gitlab.nps.edu");
+    assert.ok(!f.calls.some((c) => c[0] === "push"));
   } finally {
     f.scope.stop();
   }

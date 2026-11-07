@@ -8,6 +8,7 @@
 import { computed, ref } from "vue";
 import { MERGE } from "../../constants";
 import {
+  GitOrigin,
   LocalOrigin,
   RemoteOrigin,
   sourceLabel,
@@ -103,7 +104,13 @@ const rows = computed<FileRow[]>(() => {
       });
     }
   }
-  return out;
+  return out.map((row) => ({
+    ...row,
+    displayPath:
+      row.origin.kind === "sumo"
+        ? (row.origin as GitOrigin).pathOf(row.name)
+        : row.name,
+  }));
 });
 
 /** Pinned sources list their files as of the accepted commit, so a file
@@ -188,6 +195,7 @@ async function save(adds: FileRow[], removes: FileRow[]) {
   <FileTable
     v-model:selected="selected"
     checked-is-loaded
+    directories
     :rows="rows"
     :saving="saving"
     :catalog-note="library.catalogNote.text"

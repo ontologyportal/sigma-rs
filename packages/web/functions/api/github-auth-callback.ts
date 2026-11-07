@@ -8,6 +8,7 @@
 // endpoint keeps off the wire is the OAuth *exchange* -- the client secret
 // and the code-for-token trade never touch the browser.
 
+import { endGitlabSession } from "../_utils/gitlab";
 import { getCookie, cookieHeader, createSession } from "../_utils/session";
 
 interface Env {
@@ -72,6 +73,10 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
   const headers = new Headers();
   headers.set("Location", "/"); // send them back to the app
   headers.append("Set-Cookie", sessionCookie);
+  headers.append(
+    "Set-Cookie",
+    await endGitlabSession(context.request, context.env),
+  );
   // Clear the now-used state cookie.
   headers.append("Set-Cookie", cookieHeader("oauth_state", "", 0));
 

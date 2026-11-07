@@ -16,6 +16,8 @@
  * PR in place instead of opening a competing second one.
  */
 import { computed, reactive, ref, watch } from "vue";
+import GitLabLogin from "../GitLabLogin.vue";
+import { gitlabPush } from "../../api/gitlab";
 import BusyButton from "../BusyButton.vue";
 import StatusLine from "../StatusLine.vue";
 import { useStatus } from "../../composables/useStatus";
@@ -97,7 +99,7 @@ const STATE_LABEL: Record<ChangeRow["state"], string> = {
 const groups = computed(() =>
   [
     {
-      label: "From GitHub",
+      label: "From repositories",
       rows: rows.value.filter((r) => r.origin === "sumo"),
     },
     {
@@ -137,7 +139,13 @@ const pushTarget = computed(() => {
       sources.push(origin as GitOrigin);
     } else if (pushed) {
       sources.push(
-        new GitOrigin("github", pushed.owner, pushed.repo, pushed.branch),
+        new GitOrigin(
+          pushed.service ?? "github",
+          pushed.owner,
+          pushed.repo,
+          pushed.branch,
+          pushed.server,
+        ),
       );
     }
   }
@@ -270,7 +278,7 @@ async function push() {
     );
     return;
   }
-  if (!auth.token) {
+  if (target.service !== "gitlab" && !auth.token) {
     auth.openLoginDialog();
     return;
   }
@@ -294,15 +302,17 @@ async function push() {
           origin?.kind === "sumo" || rec?.pushed ? rec!.baseBlobSha : null,
       };
     });
-    const pushed = await pushFiles({
-      token: auth.token,
-      owner: target.owner,
-      repo: target.repo,
-      branch: target.branch,
-      files,
-      title: title.value.trim() || defaultTitle(picked),
-      onStep: (message) => status.set(message),
-    });
+    const pushed = await (target.service === "gitlab"
+      ? gitlabPush(target, files, title.value.trim() || defaultTitle(picked))
+      : pushFiles({
+          token: auth.token!,
+          owner: target.owner,
+          repo: target.repo,
+          branch: target.branch,
+          files,
+          title: title.value.trim() || defaultTitle(picked),
+          onStep: (message) => status.set(message),
+        }));
     await changes.markPushed(
       picked.map((r, i) => ({
         name: r.name,
@@ -334,10 +344,14 @@ async function proposePushedBranch() {
     return;
   }
   const pushed = result.value;
+  if (pushed.target.service === "gitlab") {
+    status.set("GitLab commits stay in their source repository.", true);
+    return;
+  }
   submitBusy.value = true;
   try {
     const pr = await createBranchPullRequest({
-      token: auth.token,
+      token: auth.token!,
       headOwner: pushed.target.owner,
       branch: pushed.target.branch,
       title: title.value.trim() || "Update SUMO",
@@ -360,6 +374,14 @@ async function proposePushedBranch() {
 }
 
 async function submit() {
+  if (
+    chosen.value.some(
+      (r) => (changes.trackedOrigin(r) as GitOrigin)?.service === "gitlab",
+    )
+  ) {
+    status.set("Push GitLab files to their GitLab source branch.", true);
+    return;
+  }
   const token = auth.token;
   result.value = null;
 
@@ -569,13 +591,21 @@ async function submit() {
     </div>
     <p v-if="pushTarget" class="hint intro">
       Push saved files directly to <code>{{ pushTarget.label }}</code
-      >, or propose them to upstream SUMO through a pull request.
+      ><template v-if="pushTarget.service !== 'gitlab'"
+        >, or propose them to upstream SUMO through a pull request.</template
+      >
+      <template v-else>. Push saved edits to this GitLab branch.</template>
     </p>
     <p v-else class="hint intro">
       Opens a pull request against <code>ontologyportal/sumo</code> with the
       ticked files, as one commit. You will be forked automatically if you lack
       push access.
     </p>
+    <GitLabLogin
+      v-if="pushTarget?.service === 'gitlab'"
+      :server="pushTarget.server"
+      :fixed-server="true"
+    />
     <div class="settings-grid">
       <div>
         <label for="ghTitle">Commit / pull request title</label>
@@ -607,6 +637,13 @@ async function submit() {
           @click="push"
         />
         <BusyButton
+          v-if="
+            pushTarget?.service !== 'gitlab' &&
+            !chosen.some(
+              (r) =>
+                (changes.trackedOrigin(r) as GitOrigin)?.service === 'gitlab',
+            )
+          "
           :busy="submitBusy"
           :label="
             result?.kind === 'push'

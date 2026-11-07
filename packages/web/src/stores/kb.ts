@@ -24,6 +24,7 @@ import {
   serializeOrigin,
   sourceLabel,
 } from "../models/Origin";
+import { gitlabHead } from "../api/gitlab";
 import { fetchRepoLastCommit } from "../api/github";
 import { call } from "../services/sigma";
 import { fetchAllTexts, fetchText, fromOrigin } from "../services/sources";
@@ -492,12 +493,11 @@ export const useKBStore = defineStore("kb", {
       onProgress?: (done: number, total: number) => void,
     ): Promise<{ added: number; failed: string[] }> {
       if (!paths.length) throw new Error("Choose a constituent set to load.");
-      const { sha } = await fetchRepoLastCommit(
-        origin.owner,
-        origin.repo,
-        origin.branch,
-        { force: true },
-      );
+      const { sha } = await (origin.service === "gitlab"
+        ? gitlabHead(origin)
+        : fetchRepoLastCommit(origin.owner, origin.repo, origin.branch, {
+            force: true,
+          }));
       if (!sha) throw new Error(`Cannot resolve ${origin.label}.`);
       const entries = paths.map((path) => ({
         name: origin.nameFor(path),
@@ -516,7 +516,13 @@ export const useKBStore = defineStore("kb", {
         return { ...entry, text };
       });
       await useLibraryStore().addRepo(
-        { owner: origin.owner, repo: origin.repo, branch: origin.branch },
+        {
+          service: origin.service,
+          server: origin.server,
+          owner: origin.owner,
+          repo: origin.repo,
+          branch: origin.branch,
+        },
         { replace: true, ref: sha },
       );
       await this.replaceAll();
@@ -527,6 +533,55 @@ export const useKBStore = defineStore("kb", {
       const result = await this.applyChanges({ add });
       await flushKbCacheSave();
       return result;
+    },
+
+    /** Retire a stale source at boot, keeping unpushed work in the local library. */
+    async recoverSavedRepo(
+      from: GitOrigin,
+      to: GitOrigin,
+      useDefaults: boolean,
+      paths: string[],
+    ) {
+      const library = useLibraryStore();
+      const changes = useChangesStore();
+      const affected = this.saved.filter(
+        (row) => originId(row.origin) === from.id,
+      );
+      for (const row of affected) {
+        const edit = await changes.readEdit(row.name, "sumo");
+        if (edit !== null) {
+          const name = `recovered/${encodeURIComponent(from.id)}/${from.pathOf(row.name)}`;
+          await library.writeLocal(name, edit);
+        }
+      }
+      const replacements = useDefaults
+        ? Constituent.defaults().map((c) => ({
+            name: c.name,
+            origin: serializeOrigin(c.origin),
+          }))
+        : affected
+            .filter((row) => paths.includes(from.pathOf(row.name)))
+            .map((row) => ({
+              name: to.nameFor(from.pathOf(row.name)),
+              origin: serializeOrigin(to),
+            }));
+      const kept = this.saved.filter((row) => originId(row.origin) !== from.id);
+      for (const row of replacements)
+        if (
+          !kept.some(
+            (other) =>
+              other.name === row.name &&
+              originId(other.origin) === originId(row.origin),
+          )
+        )
+          kept.push(row);
+      for (const row of affected) await changes.forget(row.name, "sumo");
+      this.saved = kept;
+      delete this.updateBaselines[from.id];
+      delete this.updatePrefs[from.id];
+      persistSaved(this.saved);
+      persistUpdateBaselines(this.updateBaselines);
+      persistUpdatePrefs(this.updatePrefs);
     },
 
     async resetToMerge() {
@@ -741,9 +796,11 @@ export const useKBStore = defineStore("kb", {
       const g = group.origin as GitOrigin;
       let latest: { sha: string | null };
       try {
-        latest = await fetchRepoLastCommit(g.owner, g.repo, g.branch, {
-          force: manual,
-        });
+        latest = await (g.service === "gitlab"
+          ? gitlabHead(g)
+          : fetchRepoLastCommit(g.owner, g.repo, g.branch, {
+              force: manual,
+            }));
       } catch {
         if (manual)
           this.updateAlerts.push({

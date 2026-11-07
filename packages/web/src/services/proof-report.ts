@@ -138,6 +138,10 @@ export async function exportProofReport(
   const pinned: PinnedConstituent[] = [];
   for (const file of report.constituents) {
     const source = file.source;
+    if (source?.repository.startsWith("gitlab:"))
+      throw new Error(
+        "Sharing proof reports with GitLab inputs is not supported. Private inputs remain local.",
+      );
     if (!source || !reportBranch(source.branch) || !reportPath(source.path))
       throw new Error(
         `${file.name}: load this file from a pushed GitHub branch, then rerun the proof before sharing. Local uploads and detached revisions cannot be shared.`,

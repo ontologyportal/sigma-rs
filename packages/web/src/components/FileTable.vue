@@ -16,6 +16,8 @@ export interface FileRow {
   /** What the selection set holds -- unique across the table. */
   key: string;
   name: string;
+  /** Display path without repository identity prefixes. */
+  displayPath?: string;
   origin: Origin;
   /** Source column text: `GitHub` (upstream), `owner/repo@branch`, `Local`, `URL`. */
   source: string;
@@ -117,15 +119,18 @@ function matchesSource(r: FileRow): boolean {
   }
 }
 
+const filePath = (row: FileRow) => row.displayPath ?? row.name;
+
 const visible = computed<FileRow[]>(() => {
   const needle = search.value.trim().toLowerCase();
   const list = props.rows.filter((r) => {
-    if (needle && !r.name.toLowerCase().includes(needle)) return false;
+    if (needle && !filePath(r).toLowerCase().includes(needle)) return false;
     if (statusFilter.value === "in" && !r.loaded) return false;
     if (statusFilter.value === "out" && r.loaded) return false;
     return matchesSource(r);
   });
-  const byName = (a: FileRow, b: FileRow) => a.name.localeCompare(b.name);
+  const byName = (a: FileRow, b: FileRow) =>
+    filePath(a).localeCompare(filePath(b));
   switch (sortKey.value) {
     case "size":
       return list.sort((a, b) => b.size - a.size || byName(a, b));
@@ -170,11 +175,12 @@ const entries = computed<TableEntry[]>(() => {
     const groups = new Map<string, FileRow[]>();
     for (const row of rows) {
       const root = props.directoryRoot ? `${props.directoryRoot}/` : "";
+      const displayPath = filePath(row);
       const path =
-        root && row.name.startsWith(root)
-          ? row.name.slice(root.length)
-          : row.name;
-      const parts = props.directories ? path.split("/") : [row.name];
+        root && displayPath.startsWith(root)
+          ? displayPath.slice(root.length)
+          : displayPath;
+      const parts = props.directories ? path.split("/") : [displayPath];
       if (parts.length <= depth + 1) {
         result.push({
           kind: "file",
@@ -398,8 +404,8 @@ function save() {
                   :disabled="row.locked"
                   :aria-label="
                     checkedIsLoaded
-                      ? `${capitalize(loadedWord)} ${row.name}`
-                      : `Select ${row.name}`
+                      ? `${capitalize(loadedWord)} ${filePath(row)}`
+                      : `Select ${filePath(row)}`
                   "
                   :title="
                     selectOnly
@@ -417,7 +423,7 @@ function save() {
               </td>
               <td
                 :style="{ paddingLeft: `${10 + entry.depth * 18}px` }"
-                :title="row.name"
+                :title="filePath(row)"
               >
                 <span v-if="row.badge" class="badge">{{ row.badge }}</span>
                 <a
@@ -425,7 +431,7 @@ function save() {
                   class="mono name"
                   title="Open"
                   @click="emit('open', row)"
-                  >{{ row.name }}</a
+                  >{{ entry.name }}</a
                 >
                 <span v-else class="mono name">{{ entry.name }}</span>
                 <a
