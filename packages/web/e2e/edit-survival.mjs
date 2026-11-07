@@ -354,7 +354,7 @@ async function runCase(name, { routes, seed, check }) {
       .catch(() => {});
     if (HEADED) await page.waitForTimeout(3000).catch(() => {});
     const msg = e.message.split("\n")[0];
-    console.log(`FAIL ${name}: ${msg}`);
+    console.error(`FAIL ${name}: ${e.stack || e.message}`);
     results.push({ name, ok: false, msg });
   } finally {
     await context.close();
