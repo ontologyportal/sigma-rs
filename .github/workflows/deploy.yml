@@ -55,6 +55,7 @@ jobs:
       # Vampire backend degrades gracefully in the UI (sigma.worker.js).
       - uses: emscripten-core/setup-emsdk@v15
         with:
+          version: "6.0.12"
           actions-cache-folder: emsdk-cache
 
       - name: Verify emscripten install
@@ -85,7 +86,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: packages/vampire/dist
-          key: vampire-wasm-${{ steps.vampire-ref.outputs.ref }}
+          key: vampire-wasm-emscripten-6.0.12-${{ steps.vampire-ref.outputs.ref }}
 
       - name: Build the Vampire WASM backend
         if: steps.cache-vampire-wasm.outputs.cache-hit != 'true'
