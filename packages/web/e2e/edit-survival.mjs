@@ -180,7 +180,16 @@ async function expectOpfsContent(page, dir, name, expected, label) {
 
 /** Open `name` in the Edit tab and return the editor's visible text. */
 async function editorText(page, name) {
-  await page.locator("nav.tabs button", { hasText: "Edit" }).first().click();
+  if (await page.locator("nav.tabs").isVisible()) {
+    await page.locator("nav.tabs button", { hasText: "Edit" }).first().click();
+  } else if (await page.locator("nav.tab-rail").isVisible()) {
+    await page.locator("nav.tab-rail button", { hasText: "Develop" }).click();
+    await page.getByRole("menuitem", { name: /^Edit/ }).click();
+  } else {
+    await page
+      .getByRole("combobox", { name: "Section", exact: true })
+      .selectOption("edit");
+  }
   await page
     .getByRole("button", { name: "Open a file from the KB tab", exact: true })
     .click();
@@ -220,7 +229,7 @@ async function expectUrlReviewAcknowledged(page, text, label) {
   await page.goto(new URL("kb?view=sources", base).href, {
     waitUntil: "domcontentloaded",
   });
-  await page.waitForSelector("nav.tabs", { timeout: BOOT_TIMEOUT });
+  await page.waitForSelector(".tabnav", { timeout: BOOT_TIMEOUT });
   await page.locator(".src-report button.src-update-now").first().click();
   await page
     .locator('.src-alert:has-text("already up to date"), dialog[open]')
@@ -307,6 +316,15 @@ async function runCase(name, { routes, seed, check }) {
         body: JSON.stringify({ tree: [], truncated: false }),
       }),
     );
+    // The Vite test server does not run the GitLab session endpoint.
+    await page.route(new URL("api/gitlab", base).href, (route) => {
+      const operation = route.request().postDataJSON()?.operation;
+      if (operation === "session")
+        return route.fulfill({ json: { user: null } });
+      if (operation === "capabilities")
+        return route.fulfill({ json: { oauthConfigured: false } });
+      return route.abort();
+    });
     await page.route(SEED_URL, (route) =>
       route.fulfill({ contentType: "text/html", body: "<!doctype html>" }),
     );
@@ -319,7 +337,7 @@ async function runCase(name, { routes, seed, check }) {
     await page.goto(new URL("kb?view=sources", base).href, {
       waitUntil: "domcontentloaded",
     });
-    await page.waitForSelector("nav.tabs", { timeout: BOOT_TIMEOUT });
+    await page.waitForSelector(".tabnav", { timeout: BOOT_TIMEOUT });
     await page.waitForSelector(".src-report", { timeout: 60_000 });
 
     await check(page);
@@ -527,7 +545,7 @@ await runCase("sumo-edit-survives-refresh", {
     );
 
     await page.reload({ waitUntil: "domcontentloaded" });
-    await page.waitForSelector("nav.tabs", { timeout: BOOT_TIMEOUT });
+    await page.waitForSelector(".tabnav", { timeout: BOOT_TIMEOUT });
 
     await expectOpfsContent(
       page,
@@ -566,7 +584,7 @@ await runCase("url-edit-survives-refresh", {
     );
 
     await page.reload({ waitUntil: "domcontentloaded" });
-    await page.waitForSelector("nav.tabs", { timeout: BOOT_TIMEOUT });
+    await page.waitForSelector(".tabnav", { timeout: BOOT_TIMEOUT });
 
     await expectOpfsContent(
       page,
@@ -672,7 +690,7 @@ await runCase("sumo-edit-survives-url-update", {
     await page.goto(new URL("kb?view=sources", base).href, {
       waitUntil: "domcontentloaded",
     });
-    await page.waitForSelector("nav.tabs", { timeout: BOOT_TIMEOUT });
+    await page.waitForSelector(".tabnav", { timeout: BOOT_TIMEOUT });
     await waitForUpdateApplied(page, "updated");
     await sourcesChangedDialog(page, ["Extra.kif"]);
 
@@ -713,7 +731,7 @@ await runCase("url-edit-survives-url-update", {
     await page.goto(new URL("kb?view=sources", base).href, {
       waitUntil: "domcontentloaded",
     });
-    await page.waitForSelector("nav.tabs", { timeout: BOOT_TIMEOUT });
+    await page.waitForSelector(".tabnav", { timeout: BOOT_TIMEOUT });
     // Offered for review, never applied over the edit -- reviewed here from
     // the load-time dialog rather than the Sources card.
     const changed = await sourcesChangedDialog(page, ["Extra.kif"], {
@@ -780,7 +798,7 @@ await runCase("url-accepting-upstream-sticks", {
     await page.goto(new URL("kb?view=sources", base).href, {
       waitUntil: "domcontentloaded",
     });
-    await page.waitForSelector("nav.tabs", { timeout: BOOT_TIMEOUT });
+    await page.waitForSelector(".tabnav", { timeout: BOOT_TIMEOUT });
 
     await sourcesChangedDialog(page, ["Extra.kif"]);
     const alert = page.locator(".src-alert", { hasText: "Extra.kif" }).first();
@@ -804,7 +822,7 @@ await runCase("url-accepting-upstream-sticks", {
 
     // The boot after is what the stale-record bug would actually show up in.
     await page.reload({ waitUntil: "domcontentloaded" });
-    await page.waitForSelector("nav.tabs", { timeout: BOOT_TIMEOUT });
+    await page.waitForSelector(".tabnav", { timeout: BOOT_TIMEOUT });
     expectMarkers(
       await editorText(page, "Extra.kif"),
       { has: UPSTREAM_MARKER, lacks: LOCAL_MARKER },
@@ -908,7 +926,7 @@ await runCase("url-edit-not-taken-as-baseline", {
     );
 
     await page.reload({ waitUntil: "domcontentloaded" });
-    await page.waitForSelector("nav.tabs", { timeout: BOOT_TIMEOUT });
+    await page.waitForSelector(".tabnav", { timeout: BOOT_TIMEOUT });
     expectMarkers(
       await editorText(page, "Extra.kif"),
       { has: LOCAL_MARKER },
