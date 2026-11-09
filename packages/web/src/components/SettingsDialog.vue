@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import BaseDialog from "./BaseDialog.vue";
+import GitLabLogin from "./GitLabLogin.vue";
 import { clearCache } from "../services/kb-cache";
 import { downloadBackup } from "../services/backup";
 import { useKBStore } from "../stores/kb";
@@ -10,6 +11,7 @@ import { errMsg } from "../utils/format";
 
 const kb = useKBStore();
 const shell = useShellStore();
+const gitlabBusy = ref(false);
 
 const languageOptions = computed(() =>
   kb.languages.length
@@ -58,7 +60,11 @@ async function onBackup() {
 </script>
 
 <template>
-  <BaseDialog v-model="shell.settingsOpen" title="Settings">
+  <BaseDialog
+    v-model="shell.settingsOpen"
+    title="Settings"
+    :dismissible="!gitlabBusy"
+  >
     <div class="settings-row">
       <label for="appTheme">App Theme</label>
       <button
@@ -110,6 +116,14 @@ async function onBackup() {
         </option>
       </select>
     </div>
+    <fieldset class="external-provider">
+      <legend>Sign in with an external provider</legend>
+      <GitLabLogin
+        v-if="shell.settingsOpen"
+        settings
+        @busy="gitlabBusy = $event"
+      />
+    </fieldset>
     <div class="maintenance">
       <button
         class="btn ghost clear-cache"
@@ -135,6 +149,7 @@ async function onBackup() {
         class="version"
         type="button"
         title="Show release notes for every version"
+        :disabled="gitlabBusy"
         @click="shell.openReleaseHistory()"
       >
         {{ versionText }}
@@ -142,6 +157,7 @@ async function onBackup() {
       <button
         class="btn ghost"
         type="button"
+        :disabled="gitlabBusy"
         @click="shell.settingsOpen = false"
       >
         Close
@@ -179,6 +195,18 @@ async function onBackup() {
 .layout-narrow-note {
   margin: -10px 0 18px;
   font-size: 12px;
+}
+.external-provider {
+  min-width: 0;
+  margin: 0 0 18px;
+  padding: 0 12px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.external-provider legend {
+  padding: 0 4px;
+  font-size: 12px;
+  font-weight: 600;
 }
 .maintenance {
   display: flex;

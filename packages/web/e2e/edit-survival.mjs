@@ -17,7 +17,7 @@
 // built-in server and targets a running deployment instead. HEADED=1 runs with
 // a visible browser window (SLOWMO=<ms> adds a per-action delay).
 
-import { chromium } from "playwright";
+import { chromium, errors } from "playwright";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -178,18 +178,43 @@ async function expectOpfsContent(page, dir, name, expected, label) {
 
 // -- UI helpers --------------------------------------------------------------
 
+/** Recheck the responsive nav if its tier changes while a click is pending. */
+async function openEditTab(page) {
+  const deadline = Date.now() + 30_000;
+  while (!(await page.locator(".edit-tab").isVisible())) {
+    try {
+      const options = {
+        timeout: Math.max(1, Math.min(1000, deadline - Date.now())),
+      };
+      if (await page.locator("nav.tabs").isVisible()) {
+        await page
+          .locator("nav.tabs button", { hasText: "Edit" })
+          .first()
+          .click(options);
+      } else if (await page.locator("nav.tab-rail").isVisible()) {
+        const edit = page.getByRole("menuitem", { name: /^Edit/ });
+        if (!(await edit.isVisible())) {
+          await page
+            .locator("nav.tab-rail button", { hasText: "Develop" })
+            .click(options);
+        }
+        await edit.click(options);
+      } else {
+        await page
+          .getByRole("combobox", { name: "Section", exact: true })
+          .selectOption("edit", options);
+      }
+      await page.locator(".edit-tab").waitFor({ state: "visible", ...options });
+    } catch (error) {
+      if (!(error instanceof errors.TimeoutError) || Date.now() >= deadline)
+        throw error;
+    }
+  }
+}
+
 /** Open `name` in the Edit tab and return the editor's visible text. */
 async function editorText(page, name) {
-  if (await page.locator("nav.tabs").isVisible()) {
-    await page.locator("nav.tabs button", { hasText: "Edit" }).first().click();
-  } else if (await page.locator("nav.tab-rail").isVisible()) {
-    await page.locator("nav.tab-rail button", { hasText: "Develop" }).click();
-    await page.getByRole("menuitem", { name: /^Edit/ }).click();
-  } else {
-    await page
-      .getByRole("combobox", { name: "Section", exact: true })
-      .selectOption("edit");
-  }
+  await openEditTab(page);
   await page
     .getByRole("button", { name: "Open a file from the KB tab", exact: true })
     .click();

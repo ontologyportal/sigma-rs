@@ -537,7 +537,7 @@ test("branch 404 identifies the selected server and project", async () => {
   assert.match(result.body.error, /token cannot access/);
 });
 
-test("successful GitLab token sign-in clears the browser's GitHub session", async () => {
+test("successful GitLab token sign-in preserves the browser's GitHub session", async () => {
   const f = fixture();
   f.kv.set(
     "session:github-session",
@@ -557,15 +557,13 @@ test("successful GitLab token sign-in clears the browser's GitHub session", asyn
     }),
   });
   assert.equal(result.status, 200);
-  assert.equal(f.kv.has("session:github-session"), false);
+  assert.equal(f.kv.has("session:github-session"), true);
   assert.ok(
-    result.headers
-      .getSetCookie()
-      .some((c) => c.startsWith("session_id=;") && c.includes("Max-Age=0")),
+    result.headers.getSetCookie().every((c) => !c.startsWith("session_id=")),
   );
 });
 
-test("GitHub OAuth callback clears the previous GitLab session", async () => {
+test("GitHub OAuth callback preserves the GitLab session", async () => {
   const f = fixture();
   f.env.GITHUB_OAUTH_CLIENT_ID = "client";
   f.env.GITHUB_OAUTH_CLIENT_SECRET = "secret";
@@ -580,15 +578,15 @@ test("GitHub OAuth callback clears the previous GitLab session", async () => {
     ),
   });
   assert.equal(result.status, 302);
-  assert.equal(f.kv.has(`gitlab:${f.id}`), false);
+  assert.equal(f.kv.has(`gitlab:${f.id}`), true);
   assert.ok(
     result.headers
       .getSetCookie()
-      .some((c) => c.startsWith("gitlab_session=;") && c.includes("Max-Age=0")),
+      .every((c) => !c.startsWith("gitlab_session=")),
   );
 });
 
-test("GitLab OAuth callback ends an existing GitHub session after exchange", async () => {
+test("GitLab OAuth callback preserves the GitHub session", async () => {
   const f = fixture();
   f.kv.set(
     "session:github-id",
@@ -610,11 +608,9 @@ test("GitLab OAuth callback ends an existing GitHub session after exchange", asy
     ),
   });
   assert.equal(result.status, 302);
-  assert.equal(f.kv.has("session:github-id"), false);
+  assert.equal(f.kv.has("session:github-id"), true);
   assert.ok(
-    result.headers
-      .getSetCookie()
-      .some((c) => c.startsWith("session_id=;") && c.includes("Max-Age=0")),
+    result.headers.getSetCookie().every((c) => !c.startsWith("session_id=")),
   );
 });
 

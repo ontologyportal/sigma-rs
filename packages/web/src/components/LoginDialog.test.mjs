@@ -10,7 +10,7 @@ const { descriptor } = parse(
 );
 const source = ts.transpileModule(
   descriptor.scriptSetup.content +
-    "\nexports.controls = { token, busy, error, selectProvider, useToken, moveTab, providerTabs, gitlabBusy, chooseRepository };",
+    "\nexports.controls = { token, busy, error, useToken, chooseRepository };",
   {
     compilerOptions: {
       module: ts.ModuleKind.CommonJS,
@@ -23,11 +23,10 @@ function fixture(loginWithToken = async () => {}) {
   const exports = {};
   let reset;
   const navigation = [];
-  const auth = { loginWithToken, loginProvider: "github" };
+  const auth = { loginWithToken };
   const imports = {
     vue: {
       ref: (value) => ({ value }),
-      nextTick: async () => {},
       watch: (_, callback) => {
         reset = callback;
       },
@@ -75,38 +74,8 @@ test("validation errors leave the form open for correction", async () => {
   assert.equal(f.busy.value, false);
 });
 
-test("provider tabs clear credentials and cannot switch during sign-in", () => {
+test("choose repository leaves sign-in and opens the GitHub selector even when GitLab is connected", () => {
   const f = fixture();
-  f.token.value = "secret";
-  f.error.value = "old error";
-  f.selectProvider("gitlab");
-  assert.equal(f.auth.loginProvider, "gitlab");
-  assert.equal(f.token.value, "");
-  assert.equal(f.error.value, "");
-  f.gitlabBusy.value = true;
-  f.selectProvider("github");
-  assert.equal(f.auth.loginProvider, "gitlab");
-});
-test("keyboard navigation selects and focuses the next provider tab", async () => {
-  const f = fixture();
-  let focused = false;
-  f.providerTabs.value = {
-    querySelector: () => ({
-      focus: () => {
-        focused = true;
-      },
-    }),
-  };
-  await f.moveTab({ key: "ArrowRight", preventDefault() {} });
-  assert.equal(f.auth.loginProvider, "gitlab");
-  assert.equal(focused, true);
-  await f.moveTab({ key: "Home", preventDefault() {} });
-  assert.equal(f.auth.loginProvider, "github");
-});
-
-test("choose repository leaves sign-in and opens the connected provider's selector", () => {
-  const f = fixture();
-  f.auth.provider = "gitlab";
   f.auth.gitlabUser = {
     login: "company-user",
     server: "https://gitlab.nps.edu",
@@ -115,6 +84,6 @@ test("choose repository leaves sign-in and opens the connected provider's select
   f.chooseRepository();
   assert.equal(f.auth.loginDialogOpen, false);
   assert.equal(f.navigation[0][0], "kb");
-  assert.equal(f.navigation[0][1].chooseRepo, "gitlab");
-  assert.equal(f.navigation[0][1].server, "https://gitlab.nps.edu");
+  assert.equal(f.navigation[0][1].chooseRepo, "github");
+  assert.equal(f.navigation[0][1].server, undefined);
 });

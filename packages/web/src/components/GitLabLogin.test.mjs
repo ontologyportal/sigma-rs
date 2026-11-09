@@ -35,7 +35,7 @@ function fixture({
       auth.gitlabUser = { login: "alice", server };
       return auth.gitlabUser;
     },
-    async logout() {
+    async logoutGitlab() {
       auth.gitlabUser = null;
     },
   });
@@ -50,6 +50,7 @@ function fixture({
       },
     },
     "../stores/auth": { useAuthStore: () => auth },
+    "../stores/shell": { useShellStore: () => ({}) },
     "../api/gitlab": {
       gitlabRequest: async (...args) => {
         calls.push(args);
@@ -60,6 +61,7 @@ function fixture({
     },
     "../composables/useStatus": {
       useStatus: () => ({
+        clear: () => {},
         set: (...args) => calls.push(["status", ...args]),
         fail: (e) => calls.push(["error", e.message]),
       }),
@@ -75,7 +77,7 @@ function fixture({
   const scope = vue.effectScope();
   const ui = scope.run(() =>
     exports.default.setup(
-      { server, dialog: true },
+      { server, settings: true },
       { expose: () => {}, emit: (...args) => calls.push(["emit", ...args]) },
     ),
   );
@@ -105,7 +107,7 @@ test("personal token form submits once and clears its password before waiting fo
       f.calls.find((c) => c[0] === "login")[1].token,
       "glpat-example",
     );
-    assert.ok(f.calls.some((c) => c[0] === "status" && c[1].includes("alice")));
+    assert.equal(f.auth.gitlabUser.login, "alice");
     assert.equal(f.ui.busy.value, false);
   } finally {
     f.stop();
@@ -190,7 +192,7 @@ test("connecting and disconnecting update the global GitLab account", async () =
     assert.equal(f.auth.gitlabUser.login, "alice");
     assert.equal(f.auth.gitlabUser.server, "https://gitlab.nps.edu");
     assert.equal(f.ui.connected.value.login, "alice");
-    await f.auth.logout();
+    await f.ui.disconnect();
     assert.equal(f.auth.gitlabUser, null);
     assert.equal(f.ui.connected.value, null);
   } finally {

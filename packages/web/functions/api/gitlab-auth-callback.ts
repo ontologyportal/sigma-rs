@@ -1,4 +1,4 @@
-import { cookieHeader, getCookie, endSession } from "../_utils/session";
+import { cookieHeader, getCookie } from "../_utils/session";
 import {
   type GitLabEnv,
   STATE_COOKIE,
@@ -51,7 +51,6 @@ export const onRequestGet: PagesFunction<GitLabEnv> = async ({
       "Set-Cookie",
       await saveToken(data.access_token, data.expires_in, env),
     );
-    headers.append("Set-Cookie", await endSession(request, env));
     headers.set("Location", "/");
     return new Response(null, { status: 302, headers });
   } catch {

@@ -106,6 +106,9 @@ const presetsBusy = ref(false);
 const presetBtn = ref<HTMLElement | null>(null);
 const presetMenuOpen = ref(false);
 const importOpen = ref(false);
+const repoProviders = computed(() =>
+  auth.gitlabUser ? (["github", "gitlab"] as const) : (["github"] as const),
+);
 function selectRepoProvider(provider: "github" | "gitlab") {
   if (
     branchesBusy.value ||
@@ -128,6 +131,14 @@ const loadedOrigin = kb.constituents.find((c) => c.origin.kind === "sumo")
   ?.origin as GitOrigin | undefined;
 const service = ref<"github" | "gitlab">(
   loadedOrigin?.service ?? library.defaultRepo.service ?? "github",
+);
+watch(
+  () => auth.gitlabUser,
+  (user) => {
+    if (!repoFormOpen.value || service.value !== "gitlab") return;
+    if (user) server.value = user.server;
+    else service.value = "github";
+  },
 );
 const listedService = ref(service.value);
 const server = ref(loadedOrigin?.server ?? library.defaultRepo.server ?? "");
@@ -223,21 +234,31 @@ async function listBranches() {
     const parts = value.split("/");
     const name = parts.pop()!;
     const account = parts.join("/");
-    branches.value =
-      service.value === "gitlab"
+    const provider = service.value;
+    const host = server.value;
+    const names =
+      provider === "gitlab"
         ? await gitlabRequest<string[]>(
             "branches",
             coordinates({
               owner: account,
               repo: name,
               branch: branch.value,
-              server: server.value || undefined,
+              server: host || undefined,
             }),
           )
         : await fetchRepoBranches(account, name);
-    listedService.value = service.value;
-    listedServer.value = server.value;
+    if (
+      service.value !== provider ||
+      server.value !== host ||
+      repository.value.trim() !== value
+    )
+      return;
+    branches.value = names;
+    listedService.value = provider;
+    listedServer.value = host;
     listedRepo.value = value;
+    return true;
   } catch (e) {
     branchError.value = e instanceof Error ? e.message : String(e);
   } finally {
@@ -248,8 +269,7 @@ async function listBranches() {
 async function loadSelectedRepository() {
   if (branchesBusy.value || presetsBusy.value) return;
   if (service.value === "gitlab" && !auth.gitlabUser) return;
-  await listBranches();
-  if (branchError.value) return;
+  if (!(await listBranches())) return;
   const initialBranch = branches.value.includes("master")
     ? "master"
     : branches.value.includes("main")
@@ -511,23 +531,14 @@ async function loadPreset(key: string, target?: GitOrigin) {
           aria-label="Repository provider"
         >
           <button
-            v-for="provider in ['github', 'gitlab'] as const"
+            v-for="provider in repoProviders"
             :key="provider"
             :id="`repo-${provider}-tab`"
             type="button"
             role="tab"
             :aria-selected="service === provider"
             aria-controls="repo-provider-panel"
-            :disabled="
-              branchesBusy ||
-              presetsBusy ||
-              (provider === 'gitlab' && !auth.gitlabUser)
-            "
-            :title="
-              provider === 'gitlab' && !auth.gitlabUser
-                ? 'Sign in with GitLab to switch to a GitLab repository'
-                : undefined
-            "
+            :disabled="branchesBusy || presetsBusy"
             @click="selectRepoProvider(provider)"
           >
             <ProviderIcon :provider="provider" :size="22" />

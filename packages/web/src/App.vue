@@ -3,7 +3,6 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, type LocationQuery } from "vue-router";
 import LoadingScreen from "./components/LoadingScreen.vue";
 import SettingsDialog from "./components/SettingsDialog.vue";
-import ProviderIcon from "./components/ProviderIcon.vue";
 import LoginDialog from "./components/LoginDialog.vue";
 import LogoutDialog from "./components/LogoutDialog.vue";
 import VersionDialog from "./components/VersionDialog.vue";
@@ -125,14 +124,16 @@ onBeforeUnmount(() => {
             <button
               class="head-btn"
               type="button"
-              :title="auth.signedIn ? 'Manage your account' : 'Sign in'"
+              :title="
+                auth.githubSignedIn ? 'Manage your GitHub account' : 'Sign in'
+              "
               :aria-label="
-                auth.signedIn
-                  ? `Manage ${auth.provider === 'github' ? 'GitHub' : 'GitLab'} account for ${auth.accountName}`
+                auth.githubSignedIn
+                  ? `Manage GitHub account for ${auth.accountName}`
                   : 'Sign in'
               "
               aria-haspopup="dialog"
-              @click="auth.openLoginDialog(auth.provider ?? 'github')"
+              @click="auth.openLoginDialog()"
             >
               <img
                 v-if="auth.user?.avatarUrl"
@@ -143,13 +144,8 @@ onBeforeUnmount(() => {
                 class="user-avatar"
               />
               <span class="user-name">{{
-                auth.signedIn ? auth.accountName : "Sign in"
+                auth.githubSignedIn ? auth.accountName : "Sign in"
               }}</span>
-              <ProviderIcon
-                v-if="auth.provider"
-                :provider="auth.provider"
-                :size="18"
-              />
             </button>
             <button
               class="head-btn"

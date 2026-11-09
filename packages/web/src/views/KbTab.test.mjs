@@ -71,9 +71,10 @@ function fixture({
       Constituent: { defaults: () => [{ name: "Merge.kif" }] },
     },
     "../stores/auth": {
-      useAuthStore: () => ({
-        gitlabUser: { login: "test", server: "https://gitlab.nps.edu" },
-      }),
+      useAuthStore: () =>
+        vue.reactive({
+          gitlabUser: { login: "test", server: "https://gitlab.nps.edu" },
+        }),
     },
     "../stores/kb": { useKBStore: () => kb },
     "../stores/library": {
@@ -277,19 +278,30 @@ test("account repository action opens the project selector on its connected serv
   }
 });
 
-test("repository provider tabs require a GitLab account and use its server", () => {
+test("repository provider tabs follow the GitLab session and use its server", async () => {
   const f = fixture();
   try {
     f.view.auth.gitlabUser = null;
+    assert.deepEqual(Array.from(f.view.repoProviders.value), ["github"]);
     f.view.selectRepoProvider("gitlab");
     assert.equal(f.view.service.value, "github");
     f.view.auth.gitlabUser = {
       login: "user",
       server: "https://gitlab.example.org",
     };
+    assert.deepEqual(Array.from(f.view.repoProviders.value), [
+      "github",
+      "gitlab",
+    ]);
+    await vue.nextTick();
+    f.view.switchRepository();
     f.view.selectRepoProvider("gitlab");
     assert.equal(f.view.service.value, "gitlab");
     assert.equal(f.view.server.value, "https://gitlab.example.org");
+    f.view.auth.gitlabUser = null;
+    await vue.nextTick();
+    assert.deepEqual(Array.from(f.view.repoProviders.value), ["github"]);
+    assert.equal(f.view.service.value, "github");
   } finally {
     f.scope.stop();
   }
