@@ -754,17 +754,32 @@ export const useKBStore = defineStore("kb", {
      *  post-process exactly once for the whole batch -- `checkForUpdates`'s
      *  apply step, batched the same way `applyChanges` batches additions. */
     async applyUpdates(
-      entries: { name: string; text: string; origin: Origin }[],
+      entries: {
+        name: string;
+        text: string;
+        origin: Origin;
+        expected?: Constituent;
+      }[],
     ) {
       const changes = useChangesStore();
-      let changed = false;
-      for (const { name, text, origin } of entries) {
+      let updatedCount = 0;
+      let keptCount = 0;
+      for (const { name, text, origin, expected } of entries) {
         const idx = this.constituents.findIndex(
           (c) => c.name === name && c.origin.kind === origin.kind,
         );
+        // A sync applies only to the exact loaded copy it started from.
+        if (
+          expected &&
+          (this.constituents[idx] !== expected ||
+            changes.record(name, origin.kind))
+        ) {
+          keptCount += 1;
+          continue;
+        }
         if (idx === -1) {
           const r = await this.ingest(name, text, origin);
-          changed ||= r.added;
+          if (r.added) updatedCount += 1;
           continue;
         }
         if (this.constituents[idx].text === text) continue;
@@ -773,11 +788,52 @@ export const useKBStore = defineStore("kb", {
         // Taking upstream's copy retires the local edit it replaces -- left
         // tracked, its text would outrank upstream in `fromOrigin` and undo
         // this update on the next boot.
-        await changes.forget(name, origin.kind);
+        if (!expected) await changes.forget(name, origin.kind);
         await lspSyncDocument(updated.file, text);
-        changed = true;
+        updatedCount += 1;
       }
-      if (changed) await this.reprocess();
+      if (updatedCount) await this.reprocess();
+      return { updatedCount, keptCount };
+    },
+
+    /** Sync the loaded files from one branch without touching local edits. */
+    async syncGitSource(origin: GitOrigin) {
+      const changes = useChangesStore();
+      const loaded = this.constituents.filter(
+        (c) => originId(c.origin) === origin.id,
+      );
+      const clean = loaded.filter((c) => !changes.record(c.name, "sumo"));
+      if (!clean.length) return { updatedCount: 0, keptCount: loaded.length };
+
+      const { sha } = await (origin.service === "gitlab"
+        ? gitlabHead(origin)
+        : fetchRepoLastCommit(origin.owner, origin.repo, origin.branch, {
+            force: true,
+          }));
+      if (!sha) throw new Error(`Cannot resolve ${origin.label}.`);
+      const texts = await fetchAllTexts(
+        clean,
+        6,
+        () => {},
+        () => sha,
+        true,
+      );
+      const entries = clean.map((expected, index) => {
+        const text = texts[index];
+        if (text instanceof Error)
+          throw new Error(
+            `Couldn't download ${expected.name}. No files were updated. ${text.message}`,
+          );
+        return { name: expected.name, text, origin, expected };
+      });
+      const result = await this.applyUpdates(entries);
+      this.updateBaselines[origin.id] = sha;
+      persistUpdateBaselines(this.updateBaselines);
+      if (result.updatedCount) await flushKbCacheSave();
+      return {
+        updatedCount: result.updatedCount,
+        keptCount: result.keptCount + loaded.length - clean.length,
+      };
     },
 
     /** One `sumo` source: compare the repo/branch's latest commit against
