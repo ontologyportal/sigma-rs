@@ -668,6 +668,72 @@ await runCase("sumo-edit-survives-git-update", {
   },
 });
 
+// Sync an active branch with a mix of clean files and saved local work.
+const syncVersion = { v: 1 };
+await runCase("sync-updates-clean-files-and-keeps-local-edits", {
+  routes: async (page) => {
+    await gitRoutes(page, syncVersion);
+    await page.route(
+      "https://raw.githubusercontent.com/ontologyportal/sumo/*/SyncClean.kif",
+      (route) =>
+        route.fulfill({
+          contentType: "text/plain",
+          body: route.request().url().includes(`/${SHA_V2}/`)
+            ? EXTRA_V2
+            : EXTRA_V1,
+        }),
+    );
+  },
+  seed: async (page) => {
+    await seedLocalStorage(page, {
+      files: [
+        { name: "Merge.kif", origin: SUMO_ORIGIN },
+        { name: "SyncClean.kif", origin: SUMO_ORIGIN },
+      ],
+      edits: {
+        "sumo:Merge.kif": editRecord(
+          "Merge.kif",
+          "sumo",
+          MERGE_V1,
+          MERGE_EDITED,
+        ),
+      },
+      prefs: { [SUMO_ORIGIN_ID]: "no-check" },
+      baselines: { [SUMO_ORIGIN_ID]: SHA_V1 },
+    });
+    await seedOpfs(page, [
+      { dir: "edits", name: opfsSafeName("Merge.kif"), text: MERGE_EDITED },
+    ]);
+  },
+  check: async (page) => {
+    await page.getByRole("tab", { name: "Constituents", exact: true }).click();
+    syncVersion.v = 2;
+    await page.getByRole("button", { name: "Sync", exact: true }).click();
+    await page
+      .getByText("Updated 1 file. Kept local changes in 1 file.", {
+        exact: true,
+      })
+      .waitFor();
+    await expectOpfsContent(page, "edits", "Merge.kif", MERGE_EDITED, "sync");
+    expectMarkers(
+      await editorText(page, "SyncClean.kif"),
+      { has: UPSTREAM_MARKER },
+      "sync/clean",
+    );
+    expectMarkers(
+      await editorText(page, "Merge.kif"),
+      { has: LOCAL_MARKER, lacks: UPSTREAM_MARKER },
+      "sync/edited",
+    );
+    const baseline = await page.evaluate(
+      ([key, origin]) => JSON.parse(localStorage.getItem(key))[origin],
+      [UPDATE_BASELINES_KEY, SUMO_ORIGIN_ID],
+    );
+    if (baseline !== SHA_V2)
+      throw new Error("Sync did not record the updated commit");
+  },
+});
+
 // -- 4. A sumo edit survives a url source updating beside it -----------------
 // The nearest real form of "a url upstream change must not trash local work":
 // a url source moving has no business touching an edit that belongs to a

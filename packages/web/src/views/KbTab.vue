@@ -58,10 +58,37 @@ function setView(v: View) {
 
 const tableLog = useStatus();
 
+const activeGitOrigin = computed(
+  () =>
+    kb.constituents.find((c) => c.origin.kind === "sumo")?.origin as
+      GitOrigin | undefined,
+);
+const syncing = ref(false);
+
+async function syncRepository() {
+  const origin = activeGitOrigin.value;
+  if (!origin || syncing.value || presetsBusy.value || kb.promoting) return;
+  syncing.value = true;
+  tableLog.set(`Checking ${origin.label} for updates...`);
+  try {
+    const { updatedCount, keptCount } = await kb.syncGitSource(origin);
+    const updated = updatedCount === 1 ? "file" : "files";
+    const kept = keptCount === 1 ? "file" : "files";
+    tableLog.set(
+      (updatedCount || keptCount
+        ? `Updated ${updatedCount} ${updated}.`
+        : "Already up to date.") +
+        (keptCount ? ` Kept local changes in ${keptCount} ${kept}.` : ""),
+    );
+  } catch (e) {
+    tableLog.fail(e);
+  } finally {
+    syncing.value = false;
+  }
+}
+
 const activeRepository = computed(() => {
-  const loaded = kb.constituents.find((c) => c.origin.kind === "sumo")
-    ?.origin as GitOrigin | undefined;
-  const source = loaded ?? library.defaultRepo;
+  const source = activeGitOrigin.value ?? library.defaultRepo;
   const provider = source.service ?? "github";
   const host =
     provider === "gitlab"
@@ -328,7 +355,7 @@ const currentPaths = computed(() => {
 });
 
 async function loadPreset(key: string, target?: GitOrigin) {
-  if (presetsBusy.value) return;
+  if (presetsBusy.value || syncing.value) return;
   presetMenuOpen.value = false;
   const preset =
     key === "current"
@@ -410,7 +437,7 @@ async function loadPreset(key: string, target?: GitOrigin) {
         <button
           class="btn ghost"
           type="button"
-          :disabled="presetsBusy"
+          :disabled="presetsBusy || syncing"
           @click="importOpen = true"
           title="Import local files, a folder, or a file URL"
         >
@@ -419,7 +446,7 @@ async function loadPreset(key: string, target?: GitOrigin) {
         <button
           class="btn ghost"
           type="button"
-          :disabled="presetsBusy"
+          :disabled="presetsBusy || syncing"
           @click="switchRepository"
           title="Switch the active knowledge base to a GitHub or GitLab repository"
         >
@@ -431,7 +458,7 @@ async function loadPreset(key: string, target?: GitOrigin) {
         class="btn ghost branch-button"
         type="button"
         :title="branch"
-        :disabled="presetsBusy"
+        :disabled="presetsBusy || syncing"
         :aria-expanded="branchMenuOpen"
         aria-haspopup="menu"
         @click="toggleBranches"
@@ -443,12 +470,39 @@ async function loadPreset(key: string, target?: GitOrigin) {
         ref="presetBtn"
         class="btn ghost"
         type="button"
-        :disabled="presetsBusy"
+        :disabled="presetsBusy || syncing"
         :aria-expanded="presetMenuOpen"
         aria-haspopup="menu"
         @click="presetMenuOpen = !presetMenuOpen"
       >
         {{ presetsBusy ? "Loading…" : "Load a standard set ▾" }}
+      </button>
+      <button
+        class="btn ghost sync-button"
+        type="button"
+        :disabled="!activeGitOrigin || syncing || presetsBusy || kb.promoting"
+        :title="
+          activeGitOrigin
+            ? `Sync loaded files from ${activeGitOrigin.label}`
+            : 'No repository files loaded'
+        "
+        @click="syncRepository"
+      >
+        {{ syncing ? "Syncing..." : "Sync" }}
+        <svg
+          aria-hidden="true"
+          width="16"
+          height="16"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path d="M20 7v5h-5M4 17v-5h5" />
+          <path d="M6 7a7 7 0 0 1 12-1l2 6M4 12l2 6a7 7 0 0 0 12-1" />
+        </svg>
       </button>
     </div>
     <DropMenu v-model="branchMenuOpen" :anchor="branchBtn">
@@ -506,8 +560,13 @@ async function loadPreset(key: string, target?: GitOrigin) {
         {{ preset.label }}
       </button>
     </DropMenu>
+    <StatusLine
+      class="mb-sm"
+      role="status"
+      :text="tableLog.text"
+      :error="tableLog.error"
+    />
     <ConstituentTable @log="(text, error) => tableLog.set(text, error)" />
-    <StatusLine class="mt-sm" :text="tableLog.text" :error="tableLog.error" />
   </Card>
 
   <BaseDialog
@@ -610,6 +669,12 @@ async function loadPreset(key: string, target?: GitOrigin) {
   align-items: center;
 }
 
+.sync-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
 .active-repository {
   display: inline-flex;
   align-items: center;

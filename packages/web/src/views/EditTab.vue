@@ -41,7 +41,6 @@ import { navigate, updateParams } from "../router";
 import { lspRequest, lspSyncDocument } from "../services/lsp";
 import type { MonacoNs } from "../services/monaco";
 import { call } from "../services/sigma";
-import { useAuthStore } from "../stores/auth";
 import { useChangesStore, type ChangeRow } from "../stores/changes";
 import { useKBStore } from "../stores/kb";
 import { useLibraryStore } from "../stores/library";
@@ -63,7 +62,6 @@ const FULLSCREEN_EXIT_PATH =
 const kb = useKBStore();
 const tests = useTestsStore();
 const changes = useChangesStore();
-const auth = useAuthStore();
 const library = useLibraryStore();
 
 const ed = ref<InstanceType<typeof MonacoEditor> | null>(null);
@@ -481,15 +479,27 @@ function dropTab(target: number) {
   tabs.value.splice(to, 0, tab!);
 }
 
+const currentStoredFile = computed(() => {
+  const f = current.value;
+  if (!f) return undefined;
+  return editingTest.value
+    ? tests.find(f.name)
+    : kb.find(f.name, f.origin.kind);
+});
+
 watch(
-  () =>
-    editingTest.value && current.value
-      ? tests.find(current.value.name)?.text
-      : undefined,
+  () => currentStoredFile.value?.text,
   () => {
-    const t =
-      editingTest.value && current.value && tests.find(current.value.name);
-    if (t && text.value === loadedText && t.text !== loadedText) openFile(t);
+    const file = currentStoredFile.value;
+    if (
+      file &&
+      current.value &&
+      originId(file.origin) === originId(current.value.origin) &&
+      !saving.value &&
+      text.value === loadedText &&
+      file.text !== loadedText
+    )
+      void openFile(file);
   },
 );
 
