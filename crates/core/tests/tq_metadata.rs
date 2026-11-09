@@ -98,7 +98,33 @@ fn includes_preserve_paths_without_becoming_logical_inputs() {
     assert_eq!(tc.input_formulas, 1);
     assert_eq!(tc.unaccounted_inputs, 0);
     assert!(is_tq_directive("include"));
-    assert!(!is_tq_directive("file"));
+    assert!(is_tq_directive("file"));
+}
+
+#[test]
+fn repeated_file_and_include_directives_share_ordered_metadata() {
+    for heads in [
+        ["file", "file", "file"],
+        ["include", "include", "include"],
+        ["file", "include", "file"],
+    ] {
+        let tc = parse_test_content(
+            &format!(
+                "({} ROE_Master.kif) ({} \"ROE_Supplementary.kif\") ({} ROE_Series.kif)
+                 (instance Shot202 WarningShot) (query (roeActionPermissible Shot202 OpAlpha))",
+                heads[0], heads[1], heads[2]
+            ),
+            "ROE03.kif.tq",
+        )
+        .unwrap();
+        assert_eq!(
+            tc.includes,
+            ["ROE_Master.kif", "ROE_Supplementary.kif", "ROE_Series.kif"]
+        );
+        assert_eq!(tc.axiom_kif(), "(instance Shot202 WarningShot)");
+        assert_eq!(tc.input_formulas, 2);
+        assert_eq!(tc.unaccounted_inputs, 0);
+    }
 }
 
 #[test]
@@ -147,4 +173,5 @@ fn test_includes_never_reach_tptp_or_load_dependencies() {
 #[test]
 fn include_without_a_path_is_rejected_by_kif_syntax() {
     assert!(parse_test_content("(include)", "empty.kif.tq").is_err());
+    assert!(parse_test_content("(file)", "empty.kif.tq").is_err());
 }

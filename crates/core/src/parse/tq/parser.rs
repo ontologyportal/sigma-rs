@@ -35,6 +35,7 @@ const DIRECTIVES: &[&str] = &[
     "time",
     "answer",
     "include",
+    "file",
     "category",
     "minLang",
     "regen",
@@ -77,7 +78,8 @@ pub struct TestCase {
     pub expected_answer: Option<Vec<String>>,
     /// Hypotheses, each `Annotated { role: Hypothesis, … }`.
     pub axioms: Vec<AstNode>,
-    /// Declared include paths, preserved as metadata without loading files.
+    /// Paths from repeated `include` / `file` directives, in source order,
+    /// preserved as metadata without loading files.
     pub includes: Vec<String>,
     /// Minimum external-prover translation language declared by `(minLang ...)`.
     pub min_lang: Option<TptpLang>,
@@ -294,7 +296,7 @@ impl TestCase {
                     }
                 }
             }
-            "include" if let Some(el) = m.args.first() => {
+            "include" | "file" if let Some(el) = m.args.first() => {
                 self.includes.push(directive_text(el));
             }
             // The TPTP `% Status : <word>` header pragma (see the tokenizer's
