@@ -1359,6 +1359,42 @@ mod tq_session_tests {
         );
     }
 
+    #[test]
+    fn tq_repeated_file_and_include_metadata_has_no_semantic_diagnostics() {
+        for head in ["file", "include"] {
+            let state = GlobalState::new();
+            let uri = Url::parse("file:///tmp/ROE03.kif.tq").expect("url");
+            let text = format!(
+                "({head} ROE_Master.kif)\n({head} ROE_Supplementary.kif)\n\
+                 (file ROE_Series.kif)\n(include \"another file.kif\")\n\
+                 (query (roeActionPermissible Shot202 OpAlpha))\n(answer yes)"
+            );
+            let out = open(&state, &uri, &text);
+            let diagnostics: Vec<_> = out
+                .iter()
+                .filter_map(|message| match message {
+                    Message::Notification(n) if n.method == "textDocument/publishDiagnostics" => {
+                        Some(
+                            serde_json::from_value::<lsp_types::PublishDiagnosticsParams>(
+                                n.params.clone(),
+                            )
+                            .expect("diagnostics"),
+                        )
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert!(!diagnostics.is_empty(), "must publish diagnostics");
+            for published in diagnostics {
+                assert!(
+                    published.diagnostics.is_empty(),
+                    "{head}: {:?}",
+                    published.diagnostics
+                );
+            }
+        }
+    }
+
     /// Render each publishDiagnostics notification in `out` as its JSON text.
     fn published_messages(out: &[Message]) -> Vec<String> {
         out.iter()
