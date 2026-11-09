@@ -1,4 +1,4 @@
-// Exercises the real sign-in modal and store with mocked provider responses.
+// Exercises the real sign-in and settings dialogs and store with mocked provider responses.
 // No real credentials, repository writes, or KB boot are involved.
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
@@ -26,14 +26,18 @@ const server = await createServer({
         import { createPinia } from 'pinia';
         import LoginDialog from '/src/components/LoginDialog.vue';
         import LogoutDialog from '/src/components/LogoutDialog.vue';
+        import SettingsDialog from '/src/components/SettingsDialog.vue';
         import { useAuthStore } from '/src/stores/auth.ts';
+        import { useShellStore } from '/src/stores/shell.ts';
         import '/assets/styles.css';
         createApp({ setup() {
           const auth = useAuthStore();
+          const shell = useShellStore();
           window.auth = auth;
           return () => h('main', { style: 'padding:32px' }, [
-            h('button', { class: 'btn', onClick: () => auth.openLoginDialog(auth.provider ?? 'github') }, auth.signedIn ? auth.accountName : 'Sign in'),
-            h(LoginDialog), h(LogoutDialog)
+            h('button', { class: 'btn', onClick: () => auth.openLoginDialog() }, auth.githubSignedIn ? auth.accountName : 'Sign in'),
+            h('button', { class: 'btn', onClick: () => shell.settingsOpen = true }, 'Settings'),
+            h(LoginDialog), h(LogoutDialog), h(SettingsDialog)
           ]);
         }}).use(createPinia()).mount('#app');
       `;
@@ -97,123 +101,105 @@ try {
     });
   });
   await page.goto(`${server.resolvedUrls.local[0]}__auth_workflow`);
-  await page.getByRole("button", { name: "Sign in", exact: true }).click();
-  const githubTab = page.getByRole("tab", { name: "GitHub", exact: true });
-  const gitlabTab = page.getByRole("tab", { name: "GitLab", exact: true });
-  assert.equal(await githubTab.getAttribute("aria-selected"), "true");
-  assert.equal(await githubTab.locator("svg").count(), 1);
-  assert.equal(await gitlabTab.locator("svg").count(), 1);
-  assert.ok(
-    await page.getByLabel("GitHub access token", { exact: true }).isVisible(),
-  );
-  assert.equal(
-    await page
-      .getByRole("link", { name: "Continue with GitHub" })
-      .getAttribute("href"),
-    "/api/github-auth",
-  );
-  await githubTab.focus();
-  await page.keyboard.press("ArrowRight");
-  assert.equal(await gitlabTab.getAttribute("aria-selected"), "true");
-  assert.ok(await page.getByLabel("GitLab server URL").isVisible());
-  assert.ok(await page.getByLabel("GitLab personal access token").isVisible());
-  await page.keyboard.press("Home");
-  assert.equal(await githubTab.getAttribute("aria-selected"), "true");
+  const signIn = page.getByRole("button", { name: "Sign in", exact: true });
+  const githubAccount = page.getByRole("button", {
+    name: "Octo Cat",
+    exact: true,
+  });
+  const settingsButton = page.getByRole("button", {
+    name: "Settings",
+    exact: true,
+  });
+  const dialog = page.locator("dialog[open]");
   const shots = path.join(here, "shots");
   await fs.mkdir(shots, { recursive: true });
-  await page.screenshot({ path: path.join(shots, "auth-github.png") });
 
-  await page
-    .getByLabel("GitHub access token", { exact: true })
-    .fill("github-example");
-  await page
-    .getByRole("tabpanel", { name: "GitHub", exact: true })
-    .getByRole("button", { name: "Connect with token", exact: true })
-    .click();
-  await page.locator("dialog[open]").waitFor({ state: "hidden" });
-  assert.equal(await page.evaluate(() => window.auth.provider), "github");
-  await page.getByRole("button", { name: "Octo Cat", exact: true }).click();
-  await gitlabTab.click();
-  await page.getByLabel("GitLab server URL").fill("https://gitlab.example.org");
-  await page.getByLabel("GitLab personal access token").fill("invalid");
-  await page
-    .getByRole("tabpanel", { name: "GitLab", exact: true })
-    .getByRole("button", { name: "Connect with token", exact: true })
-    .click();
-  await page.getByText("Token rejected", { exact: true }).waitFor();
-  assert.equal(await page.evaluate(() => window.auth.provider), "github");
-  await page.getByLabel("GitLab personal access token").fill("gitlab-example");
+  async function connectGithub() {
+    await signIn.click();
+    assert.equal(await dialog.getByRole("tab").count(), 0);
+    assert.equal(
+      await dialog.getByLabel("GitLab personal access token").count(),
+      0,
+    );
+    assert.equal(
+      await dialog
+        .getByRole("link", { name: "Continue with GitHub" })
+        .getAttribute("href"),
+      "/api/github-auth",
+    );
+    await page.screenshot({ path: path.join(shots, "auth-github.png") });
+    await dialog
+      .getByLabel("GitHub access token", { exact: true })
+      .fill("github-example");
+    await dialog
+      .getByRole("button", { name: "Connect with token", exact: true })
+      .click();
+    await dialog.waitFor({ state: "hidden" });
+    await githubAccount.waitFor();
+  }
+
+  await connectGithub();
+  await settingsButton.click();
+  const provider = dialog.getByRole("group", {
+    name: "Sign in with an external provider",
+  });
+  await provider
+    .getByLabel("GitLab server URL")
+    .fill("https://gitlab.example.org");
+  const token = provider.getByLabel("GitLab personal access token");
+  const connect = provider.getByRole("button", {
+    name: "Connect with token",
+    exact: true,
+  });
+  await token.fill("invalid");
+  await connect.click();
+  await provider.getByText("Token rejected", { exact: true }).waitFor();
+  assert.equal(await page.evaluate(() => window.auth.gitlabUser), null);
+  assert.equal(await page.evaluate(() => window.auth.githubSignedIn), true);
+  await token.fill("gitlab-example");
   await page.screenshot({ path: path.join(shots, "auth-gitlab.png") });
-  await page
-    .getByRole("tabpanel", { name: "GitLab", exact: true })
-    .getByRole("button", { name: "Connect with token", exact: true })
-    .click();
-  await page.locator("dialog[open]").waitFor({ state: "hidden" });
-  assert.deepEqual(
-    await page.evaluate(() => ({
-      provider: window.auth.provider,
-      github: !!window.auth.user,
-      gitlab: !!window.auth.gitlabUser,
-    })),
-    { provider: "gitlab", github: false, gitlab: true },
-  );
-
-  await page.getByRole("button", { name: "company-user", exact: true }).click();
+  await connect.click();
+  await provider.getByText(/Connected to .* as company-user/).waitFor();
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await githubAccount.click();
   assert.equal(
-    await page.locator(".account-name strong").textContent(),
+    await dialog.locator(".account-name strong").textContent(),
+    "Octo Cat",
+  );
+  assert.equal(await dialog.locator(".account-name svg").count(), 0);
+  assert.equal(await dialog.getByText(/company-user/).count(), 0);
+
+  await dialog.getByRole("button", { name: "Sign out", exact: true }).click();
+  await dialog.getByRole("button", { name: "Sign out", exact: true }).click();
+  await signIn.waitFor();
+  assert.equal(gitlabUser.login, "company-user");
+  assert.equal(
+    await page.evaluate(() => window.auth.gitlabUser.login),
     "company-user",
   );
-  assert.equal(
-    await page.locator(".account-name svg").getAttribute("viewBox"),
-    "0 0 24 24",
-  );
-  await page
-    .getByRole("button", { name: "Choose repository", exact: true })
-    .click();
-  await page.waitForURL(
-    (url) =>
-      url.pathname === "/kb" && url.searchParams.get("chooseRepo") === "gitlab",
-  );
-  assert.equal(
-    new URL(page.url()).searchParams.get("server"),
-    "https://gitlab.example.org",
-  );
-  await page.getByRole("button", { name: "company-user", exact: true }).click();
 
-  await githubTab.click();
-  await page
-    .getByLabel("GitHub access token", { exact: true })
-    .fill("github-example");
-  await page
-    .getByRole("tabpanel", { name: "GitHub", exact: true })
-    .getByRole("button", { name: "Connect with token", exact: true })
-    .click();
-  await page.locator("dialog[open]").waitFor({ state: "hidden" });
-  assert.equal(gitlabUser, null);
-  assert.equal(await page.evaluate(() => window.auth.gitlabUser), null);
-  await page.getByRole("button", { name: "Octo Cat", exact: true }).click();
-  await page.getByRole("button", { name: "Sign out", exact: true }).click();
-  await page.getByRole("button", { name: "Sign out", exact: true }).click();
-  await page.getByRole("button", { name: "Sign in", exact: true }).waitFor();
+  await connectGithub();
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await settingsButton.click();
+  await provider
+    .getByRole("button", { name: "Sign out of GitLab", exact: true })
+    .click();
+  await token.waitFor();
+  assert.equal(gitlabUser, null);
+  assert.equal(await page.evaluate(() => window.auth.githubSignedIn), true);
   assert.ok(
-    await page
-      .locator("dialog[open]")
-      .evaluate((el) => el.scrollWidth <= el.clientWidth + 1),
-  );
-  await page.screenshot({ path: path.join(shots, "auth-mobile.png") });
-  await gitlabTab.click();
-  assert.ok(await page.getByLabel("GitLab personal access token").isVisible());
-  assert.ok(
-    await page
-      .locator("dialog[open]")
-      .evaluate((el) => el.scrollWidth <= el.clientWidth + 1),
+    await dialog.evaluate((el) => el.scrollWidth <= el.clientWidth + 1),
   );
   await page.screenshot({ path: path.join(shots, "auth-mobile-gitlab.png") });
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await githubAccount.click();
+  assert.ok(
+    await dialog.evaluate((el) => el.scrollWidth <= el.clientWidth + 1),
+  );
+  await page.screenshot({ path: path.join(shots, "auth-mobile.png") });
   assert.deepEqual(problems, []);
   console.log(
-    "Auth workflow passed: provider tabs, visible token forms, keyboard navigation, provider switching, failed-token preservation, sign-out, and mobile layout.",
+    "Auth workflow passed: settings-based GitLab sign-in, independent sessions and sign-out, and mobile layout.",
   );
 } finally {
   await browser?.close();

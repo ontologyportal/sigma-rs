@@ -1,6 +1,7 @@
-import { getCookie, cookieHeader, endSession } from "../_utils/session";
+import { getCookie } from "../_utils/session";
 import {
   type GitLabEnv,
+  endGitlabSession,
   sessionFor,
   normalizeServer,
   saveToken,
@@ -137,13 +138,11 @@ export const onRequestPost: PagesFunction<GitLabEnv> = async ({
       );
       const oldId = getCookie(request, SESSION_COOKIE);
       if (oldId) await env.SESSIONS.delete(`gitlab:${oldId}`);
-      const githubCookie = await endSession(request, env);
       const headers = new Headers({
         "Cache-Control": "no-store",
         Vary: "Cookie",
       });
       headers.append("Set-Cookie", cookie);
-      headers.append("Set-Cookie", githubCookie);
       return Response.json({ login: user.username, server }, { headers });
     }
     if (input.operation === "logout") {
@@ -158,11 +157,9 @@ export const onRequestPost: PagesFunction<GitLabEnv> = async ({
           }),
         }).catch(() => {});
       if (!session) return reply({});
-      const id = getCookie(request, SESSION_COOKIE);
-      if (id) await env.SESSIONS.delete(`gitlab:${id}`);
       return new Response("{}", {
         headers: {
-          "Set-Cookie": cookieHeader(SESSION_COOKIE, "", 0),
+          "Set-Cookie": await endGitlabSession(request, env),
           "Cache-Control": "no-store",
         },
       });
