@@ -187,6 +187,7 @@ impl Have {
             Head::Name(n) => Some(n.clone()),
             Head::NewName(_) => Some("Human".into()),
             Head::Pronoun { .. } => cx.generic_you.as_ref().map(|(_, c)| c.clone()),
+            Head::Gap => cx.gap.as_ref().and_then(|(_, c)| c.clone()),
         };
         let subject_force = force(&subject, true);
         let result = frame(cx, &subject, negated, subject_force, |cx, subj, scope| {

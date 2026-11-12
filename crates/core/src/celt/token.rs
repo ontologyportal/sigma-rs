@@ -65,6 +65,9 @@ pub enum Closed {
     There,
     /// `'s` possessive clitic
     Possessive,
+    /// The missing argument of a relative clause, a synthetic token the
+    /// grammar inserts when it parses the clause on its own.
+    Gap,
 }
 
 /// Gender of a name or referent, for third-person pronoun resolution.
@@ -164,7 +167,7 @@ pub enum Class {
 }
 
 /// One token with its source span (char offsets into the sentence text).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Token {
     pub text: String,
     pub lower: String,
@@ -248,6 +251,20 @@ fn push_sentence(chars: &[char], start: usize, end: usize, out: &mut Vec<Sentenc
         tokens,
         question,
     });
+}
+
+/// The synthetic token standing for a relative clause's missing argument,
+/// spanning the relative marker at `start..end`.
+pub fn gap_token(start: usize, end: usize) -> Token {
+    Token {
+        text: "GAP".into(),
+        lower: "gap".into(),
+        class: Class::Closed(Closed::Gap),
+        start,
+        end,
+        capitalized: false,
+        sentence_initial: false,
+    }
 }
 
 /// Tokenize one sentence.  Words are maximal runs of letters, digits,
@@ -384,8 +401,8 @@ fn classify(lower: &str) -> Option<Closed> {
         "there" => There,
         w if pronoun_info(w).is_some() => Pronoun,
         "and" | "or" | "but" | "nor" => Conjunction,
-        "if" | "then" | "because" | "when" | "while" | "although" | "though" | "unless"
-        | "since" | "so" | "whether" => Subordinator,
+        "if" | "then" | "because" | "when" | "whenever" | "while" | "although" | "though"
+        | "unless" | "since" | "so" | "whether" => Subordinator,
         "can" | "could" | "may" | "might" | "must" | "shall" | "should" | "will" | "would"
         | "ought" => Modal,
         "which" | "who" | "whom" | "whose" => RelMarker,

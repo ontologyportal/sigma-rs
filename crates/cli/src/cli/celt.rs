@@ -20,7 +20,10 @@ pub struct CeltFlags {
     pub speaker: Option<String>,
     pub addressee: Option<String>,
     pub generic_you: Option<String>,
+    pub now: Option<String>,
     pub kif_only: bool,
+    pub lines: bool,
+    pub parrot: bool,
     pub explain: bool,
 }
 
@@ -76,14 +79,29 @@ where
         speaker: flags.speaker,
         addressee: flags.addressee,
         generic_you: flags.generic_you,
+        now: flags.now,
         ..Opts::default()
     };
-    let translation = celt::translate(session.kb(), wn, &input, &opts);
+    let translation = if flags.lines {
+        let mut all = Translation::default();
+        for line in input.lines().filter(|l| !l.trim().is_empty()) {
+            let t = celt::translate(session.kb(), wn, line, &opts);
+            all.sentences.extend(t.sentences);
+        }
+        all
+    } else {
+        celt::translate(session.kb(), wn, &input, &opts)
+    };
+    let parrot: Option<&dyn Fn(&str) -> String> = if flags.parrot {
+        Some(&|kif| parrot_back(&session, kif))
+    } else {
+        None
+    };
 
     if flags.kif_only {
-        print_kif_only(&translation);
+        print_kif_only(&translation, parrot);
     } else {
-        print_report(&translation, flags.explain);
+        print_report(&translation, flags.explain, parrot);
     }
     translation.complete()
 }
@@ -103,7 +121,25 @@ fn read_input(text: &[String], file: Option<&std::path::Path>) -> Result<String,
     Ok(s)
 }
 
-fn print_kif_only(translation: &Translation) {
+/// English for a formula through the KB's `format`/`termFormat`
+/// templates, variables as generic noun phrases.
+#[cfg(feature = "ask")]
+fn parrot_back<L: TopLayer>(session: &Session<L>, kif: &str) -> String {
+    // The KB's own English (`EnglishWrittenLanguage` in newer SUMO), the
+    // one with the most templates when several are documented.
+    let language = sigmakee_rs_sdk::celt::english_languages(session.kb())
+        .into_iter()
+        .last()
+        .unwrap_or_else(|| "EnglishLanguage".into());
+    session.render_nl(kif, &language, true)
+}
+
+#[cfg(not(feature = "ask"))]
+fn parrot_back<L: TopLayer>(_session: &Session<L>, _kif: &str) -> String {
+    "(natural-language rendering needs the `ask` feature)".into()
+}
+
+fn print_kif_only(translation: &Translation, parrot: Option<&dyn Fn(&str) -> String>) {
     for sentence in &translation.sentences {
         match &sentence.outcome {
             Ok(logic) => {
@@ -112,6 +148,9 @@ fn print_kif_only(translation: &Translation) {
                 }
                 for f in own_formulas(logic) {
                     println!("{f}");
+                    if let Some(p) = parrot {
+                        println!(";; ~ {}", p(&f.to_string()));
+                    }
                 }
             }
             Err(refused) => println!(";; {}: {}", sentence.text, refused),
@@ -128,11 +167,11 @@ fn own_formulas(logic: &Logic) -> Vec<sigmakee_rs_sdk::AstNode> {
     }
 }
 
-fn print_report(translation: &Translation, explain: bool) {
+fn print_report(translation: &Translation, explain: bool, parrot: Option<&dyn Fn(&str) -> String>) {
     for sentence in &translation.sentences {
         println!("{style_bold}{}{style_reset}", sentence.text);
         match &sentence.outcome {
-            Ok(logic) => print_logic(logic, explain),
+            Ok(logic) => print_logic(logic, explain, parrot),
             Err(refused) => print_refusal(&sentence.text, refused),
         }
     }
@@ -154,7 +193,7 @@ fn print_report(translation: &Translation, explain: bool) {
     }
 }
 
-fn print_logic(logic: &Logic, explain: bool) {
+fn print_logic(logic: &Logic, explain: bool, parrot: Option<&dyn Fn(&str) -> String>) {
     let tag = match logic.kind {
         Kind::Assert => "",
         Kind::Query => "?- ",
@@ -164,6 +203,12 @@ fn print_logic(logic: &Logic, explain: bool) {
     }
     for f in own_formulas(logic) {
         println!("    {color_bright_cyan}{tag}{f}{color_reset}");
+        if let Some(p) = parrot {
+            println!(
+                "    {color_bright_green}~ {}{color_reset}",
+                p(&f.to_string())
+            );
+        }
     }
     if !explain {
         return;

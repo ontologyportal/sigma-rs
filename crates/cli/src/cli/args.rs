@@ -553,10 +553,29 @@ pub enum Cmd {
         #[arg(long = "you", value_name = "CLASS", conflicts_with = "addressee")]
         generic_you: Option<String>,
 
+        /// The time point the text is spoken at, for the past tense ("Mike
+        /// read a book" ends before it).  A term the KB does not define is
+        /// declared a TimePoint.  Without it, the KB's own `Now` is used
+        /// when defined; otherwise past-tense sentences are refused.
+        #[arg(long, value_name = "TERM")]
+        now: Option<String>,
+
         /// Print only the KIF formulas, one per line; refused sentences
         /// become `;;` comment lines.
         #[arg(long = "kif-only", conflicts_with = "explain")]
         kif_only: bool,
+
+        /// Treat each input line as a separate document: no discourse
+        /// (referents, "it", "the dog", Skolem numbering) carries from one
+        /// line to the next.  For corpora of unrelated statements.
+        #[arg(long)]
+        lines: bool,
+
+        /// Parrot each accepted sentence back: render its formulas as
+        /// English through the KB's `format`/`termFormat` templates, so
+        /// the translation can be checked against the original.
+        #[arg(long)]
+        parrot: bool,
 
         /// Also print each accepted sentence's lexical choices
         /// (`word -> Term (sense) [alternatives]`) and the rule that

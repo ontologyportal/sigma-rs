@@ -3,6 +3,7 @@
 // Non-proving ops: validation, TPTP translation, snapshot/restore, and the
 // thread-pool knob -- the wasm face of the SDK's `session/ops.rs`.
 
+use serde::Serialize;
 use sigmakee_rs_sdk::{DiagnosticView, ScratchValidationView, TptpLang, TptpOptions};
 use wasm_bindgen::prelude::*;
 
@@ -12,6 +13,57 @@ use super::Session;
 
 #[wasm_bindgen]
 impl Session {
+    /// Translate controlled English against the active KB using CELT.
+    #[wasm_bindgen(js_name = translateCelt)]
+    pub fn translate_celt(&self, text: &str) -> Result<JsValue, JsValue> {
+        let session_guard = self.session.read().expect("kb lock not poisoned");
+        let Some(lexicon) = session_guard.lexicon() else {
+            return to_js(&CeltTranslationView {
+                available: false,
+                error: Some("The WordNet-SUMO lexicon is not loaded.".to_string()),
+                sentences: Vec::new(),
+            });
+        };
+
+        let translation = sigmakee_rs_core::celt::translate(
+            session_guard.kb(),
+            lexicon,
+            text,
+            &sigmakee_rs_core::celt::Opts::default(),
+        );
+        let sentences = translation
+            .sentences
+            .into_iter()
+            .map(|sentence| match sentence.outcome {
+                Ok(logic) => CeltSentenceView {
+                    text: sentence.text,
+                    offset: sentence.offset,
+                    kind: Some(
+                        match logic.kind {
+                            sigmakee_rs_core::celt::Kind::Assert => "assertion",
+                            sigmakee_rs_core::celt::Kind::Query => "question",
+                        }
+                        .to_string(),
+                    ),
+                    kif: Some(logic.formula().to_string()),
+                    reason: None,
+                },
+                Err(refusal) => CeltSentenceView {
+                    text: sentence.text,
+                    offset: sentence.offset,
+                    kind: None,
+                    kif: None,
+                    reason: Some(refusal.to_string()),
+                },
+            })
+            .collect();
+        to_js(&CeltTranslationView {
+            available: true,
+            error: None,
+            sentences,
+        })
+    }
+
     /// Set the worker-pool size the KB's `plan_threads` gates should target,
     /// once the caller has spun up a rayon pool via `initThreadPool` (only
     /// exported in threaded builds). `available_parallelism()` reads 1 on
@@ -107,4 +159,20 @@ impl Session {
         };
         inner.to_tptp_indexed(&opts, None, None)
     }
+}
+
+#[derive(Serialize)]
+struct CeltTranslationView {
+    available: bool,
+    error: Option<String>,
+    sentences: Vec<CeltSentenceView>,
+}
+
+#[derive(Serialize)]
+struct CeltSentenceView {
+    text: String,
+    offset: usize,
+    kind: Option<String>,
+    kif: Option<String>,
+    reason: Option<String>,
 }

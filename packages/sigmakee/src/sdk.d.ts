@@ -45,6 +45,22 @@ export interface AskResult {
   input_tptp?: string;
 }
 
+/** One sentence produced by the CELT controlled-English translator. */
+export interface CeltSentence {
+  text: string;
+  offset: number;
+  kind: "assertion" | "question" | null;
+  kif: string | null;
+  reason: string | null;
+}
+
+/** CELT output; `available` is false when the WordNet-SUMO lexicon is absent. */
+export interface CeltTranslation {
+  available: boolean;
+  error: string | null;
+  sentences: CeltSentence[];
+}
+
 /** One step of a cited contradiction derivation (see {@link AuditResult}). */
 export interface AuditStep {
   index: number;
@@ -691,6 +707,8 @@ export class Session {
   tell(text: string, session?: string, tptp?: boolean): TellResult;
   /** Prove with this session's backend (Native or Vampire); TranslationOnly throws. */
   ask(query: string, opts?: AskOpts): AskResult;
+  /** Translate controlled English against the active KB. */
+  translateCelt(text: string): CeltTranslation;
   /** Sampled consistency audit with this session's backend: check `request`'s slice of the KB's seeded sweep, one SInE neighborhood per subproblem. */
   auditConsistency(request?: AuditRequest): AuditResult;
   /** Every contradiction recorded in the KB's findings cache, newest first. */

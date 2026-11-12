@@ -87,7 +87,8 @@ impl Construct {
                 "write one clause per sentence; \"and\"/\"or\" are not translated"
             }
             Construct::Subordination => {
-                "write the main clause alone; conditions and reasons are not translated"
+                "only \"if\"/\"when\" clauses are translated (as an implication); reasons, \
+                 contrasts and \"unless\" are not: write the main clause alone"
             }
             Construct::RelativeClause => "split the relative clause into its own sentence",
             Construct::Numeric => "counts and measures are not translated; use a determiner",
@@ -108,7 +109,8 @@ impl Construct {
             Construct::Demonstrative => "use \"the\" or a proper name instead of this/that",
             Construct::Imperative => "sentences need a subject",
             Construct::PastTense => {
-                "define Now in the KB, e.g. (instance Now TimePoint), or use the present tense"
+                "name the speech time (Opts::now / --now), define Now in the KB, or use the \
+                 present tense"
             }
             Construct::Identity => "\"X is the Y\" states identity; use \"a\" for class membership",
             Construct::StativeAdjunct => {
@@ -228,7 +230,7 @@ impl Refusal {
             Refusal::TrivialFact { .. } => "both nouns mean the same term; nothing to say".into(),
             Refusal::CrossCategory { .. } => "likely a wrong word sense; pick a more specific noun".into(),
             Refusal::RoleMismatch { role, expected, .. } => {
-                format!("the subject must be a {expected} to be the {role} of this verb")
+                format!("the {role} of this verb must be a {expected}")
             }
             Refusal::UnmappedPreposition { prep, .. } => {
                 format!("add a preposition rule for \"{prep}\" with this complement type")

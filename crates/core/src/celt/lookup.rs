@@ -99,6 +99,21 @@ pub enum Inflection {
 }
 
 const ENGLISH: &str = "EnglishLanguage";
+
+/// The English language symbols the KB documents terms in, the default
+/// name when it documents none.
+pub fn english_languages<L: TopLayer + Layer>(kb: &KnowledgeBase<L>) -> Vec<String> {
+    let mut langs: Vec<String> = kb
+        .documented_languages()
+        .into_iter()
+        .filter(|l| l.starts_with("English"))
+        .collect();
+    if langs.is_empty() {
+        langs.push(ENGLISH.to_string());
+    }
+    langs.sort();
+    langs
+}
 /// A part of speech is admitted for a word when it carries at least one in
 /// this many of the word's corpus tags ("make" is a noun in 1 of 1613 tags
 /// and is never read as one; "fly" is a noun in 9 of 67 and is).  A word
@@ -143,6 +158,12 @@ pub struct Lookup<'a, L: TopLayer + Layer> {
     kb: &'a KnowledgeBase<L>,
     wn: &'a WordNet,
     cache: RefCell<HashMap<(String, Pos, bool), Vec<Candidate>>>,
+    /// word -> symbols labeled with it; a KB search per call is the
+    /// dominant cost on a large KB.
+    labels: RefCell<HashMap<String, Vec<String>>>,
+    /// The KB's English language symbols (`EnglishLanguage`,
+    /// `EnglishWrittenLanguage` in newer SUMO), whichever carry labels.
+    languages: Vec<String>,
 }
 
 /// A written-capitalized word may take proper-noun senses (`Jay` the
@@ -157,7 +178,14 @@ impl<'a, L: TopLayer + Layer> Lookup<'a, L> {
             kb,
             wn,
             cache: RefCell::new(HashMap::new()),
+            labels: RefCell::new(HashMap::new()),
+            languages: english_languages(kb),
         }
+    }
+
+    /// The language symbols labels are read in.
+    pub fn languages(&self) -> &[String] {
+        &self.languages
     }
 
     pub fn kb(&self) -> &'a KnowledgeBase<L> {
@@ -217,7 +245,8 @@ impl<'a, L: TopLayer + Layer> Lookup<'a, L> {
 
     /// Can the bare noun `word` be plural as written ("deer", "people")?
     pub fn is_invariant_plural(&self, word: &str) -> bool {
-        INVARIANT_PLURALS.contains(&word.to_lowercase().as_str())
+        let w = word.to_lowercase();
+        INVARIANT_PLURALS.contains(&w.as_str()) || w.ends_with("fish")
     }
 
     // -- Morphology ------------------------------------------------------------
@@ -341,17 +370,18 @@ impl<'a, L: TopLayer + Layer> Lookup<'a, L> {
         (w, false)
     }
 
+    /// The irregular base form of `w` as `pos` ("drove" -> "drive"), even
+    /// when the surface form is a lemma of another part of speech (a
+    /// drove of cattle).
     fn exception_base(&self, w: &str, pos: Pos) -> Option<String> {
-        // `senses` consults noun.exc/verb.exc when the surface form itself
-        // is not a lemma; the returned `lemma` is then the base form.
         if self.senses_exact_pos(w, pos) {
             return None;
         }
         self.wn
-            .senses(w)
+            .exception_bases(w)
             .into_iter()
-            .find(|s| s.synset.pos == pos && s.lemma != w)
-            .map(|s| s.lemma)
+            .map(|b| b.to_lowercase())
+            .find(|b| self.senses_exact_pos(b, pos))
     }
 
     fn senses_exact_pos(&self, w: &str, pos: Pos) -> bool {
@@ -443,21 +473,31 @@ impl<'a, L: TopLayer + Layer> Lookup<'a, L> {
 
     /// Symbols whose English `termFormat` equals `word` (case-insensitive).
     fn label_hits(&self, word: &str) -> impl Iterator<Item = String> + '_ {
-        let query = word.replace('_', " ");
-        let opts = SearchOpts {
-            language: Some(ENGLISH),
-            limit: None,
-            ..SearchOpts::default()
-        };
+        let query = word.replace('_', " ").to_lowercase();
+        if let Some(hits) = self.labels.borrow().get(&query) {
+            return hits.clone().into_iter();
+        }
         let mut seen = std::collections::HashSet::new();
-        self.kb
-            .search(&query, &opts)
-            .into_iter()
-            .filter(move |h| {
-                h.source == SearchSource::TermFormat && h.text.eq_ignore_ascii_case(&query)
-            })
-            .map(|h| h.symbol)
-            .filter(move |s| seen.insert(s.clone()))
+        let mut hits: Vec<String> = Vec::new();
+        for language in &self.languages {
+            let opts = SearchOpts {
+                language: Some(language),
+                limit: None,
+                ..SearchOpts::default()
+            };
+            hits.extend(
+                self.kb
+                    .search(&query, &opts)
+                    .into_iter()
+                    .filter(|h| {
+                        h.source == SearchSource::TermFormat && h.text.eq_ignore_ascii_case(&query)
+                    })
+                    .map(|h| h.symbol)
+                    .filter(|s| seen.insert(s.clone())),
+            );
+        }
+        self.labels.borrow_mut().insert(query, hits.clone());
+        hits.into_iter()
     }
 
     /// The no-sliding rule: the chosen term must come from a KB label or
@@ -544,7 +584,8 @@ impl<'a, L: TopLayer + Layer> Lookup<'a, L> {
 
     // -- Typing gates --------------------------------------------------------------
 
-    /// A noun that must name a class (predicate nominal, generic subject).
+    /// A noun that must name a class of individuals (a generic subject, a
+    /// predicate nominal); a class of attributes (`SocialRole`) is not one.
     pub fn noun_class(&self, word: &str) -> Result<Choice, Refusal> {
         let (lemma, _) = self.noun_lemma(word);
         let all = self.candidates(&lemma, Pos::Noun, is_proper(word));
@@ -553,7 +594,12 @@ impl<'a, L: TopLayer + Layer> Lookup<'a, L> {
         }
         let classes: Vec<Candidate> = all
             .iter()
-            .filter(|c| !c.instance && self.sym(&c.term).is_some_and(|s| self.kb.is_class(s)))
+            .filter(|c| {
+                !c.instance
+                    && self.sym(&c.term).is_some_and(|s| {
+                        self.kb.is_class(s) && !self.kb.has_ancestor(s, "Attribute")
+                    })
+            })
             .cloned()
             .collect();
         let classes = self.strict(word, &lemma, Pos::Noun, classes, &all, |term| {
@@ -632,9 +678,66 @@ impl<'a, L: TopLayer + Layer> Lookup<'a, L> {
         Ok(Self::choose(word, attrs))
     }
 
+    /// Every term a verb form may ground to, labels first: a `termFormat`
+    /// on the surface form, the base form, the gerund or the third-person
+    /// singular (SUMO labels relations as "possesses"), a binary relation
+    /// named by one of those forms, a relation labeled by a synonym in the
+    /// most frequent synset ("want" shares its synset with "desire", the
+    /// label of `desires`), then the WordNet senses.
+    fn verb_candidates(&self, word: &str) -> Option<(String, Inflection, Vec<Candidate>)> {
+        let (lemma, infl) = self.verb_lemma(word)?;
+        let mut all: Vec<Candidate> = Vec::new();
+        let label = |term: &str| Candidate {
+            term: term.to_string(),
+            rank: 1,
+            sense: String::new(),
+            source: Source::Label,
+            exact: true,
+            instance: false,
+        };
+        let forms = [
+            word.to_lowercase(),
+            lemma.clone(),
+            format!("{lemma}ing"),
+            third_singular(&lemma),
+        ];
+        for form in &forms {
+            for c in self.candidates(form, Pos::Verb, false) {
+                if c.source == Source::Label && !all.iter().any(|a| a.term == c.term) {
+                    all.push(c);
+                }
+            }
+            if self.verb_kind(form) == Some(false) && !all.iter().any(|a| a.term == *form) {
+                all.push(label(form));
+            }
+        }
+        if let Some((_, sense)) = self.senses_for(&lemma, Pos::Verb, false).into_iter().next() {
+            for mate in sense.synset.words.iter().filter(|w| **w != lemma) {
+                for form in [mate.to_string(), third_singular(mate)] {
+                    let named: Vec<String> = self
+                        .label_hits(&form)
+                        .chain(std::iter::once(form.clone()))
+                        .filter(|sym| self.verb_kind(sym) == Some(false))
+                        .collect();
+                    for sym in named {
+                        if !all.iter().any(|a| a.term == sym) {
+                            all.push(label(&sym));
+                        }
+                    }
+                }
+            }
+        }
+        for c in self.candidates(&lemma, Pos::Verb, false) {
+            if !all.iter().any(|a| a.term == c.term) {
+                all.push(c);
+            }
+        }
+        Some((lemma, infl, all))
+    }
+
     /// A verb: a Process class (event) or a binary relation (stative).
     pub fn verb(&self, word: &str) -> Result<(Verb, Inflection), Refusal> {
-        let Some((lemma, infl)) = self.verb_lemma(word) else {
+        let Some((lemma, infl, all)) = self.verb_candidates(word) else {
             let w = word.to_lowercase();
             return Err(if self.wn.senses(&w).is_empty() && !self.has_label(&w) {
                 Refusal::UnknownWord { word: word.into() }
@@ -645,27 +748,6 @@ impl<'a, L: TopLayer + Layer> Lookup<'a, L> {
                 }
             });
         };
-        let mut all = self.candidates(&lemma, Pos::Verb, false);
-        // A label on the surface form ("possesses") or the gerund
-        // ("reading"), or a binary relation named by the word itself, also
-        // names the verb.
-        for form in [word.to_lowercase(), format!("{lemma}ing"), lemma.clone()] {
-            for c in self.candidates(&form, Pos::Verb, false) {
-                if c.source == Source::Label && !all.iter().any(|a| a.term == c.term) {
-                    all.push(c);
-                }
-            }
-            if self.verb_kind(&form) == Some(false) && !all.iter().any(|a| a.term == form) {
-                all.push(Candidate {
-                    term: form.clone(),
-                    rank: 1,
-                    sense: String::new(),
-                    source: Source::Label,
-                    exact: true,
-                    instance: false,
-                });
-            }
-        }
         if all.is_empty() {
             return Err(self.lexical_refusal(word, &lemma, Pos::Verb));
         }
@@ -706,6 +788,34 @@ impl<'a, L: TopLayer + Layer> Lookup<'a, L> {
         Ok((verb, infl))
     }
 
+    /// A verb that takes a clause: the first of its candidate terms that
+    /// is a binary relation whose second argument is a `Formula`
+    /// (`believes`, `desires`, `knows`, `hopes`), with the word's
+    /// inflection.  `None` when the word is no verb or none of its terms
+    /// takes a formula.
+    pub fn attitude_verb(&self, word: &str) -> Option<(Choice, Inflection)> {
+        let (_, infl, all) = self.verb_candidates(word)?;
+        let takes_formula = |term: &str| {
+            self.verb_kind(term) == Some(false)
+                && self.domain_class(term, 2).as_deref() == Some("Formula")
+        };
+        let usable: Vec<Candidate> = all
+            .iter()
+            .filter(|c| takes_formula(&c.term))
+            .cloned()
+            .collect();
+        (!usable.is_empty()).then(|| (Self::choose(word, usable), infl))
+    }
+
+    /// A noun that names an Attribute instance (a role: "teacher" ->
+    /// Teacher), for a class phrase read as "whatever bears it".
+    pub fn attribute_noun(&self, word: &str) -> Option<Choice> {
+        match self.predicate_noun(word) {
+            Ok((choice, true)) => Some(choice),
+            _ => None,
+        }
+    }
+
     /// `Some(true)` for a Process class, `Some(false)` for a binary
     /// relation, `None` otherwise.
     fn verb_kind(&self, term: &str) -> Option<bool> {
@@ -719,8 +829,10 @@ impl<'a, L: TopLayer + Layer> Lookup<'a, L> {
         }
     }
 
-    /// A common noun that names one KB instance ("the sun" -> Sun): a label
-    /// on an instance, or the most frequent sense's `@` anchor.
+    /// A common noun that names one KB instance ("the sun" -> Sun): the
+    /// label or most frequent sense grounds to an instance (an `@` anchor,
+    /// or an `=` anchor the KB declares an instance, "the earth" ->
+    /// PlanetEarth), attributes excepted.
     pub fn named_instance(&self, word: &str) -> Option<Choice> {
         let (lemma, plural) = self.noun_lemma(word);
         if plural {
@@ -730,8 +842,7 @@ impl<'a, L: TopLayer + Layer> Lookup<'a, L> {
         let first = all.iter().find(|c| c.rank == 1)?;
         let is_inst = self
             .sym(&first.term)
-            .is_some_and(|s| self.kb.is_instance(s))
-            && (first.instance || first.source == Source::Label);
+            .is_some_and(|s| self.kb.is_instance(s) && !self.kb.has_ancestor(s, "Attribute"));
         is_inst.then(|| Self::choose(word, vec![first.clone()]))
     }
 
@@ -804,6 +915,26 @@ impl<'a, L: TopLayer + Layer> Lookup<'a, L> {
             .iter()
             .find(|cat| self.has_ancestor(sub, cat) != self.has_ancestor(sup, cat))
             .map(|c| c.to_string())
+    }
+}
+
+/// The regular third-person singular of a base verb form.
+fn third_singular(lemma: &str) -> String {
+    if lemma.ends_with('s')
+        || lemma.ends_with('x')
+        || lemma.ends_with('z')
+        || lemma.ends_with("ch")
+        || lemma.ends_with("sh")
+    {
+        format!("{lemma}es")
+    } else if let Some(stem) = lemma.strip_suffix('y') {
+        if stem.ends_with(|c: char| "aeiou".contains(c)) {
+            format!("{lemma}s")
+        } else {
+            format!("{stem}ies")
+        }
+    } else {
+        format!("{lemma}s")
     }
 }
 

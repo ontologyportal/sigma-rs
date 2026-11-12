@@ -28,7 +28,7 @@ use super::ir::{Cond, Discourse, Drs, Term};
 use super::lookup::{CeltType, Choice, Inflection, Lookup, Verb};
 use super::refuse::{Construct, Refusal, Refused};
 use super::token::{
-    pronoun_info, Class, Closed, Det, Gender, Number, PronounCase, PronounInfo, Token,
+    gap_token, pronoun_info, Class, Closed, Det, Gender, Number, PronounCase, PronounInfo, Token,
 };
 use crate::layer::{Layer, TopLayer};
 
@@ -48,6 +48,8 @@ pub trait Lex {
     fn named_instance(&self, word: &str) -> Option<Choice>;
     fn adjective(&self, word: &str) -> Result<Choice, Refusal>;
     fn verb(&self, word: &str) -> Result<(Verb, Inflection), Refusal>;
+    fn attitude_verb(&self, word: &str) -> Option<(Choice, Inflection)>;
+    fn attribute_noun(&self, word: &str) -> Option<Choice>;
     fn name(&self, word: &str) -> Option<String>;
     fn defined(&self, term: &str) -> bool;
     fn has_ancestor(&self, term: &str, ancestor: &str) -> bool;
@@ -95,6 +97,12 @@ impl<L: TopLayer + Layer> Lex for Lookup<'_, L> {
     }
     fn verb(&self, word: &str) -> Result<(Verb, Inflection), Refusal> {
         Lookup::verb(self, word)
+    }
+    fn attitude_verb(&self, word: &str) -> Option<(Choice, Inflection)> {
+        Lookup::attitude_verb(self, word)
+    }
+    fn attribute_noun(&self, word: &str) -> Option<Choice> {
+        Lookup::attribute_noun(self, word)
     }
     fn name(&self, word: &str) -> Option<String> {
         Lookup::name(self, word)
@@ -148,6 +156,12 @@ pub struct Opts {
     pub generic_you: Option<String>,
     /// KB terms consulted when binding third-person pronouns.
     pub pronoun_classes: PronounClasses,
+    /// The time point the text is spoken at, for the past tense: "Mike
+    /// read a book" ends before it.  A term the KB does not define is
+    /// declared a `TimePoint` beside the sentence.  Without one, the KB's
+    /// own `Now` is used when it defines it; otherwise the past tense is
+    /// refused.
+    pub now: Option<String>,
 }
 
 /// The KB terms third-person pronoun resolution consults; each is used
@@ -227,10 +241,19 @@ pub struct Cx<'a> {
     /// ([`Opts::generic_you`]); set before the rules run, closed by a
     /// universal around the whole sentence.
     pub generic_you: Option<(String, String)>,
-    /// The clause is the scope of a modal: referents bind variables (no
-    /// Skolem constants inside a possibility), "be" is a copula, and a
-    /// subject's number and genericity are not checked.
+    /// The clause is the scope of a modal or the complement of an
+    /// attitude verb ("wants to", "believes that"): referents bind
+    /// variables (nothing inside a possibility or a wish exists), "be" is
+    /// a copula, and a subject's number and genericity are not checked.
     pub under_modal: bool,
+    /// The term (and class) a relative clause's gap stands for while the
+    /// clause is parsed on its own.
+    pub gap: Option<(Term, Option<String>)>,
+    /// The clause is the antecedent or consequent of a conditional: its
+    /// indefinites bind variables (the antecedent's become the universal's
+    /// variables, visible to the consequent), and no sentence-level
+    /// generic reading applies.
+    pub conditional: bool,
     /// Referents introduced by this clause start at this index of the
     /// discourse list: a plain pronoun may not corefer with one of them
     /// ("Rex sees it" is not "Rex sees Rex"), a reflexive must.
@@ -263,6 +286,8 @@ impl<'a> Cx<'a> {
             depth: 0,
             generic_you: None,
             under_modal: false,
+            gap: None,
+            conditional: false,
             clause_referents,
             furthest: 0,
             expected: Vec::new(),
@@ -420,6 +445,26 @@ pub enum Head {
     /// A pronoun, bound on realization: deictic ones through [`Opts`],
     /// third-person ones to an earlier referent.
     Pronoun { word: String, info: PronounInfo },
+    /// The missing argument of a relative clause ([`Cx::gap`]).
+    Gap,
+}
+
+/// Where a relative clause's missing argument sits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GapSite {
+    /// "that flies": the clause lacks its subject.
+    Subject,
+    /// "that people eat": the clause lacks its object.
+    Object,
+}
+
+/// A restrictive relative clause on a noun phrase: its tokens (after the
+/// marker) and where the head fills in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Relative {
+    pub marker_at: usize,
+    pub clause: Vec<Token>,
+    pub gap: GapSite,
 }
 
 /// A parsed noun phrase (syntax only; grounding happens on realization).
@@ -431,6 +476,8 @@ pub struct Np {
     pub head: Head,
     /// The owner in "your tail", "Bob's car", "the dog's bed".
     pub possessor: Option<Box<Np>>,
+    /// A restrictive relative clause ("animals that fly").
+    pub relative: Option<Box<Relative>>,
     pub start: usize,
     pub end: usize,
 }
@@ -476,7 +523,7 @@ impl Np {
     pub fn is_referential(&self) -> bool {
         matches!(
             self.head,
-            Head::Name(_) | Head::NewName(_) | Head::Pronoun { .. }
+            Head::Name(_) | Head::NewName(_) | Head::Pronoun { .. } | Head::Gap
         ) || matches!(self.det, Some(Det::Definite))
     }
 
@@ -485,6 +532,7 @@ impl Np {
         match &self.head {
             Head::Name(n) | Head::NewName(n) => n,
             Head::Noun { word, .. } | Head::Pronoun { word, .. } => word,
+            Head::Gap => "GAP",
         }
     }
 
@@ -495,7 +543,7 @@ impl Np {
             Head::Name(_) | Head::NewName(_) => Some(Number::Singular),
             // First and second person take the base verb form ("I read").
             Head::Pronoun { info, .. } if info.person == 3 => info.number,
-            Head::Pronoun { .. } => None,
+            Head::Pronoun { .. } | Head::Gap => None,
             Head::Noun { plural: true, .. } => Some(Number::Plural),
             Head::Noun { word, .. } => {
                 let invariant = lex.is_invariant_plural(word);
@@ -548,13 +596,43 @@ impl Np {
     /// as a class term: `(instance ?X C)` plus one `attribute` atom per
     /// adjective ("red cars" -> cars that are red).
     pub fn restrict(&self, cx: &mut Cx, var: &Term) -> Result<Drs, Refused> {
-        let class = self.head_class(cx)?;
         let mut drs = Drs::default();
-        drs.atom("instance", vec![var.clone(), Term::Const(class.term)]);
+        let class = match self.role(cx) {
+            // "teachers", "a doctor": whatever bears the role; the KB's
+            // own axioms say what kind of thing that is.
+            Some(role) => {
+                drs.atom("attribute", vec![var.clone(), Term::Const(role.term)]);
+                None
+            }
+            None => {
+                let class = self.head_class(cx)?;
+                drs.atom(
+                    "instance",
+                    vec![var.clone(), Term::Const(class.term.clone())],
+                );
+                Some(class.term)
+            }
+        };
         for a in self.attributes(cx)? {
             drs.atom("attribute", vec![var.clone(), Term::Const(a.term)]);
         }
+        drs.extend(self.restriction(cx, var, class.as_deref())?);
         Ok(drs)
+    }
+
+    /// The Attribute instance a head noun names when it names no class
+    /// ("teacher" -> Teacher): the phrase then describes the bearers of
+    /// the attribute.
+    pub fn role(&self, cx: &mut Cx) -> Option<Choice> {
+        let Head::Noun { word, .. } = &self.head else {
+            return None;
+        };
+        if cx.lex.noun_class(word).is_ok() {
+            return None;
+        }
+        let role = cx.lex.attribute_noun(word)?;
+        cx.record(&role);
+        Some(role)
     }
 
     /// Ground the head noun as a class, ignoring modifiers.
@@ -575,7 +653,72 @@ impl Np {
                 },
                 self.start,
             )),
+            Head::Gap => Err(cx.refused(
+                Refusal::NotAClass {
+                    word: "GAP".into(),
+                    term: "GAP".into(),
+                },
+                self.start,
+            )),
         }
+    }
+
+    /// The conditions of this phrase's relative clause with `term` as its
+    /// missing argument: the clause is parsed as a sentence of its own,
+    /// bound like a conditional's antecedent.
+    pub fn restriction(
+        &self,
+        cx: &mut Cx,
+        term: &Term,
+        class: Option<&str>,
+    ) -> Result<Drs, Refused> {
+        let Some(rel) = &self.relative else {
+            return Ok(Drs::default());
+        };
+        let marker = &cx.tokens[rel.marker_at];
+        let gap = gap_token(marker.start, marker.end);
+        let mut toks: Vec<Token> = Vec::new();
+        match rel.gap {
+            GapSite::Subject => {
+                toks.push(gap);
+                toks.extend(rel.clause.iter().cloned());
+            }
+            GapSite::Object => {
+                // The object slot: before the first preposition, else last.
+                let at = rel
+                    .clause
+                    .iter()
+                    .position(|t| t.is(Closed::Preposition))
+                    .unwrap_or(rel.clause.len());
+                toks.extend(rel.clause[..at].iter().cloned());
+                toks.push(gap);
+                toks.extend(rel.clause[at..].iter().cloned());
+            }
+        }
+        if let Some(t) = cx.tokens.get(cx.end()) {
+            toks.push(t.clone());
+        }
+        let outcome = {
+            let mut sub = Cx::new(
+                &toks,
+                cx.lex,
+                cx.grammar,
+                &mut *cx.discourse,
+                cx.opts,
+                false,
+            );
+            sub.conditional = true;
+            sub.generic_you = cx.generic_you.clone();
+            sub.depth = cx.depth + 1;
+            sub.gap = Some((term.clone(), class.map(str::to_string)));
+            cx.grammar.parse(&mut sub)
+        };
+        let logic = outcome?;
+        for c in &logic.choices {
+            cx.record(c);
+        }
+        cx.declared.extend(logic.declared);
+        Ok(logic.drs)
     }
 
     /// Introduce the referent of this noun phrase.  Definites resolve to an
@@ -605,6 +748,18 @@ impl Np {
                 (Term::Const(n.clone()), Some("Human".to_string()))
             }
             Head::Pronoun { word, info } => self.realize_pronoun(cx, word, *info)?,
+            Head::Gap => match &cx.gap {
+                Some((t, c)) => (t.clone(), c.clone()),
+                None => {
+                    return Err(cx.refused(
+                        Refusal::Unsupported {
+                            construct: Construct::RelativeClause,
+                            at: "GAP".into(),
+                        },
+                        self.start,
+                    ))
+                }
+            },
             Head::Noun { word, .. }
                 if matches!(self.det, None | Some(Det::Definite)) && self.mods.is_empty() =>
             {
@@ -622,6 +777,21 @@ impl Np {
         };
         for a in self.attributes(cx)? {
             drs.atom("attribute", vec![term.clone(), Term::Const(a.term)]);
+        }
+        if self.relative.is_some() {
+            // A definite with a restriction would have to pick the referent
+            // that satisfies it; not resolved yet.
+            if self.det == Some(Det::Definite) {
+                return Err(cx.refused(
+                    Refusal::Unsupported {
+                        construct: Construct::RelativeClause,
+                        at: cx.text(self.start, self.end),
+                    },
+                    self.start,
+                ));
+            }
+            let r = self.restriction(cx, &term, class.as_deref())?;
+            drs.extend(r);
         }
         if let Some(owner) = owner {
             let owner_key = owner.class.clone().or_else(|| match &owner.term {
@@ -687,7 +857,7 @@ impl Np {
             }
             _ => {
                 if let Some((term, class)) = self.resolve_anaphor(cx, word, info)? {
-                    return Ok((Term::Const(term), class));
+                    return Ok((Term::referent(&term), class));
                 }
                 let expletive = word.eq_ignore_ascii_case("it")
                     && self.start == 0
@@ -791,6 +961,23 @@ impl Np {
         scope: Scope,
         drs: &mut Drs,
     ) -> Result<(Term, Option<String>), Refused> {
+        if let Some(role) = self.role(cx) {
+            // "a teacher", "the doctor": a bearer of the role, with no
+            // class of its own to resolve a definite against.
+            let t = match scope {
+                Scope::Assert => {
+                    let lex = cx.lex;
+                    Term::Const(cx.discourse.skolem(&role.term, |n| lex.defined(n)))
+                }
+                Scope::Bound => {
+                    let v = cx.discourse.var("X");
+                    drs.bind(&v);
+                    Term::Var(v)
+                }
+            };
+            drs.atom("attribute", vec![t.clone(), Term::Const(role.term)]);
+            return Ok((t, None));
+        }
         let choice = cx
             .lex
             .noun_class(word)
@@ -803,7 +990,7 @@ impl Np {
             None
         };
         let term = match resolved {
-            Some(t) => Term::Const(t),
+            Some(t) => Term::referent(&t),
             None => {
                 let t = match scope {
                     Scope::Assert => {
@@ -813,6 +1000,9 @@ impl Np {
                     Scope::Bound => {
                         let v = cx.discourse.var("X");
                         drs.bind(&v);
+                        if cx.conditional {
+                            cx.discourse.refer(&v, &class);
+                        }
                         Term::Var(v)
                     }
                 };
@@ -932,12 +1122,12 @@ impl Grammar {
         g.sentence.push(Box::new(rules::copula::Copula));
         g.sentence.push(Box::new(rules::have::Have));
         g.sentence.push(Box::new(rules::modal::Modal));
+        g.sentence.push(Box::new(rules::attitude::Attitude));
         g.sentence.push(Box::new(rules::event::Event));
         g.prepositions = standard_prepositions();
         g.prescan = vec![
             (Closed::Conjunction, Construct::Coordination),
             (Closed::Subordinator, Construct::Subordination),
-            (Closed::RelMarker, Construct::RelativeClause),
             (Closed::There, Construct::Existential),
             (Closed::Det(Det::Demonstrative), Construct::Demonstrative),
         ];
@@ -971,10 +1161,169 @@ impl Grammar {
         if cx.end() == 0 {
             return Err(Refused::new(Refusal::Empty, 0, 0));
         }
-        if let Some(outcome) = self.decompose(cx) {
+        // A generic "you" is one variable for the whole sentence, minted
+        // here so every clause of a compound sentence shares it, and
+        // closed by one universal around the result.
+        let owns_generic_you = cx.generic_you.is_none() && cx.opts.addressee.is_none();
+        if owns_generic_you {
+            if let Some(class) = &cx.opts.generic_you {
+                let second_person = cx.tokens[..cx.end()]
+                    .iter()
+                    .any(|t| pronoun_info(&t.lower).is_some_and(|p| p.person == 2));
+                if second_person {
+                    if !cx.lex.defined(class) {
+                        return Err(cx.refused(
+                            Refusal::TermNotInKb {
+                                word: "you".into(),
+                                term: class.clone(),
+                            },
+                            0,
+                        ));
+                    }
+                    let v = cx.discourse.var("P");
+                    cx.generic_you = Some((v, class.clone()));
+                }
+            }
+        }
+        let outcome = match self.decompose(cx) {
+            Some(outcome) => outcome,
+            None => self.parse_simple(cx),
+        };
+        if !owns_generic_you {
             return outcome;
         }
-        self.parse_simple(cx)
+        let mut logic = outcome?;
+        if let Some((v, class)) = cx.generic_you.take() {
+            let mut ante = Drs::default();
+            ante.bind(&v);
+            ante.atom("instance", vec![Term::Var(v), Term::Const(class)]);
+            logic.drs = Drs {
+                vars: Vec::new(),
+                conds: vec![Cond::Implies(ante, logic.drs)],
+            };
+        }
+        Ok(logic)
+    }
+
+    /// `If A, B` / `If A then B` / `B if A` / the same with "when": the
+    /// antecedent's indefinites become the variables of a universal and
+    /// the consequent may refer back to them ("If a dog barks, it is
+    /// loud").  `None` when the sentence has no such subordinator.
+    fn conditional(&self, cx: &mut Cx) -> Option<Result<Logic, Refused>> {
+        let end = cx.end();
+        let toks = cx.tokens;
+        let is_cond = |t: &Token| {
+            t.is(Closed::Subordinator) && matches!(t.lower.as_str(), "if" | "when" | "whenever")
+        };
+        let k = (0..end).find(|&k| is_cond(&toks[k]))?;
+        let fallback = cx.refused(
+            Refusal::Unsupported {
+                construct: Construct::Subordination,
+                at: toks[k].text.clone(),
+            },
+            k,
+        );
+        // Candidate (antecedent, consequent) token splits.
+        let mut splits: Vec<(Vec<Token>, Vec<Token>)> = Vec::new();
+        let terminal = self.terminal(cx);
+        if k == 0 {
+            // "If A, B" / "If A then B": at the comma or "then", else at
+            // every clause boundary.
+            let boundaries: Vec<usize> = (2..end)
+                .filter(|&b| toks[b].is_punct(',') || toks[b].lower == "then")
+                .collect();
+            let bounded = !boundaries.is_empty();
+            let candidates: Vec<usize> = if bounded {
+                boundaries
+            } else {
+                (2..end - 1).collect()
+            };
+            for b in candidates {
+                let mut ante = toks[1..b].to_vec();
+                ante.extend(terminal.clone());
+                let mut c = b;
+                if bounded {
+                    c += 1;
+                    if toks.get(c).is_some_and(|t| t.lower == "then") {
+                        c += 1;
+                    }
+                }
+                if c >= end {
+                    continue;
+                }
+                splits.push((ante, toks[c..].to_vec()));
+            }
+        } else {
+            // "B if A": the consequent is everything before the word.
+            let mut cons = toks[..k].to_vec();
+            cons.extend(terminal.clone());
+            let ante = toks[k + 1..].to_vec();
+            splits.push((ante, cons));
+        }
+        let mut first_refusal: Option<Refused> = None;
+        for (ante, cons) in splits {
+            match self.implication(cx, &ante, &cons) {
+                Ok(logic) => return Some(Ok(logic)),
+                Err(r) => {
+                    if first_refusal.is_none() {
+                        first_refusal = r;
+                    }
+                }
+            }
+        }
+        Some(Err(first_refusal.unwrap_or(fallback)))
+    }
+
+    /// Parse the antecedent, then the consequent with the antecedent's
+    /// referents in scope, and join them as an implication.
+    fn implication(
+        &self,
+        cx: &mut Cx,
+        ante: &[Token],
+        cons: &[Token],
+    ) -> Result<Logic, Option<Refused>> {
+        let mark = cx.discourse.mark();
+        let mut parts: Vec<Logic> = Vec::new();
+        for toks in [ante, cons] {
+            let outcome = {
+                let mut sub = Cx::new(toks, cx.lex, self, &mut *cx.discourse, cx.opts, cx.question);
+                sub.generic_you = cx.generic_you.clone();
+                sub.depth = cx.depth + 1;
+                sub.conditional = true;
+                self.parse(&mut sub)
+            };
+            match outcome {
+                Ok(l) => parts.push(l),
+                Err(r) => {
+                    cx.discourse.reset(mark);
+                    let informative = !matches!(
+                        r.reason,
+                        Refusal::NoRule { .. } | Refusal::TrailingTokens { .. }
+                    );
+                    return Err(informative.then_some(r));
+                }
+            }
+        }
+        let cons = parts.pop().ok_or(None)?;
+        let ante = parts.pop().ok_or(None)?;
+        let mut choices = ante.choices;
+        for c in cons.choices {
+            if !choices.contains(&c) {
+                choices.push(c);
+            }
+        }
+        let mut declared = ante.declared;
+        declared.extend(cons.declared);
+        Ok(Logic {
+            kind: cons.kind,
+            drs: Drs {
+                vars: Vec::new(),
+                conds: vec![Cond::Implies(ante.drs, cons.drs)],
+            },
+            choices,
+            rule: "conditional",
+            declared,
+        })
     }
 
     /// Split a compound sentence into simple ones and translate each.
@@ -990,30 +1339,8 @@ impl Grammar {
         if cx.depth >= MAX_DECOMPOSE_DEPTH || conjunctions > MAX_CONJUNCTIONS {
             return None;
         }
-        let is_rel = |r: usize| {
-            matches!(toks[r].lower.as_str(), "which" | "who")
-                || (toks[r].lower == "that" && r > 0 && toks[r - 1].is_open())
-        };
-        // SUBJECT is NP that REST  ->  SUBJECT is NP. / SUBJECT REST.
-        if let Some(r) = (1..end).find(|&r| is_rel(r)) {
-            let copula = (1..r).find(|&c| matches!(toks[c].closed(), Some(Closed::Copula(..))));
-            if let Some(c) = copula.filter(|&c| c + 1 < r && r + 1 < end) {
-                let mut first = toks[..r].to_vec();
-                first.extend(self.terminal(cx));
-                let mut second = toks[..c].to_vec();
-                second.extend_from_slice(&toks[r + 1..]);
-                let fallback = cx.refused(
-                    Refusal::Unsupported {
-                        construct: Construct::RelativeClause,
-                        at: toks[r].text.clone(),
-                    },
-                    r,
-                );
-                return Some(
-                    self.combine(cx, &[first, second], "relative-clause", true, false)
-                        .map_err(|r| r.unwrap_or(fallback)),
-                );
-            }
+        if let Some(outcome) = self.conditional(cx) {
+            return Some(outcome);
         }
         // Coordination with "and"/"but": a clause split, else a list of
         // like items distributed over the rest of the sentence.
@@ -1116,6 +1443,8 @@ impl Grammar {
                 let mut sub = Cx::new(v, cx.lex, self, &mut *cx.discourse, cx.opts, cx.question);
                 sub.relaxed_agreement = relaxed || cx.relaxed_agreement;
                 sub.generic_subject = generic || cx.generic_subject;
+                sub.generic_you = cx.generic_you.clone();
+                sub.conditional = cx.conditional;
                 sub.depth = cx.depth + 1;
                 self.parse(&mut sub)
             };
@@ -1157,15 +1486,14 @@ impl Grammar {
                 ));
             }
             if let Some(c) = t.closed() {
-                let after_noun = t.lower == "that" && i > 0 && cx.tokens[i - 1].is_open();
-                let construct = if after_noun {
-                    Some(Construct::RelativeClause)
-                } else {
-                    self.prescan
-                        .iter()
-                        .find(|(k, _)| *k == c)
-                        .map(|(_, c)| c.clone())
-                };
+                // "that" after a noun is a relative marker, not a
+                // demonstrative; the noun-phrase rule attaches it.
+                let relative_that = t.lower == "that" && i > 0 && cx.tokens[i - 1].is_open();
+                let construct = self
+                    .prescan
+                    .iter()
+                    .find(|(k, _)| *k == c && !relative_that)
+                    .map(|(_, c)| c.clone());
                 if let Some(construct) = construct {
                     return Err(cx.refused(
                         Refusal::Unsupported {
@@ -1174,27 +1502,6 @@ impl Grammar {
                         },
                         i,
                     ));
-                }
-            }
-        }
-        cx.generic_you = None;
-        if cx.opts.addressee.is_none() {
-            if let Some(class) = &cx.opts.generic_you {
-                let second_person = cx.tokens[..cx.end()]
-                    .iter()
-                    .any(|t| pronoun_info(&t.lower).is_some_and(|p| p.person == 2));
-                if second_person {
-                    if !cx.lex.defined(class) {
-                        return Err(cx.refused(
-                            Refusal::TermNotInKb {
-                                word: "you".into(),
-                                term: class.clone(),
-                            },
-                            0,
-                        ));
-                    }
-                    let v = cx.discourse.var("P");
-                    cx.generic_you = Some((v, class.clone()));
                 }
             }
         }
@@ -1208,15 +1515,6 @@ impl Grammar {
                     if cx.is_end(next) {
                         logic.choices = cx.choices.clone();
                         logic.declared = std::mem::take(&mut cx.declared);
-                        if let Some((v, class)) = cx.generic_you.take() {
-                            let mut ante = Drs::default();
-                            ante.bind(&v);
-                            ante.atom("instance", vec![Term::Var(v), Term::Const(class)]);
-                            logic.drs = Drs {
-                                vars: Vec::new(),
-                                conds: vec![Cond::Implies(ante, logic.drs)],
-                            };
-                        }
                         return Ok(logic);
                     }
                     cx.discourse.names.truncate(names_before);
@@ -1236,18 +1534,24 @@ impl Grammar {
                 Step::Refuse(r) => return Err(r),
             }
         }
-        // A modal the modal rule never reached (not after the subject) is
-        // still the construct at fault.
-        if let Some((i, t)) = cx
-            .tokens
-            .iter()
-            .enumerate()
-            .find(|(_, t)| t.is(Closed::Modal))
-        {
-            if trailing.is_none() {
+        // A modal or relative marker the rules reached but could not use
+        // is the construct at fault; a miss before it is reported as such.
+        if trailing.is_none() {
+            let unreached = cx.tokens.iter().enumerate().find(|(i, t)| {
+                *i <= cx.furthest
+                    && (t.is(Closed::Modal)
+                        || t.is(Closed::RelMarker)
+                        || (t.lower == "that" && *i > 0 && cx.tokens[i - 1].is_open()))
+            });
+            if let Some((i, t)) = unreached {
+                let construct = if t.is(Closed::Modal) {
+                    Construct::Modal
+                } else {
+                    Construct::RelativeClause
+                };
                 return Err(cx.refused(
                     Refusal::Unsupported {
-                        construct: Construct::Modal,
+                        construct,
                         at: t.text.clone(),
                     },
                     i,

@@ -131,7 +131,12 @@ impl Copula {
         let subject_force = force(&subject, true);
         // Class subject + class predicate is a taxonomic statement.
         if let (Force::Universal, Pred::Nominal(pn), false) = (&subject_force, &pred, negated) {
-            if pn.det.is_none_or(|d| d == Det::Indefinite) && subject.mods.is_empty() {
+            if pn.det.is_none_or(|d| d == Det::Indefinite)
+                && subject.mods.is_empty()
+                && subject.relative.is_none()
+                && pn.relative.is_none()
+                && !cx.conditional
+            {
                 match self.taxonomic(cx, &subject, pn) {
                     Ok(Some(drs)) => {
                         return Step::Hit(
@@ -158,12 +163,18 @@ impl Copula {
                 .is_ok_and(|c| cx.lex.has_ancestor(&c.term, "Process")),
             Head::Name(n) => cx.lex.has_ancestor(n, "Process"),
             Head::NewName(_) | Head::Pronoun { .. } => false,
+            Head::Gap => cx
+                .gap
+                .as_ref()
+                .and_then(|(_, c)| c.clone())
+                .is_some_and(|c| cx.lex.has_ancestor(&c, "Process")),
         };
         let subject_class = match &subject.head {
             Head::Noun { word, .. } => cx.lex.noun_class(word).ok().map(|c| c.term),
             Head::Name(n) => Some(n.clone()),
             Head::NewName(_) => Some("Human".into()),
             Head::Pronoun { .. } => cx.generic_you.as_ref().map(|(_, c)| c.clone()),
+            Head::Gap => cx.gap.as_ref().and_then(|(_, c)| c.clone()),
         };
         let result = frame(
             cx,
@@ -250,7 +261,7 @@ impl Copula {
             }
             if matches!(
                 np.head,
-                Head::Name(_) | Head::NewName(_) | Head::Pronoun { .. }
+                Head::Name(_) | Head::NewName(_) | Head::Pronoun { .. } | Head::Gap
             ) {
                 return Err(cx.refused(
                     Refusal::Unsupported {
@@ -285,7 +296,7 @@ impl Copula {
             .lex
             .predicate_noun(word)
             .map_err(|r| cx.refused(r, pred.end - 1))?;
-        if is_attr {
+        if is_attr || subject.role(cx).is_some() {
             return Ok(None);
         }
         let sub = subject.class(cx)?;
@@ -353,7 +364,8 @@ impl Copula {
         }
         let mut d = Drs::default();
         let rel = if is_attr { "attribute" } else { "instance" };
-        d.atom(rel, vec![subj.clone(), Term::Const(choice.term)]);
+        d.atom(rel, vec![subj.clone(), Term::Const(choice.term.clone())]);
+        d.extend(pred.restriction(cx, subj, Some(&choice.term))?);
         for m in &pred.mods {
             let a = cx.lex.adjective(m).map_err(|r| cx.refused(r, pred.start))?;
             cx.record(&a);

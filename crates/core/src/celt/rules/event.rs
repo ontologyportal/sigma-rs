@@ -8,7 +8,8 @@
 //! subject is the `agent` when the verb's `agent` domain admits it, the
 //! `experiencer` for perception and psychological processes, and the
 //! `patient` of an intransitive verb otherwise.  Past tense adds
-//! `(before (EndFn (WhenFn ?E)) Now)` when the KB defines `Now`.
+//! `(before (EndFn (WhenFn ?E)) NOW)`, the speech time being
+//! [`Opts::now`](super::super::grammar::Opts::now) or the KB's `Now`.
 
 use super::super::grammar::{attach_pp, best, Cx, Kind, Logic, Np, Pp, Scope, SentenceRule, Step};
 use super::super::ir::{Drs, Term};
@@ -186,20 +187,27 @@ impl Event {
                 );
             }
         }
-        if !cx.generic_subject {
+        if !cx.generic_subject && !cx.conditional {
             if let Some(r) = generic_subject(cx, &subject) {
                 return Step::Refuse(r);
             }
         }
-        if tense == Tense::Past && !cx.lex.defined("Now") {
-            return cx.refuse(
-                Refusal::Unsupported {
-                    construct: Construct::PastTense,
-                    at: verb_word,
-                },
-                verb_at,
-            );
-        }
+        let now = if tense == Tense::Past {
+            match speech_time(cx) {
+                Some(t) => Some(t),
+                None => {
+                    return cx.refuse(
+                        Refusal::Unsupported {
+                            construct: Construct::PastTense,
+                            at: verb_word,
+                        },
+                        verb_at,
+                    )
+                }
+            }
+        } else {
+            None
+        };
         let kind = if cx.question {
             Kind::Query
         } else {
@@ -235,7 +243,7 @@ impl Event {
                         class,
                         object.as_ref(),
                         &pps,
-                        tense,
+                        now.as_deref(),
                         scope,
                     )
                 }
@@ -322,7 +330,7 @@ impl Event {
         class: &str,
         object: Option<&Np>,
         pps: &[Pp],
-        tense: Tense,
+        now: Option<&str>,
         scope: Scope,
     ) -> Result<Drs, Refused> {
         let mut d = Drs::default();
@@ -352,7 +360,7 @@ impl Event {
             },
         )?;
         d.atom(role, vec![e.clone(), subj.clone()]);
-        if tense == Tense::Past {
+        if let Some(now) = now {
             d.atom(
                 "before",
                 vec![
@@ -360,7 +368,7 @@ impl Event {
                         "EndFn".into(),
                         vec![Term::Fn("WhenFn".into(), vec![e.clone()])],
                     ),
-                    Term::Const("Now".into()),
+                    Term::Const(now.into()),
                 ],
             );
         }
@@ -396,6 +404,11 @@ impl Event {
                 .as_ref()
                 .map(|(_, c)| c.clone())
                 .unwrap_or_default(),
+            (super::super::grammar::Head::Gap, _) => cx
+                .gap
+                .as_ref()
+                .and_then(|(_, c)| c.clone())
+                .unwrap_or_default(),
             (_, Term::Const(c)) => c.clone(),
             _ => String::new(),
         };
@@ -425,4 +438,21 @@ impl Event {
                 .unwrap_or_else(|| "AutonomousAgent".into()),
         ))
     }
+}
+
+/// The term the past tense is anchored before: the speech time from the
+/// options (declared a `TimePoint` once when the KB lacks it), else the
+/// KB's own `Now`.
+fn speech_time(cx: &mut Cx) -> Option<String> {
+    if let Some(now) = cx.opts.now.clone() {
+        if !cx.lex.defined(&now) && !cx.discourse.names.contains(&now) {
+            cx.discourse.names.push(now.clone());
+            cx.declared.atom(
+                "instance",
+                vec![Term::Const(now.clone()), Term::Const("TimePoint".into())],
+            );
+        }
+        return Some(now);
+    }
+    cx.lex.defined("Now").then(|| "Now".to_string())
 }

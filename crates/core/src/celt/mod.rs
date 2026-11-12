@@ -107,7 +107,7 @@ pub mod rules;
 pub mod token;
 
 pub use grammar::{Grammar, Kind, Logic, NpRule, Opts, PrepRule, PronounClasses, SentenceRule};
-pub use lookup::{Choice, Lookup};
+pub use lookup::{english_languages, Choice, Lookup};
 pub use refuse::{Construct, Refusal, Refused};
 pub use token::Gender;
 
@@ -321,6 +321,13 @@ mod tests {
         (instance wants BinaryPredicate)
         (domain wants 1 AutonomousAgent)
         (domain wants 2 Object)
+        (instance desires BinaryPredicate)
+        (domain desires 1 AutonomousAgent)
+        (domain desires 2 Formula)
+        (termFormat EnglishLanguage desires "desires")
+        (instance Teacher OccupationalRole)
+        (subclass Planet Object)
+        (instance PlanetEarth Planet)
         (subclass Book Object)
         (subclass Garden Object)
         (subclass Automobile Object)
@@ -449,6 +456,9 @@ mod tests {
 00000038 05 n 01 jay 0 000 | the bird &%Bird+
 00000039 05 n 01 part 0 000 | a part &%Rock+
 00000040 05 n 01 people 0 000 | people &%Human+
+00000041 05 n 01 teacher 0 000 | a teacher &%Teacher=
+00000042 05 n 01 earth 0 000 | the planet &%PlanetEarth=
+00000043 05 n 01 saw 0 000 | a saw &%Artifact+
 ";
     const VERBS: &str = "\
 00000101 30 v 01 read 0 000 00 | to read &%Reading=
@@ -463,6 +473,7 @@ mod tests {
 00000110 30 v 01 horse 0 000 00 | to provide with horses &%Process+
 00000111 30 v 01 live 0 000 00 | to live &%Living=
 00000112 30 v 01 part 0 000 00 | to part &%Falling+
+00000113 30 v 02 desire 0 want 0 000 00 | to want &%IntentionalProcess+
 ";
     const ADJS: &str = "\
 00000201 00 a 01 loud 0 000 | loud &%Loud=
@@ -713,6 +724,7 @@ mod tests {
             one("Rex chased a cat."),
             "(and (instance Pursuing-1 Pursuing) (agent Pursuing-1 Rex) (before (EndFn (WhenFn Pursuing-1)) Now) (instance Cat-1 Cat) (patient Pursuing-1 Cat-1))"
         );
+        // "saw" is also a noun; the irregular past still reads as "see".
         assert!(one("Mike saw a cat.").contains("(before (EndFn (WhenFn Seeing-1)) Now)"));
         assert_eq!(refusal("Rex is chasing a cat.").reason.code(), "no-rule");
     }
@@ -728,6 +740,105 @@ mod tests {
         let r = t.sentences[0].outcome.clone().expect_err("refused");
         assert_eq!(r.reason.code(), "unsupported/past-tense");
         assert!(r.reason.hint().contains("Now"));
+        // A speech time from the options anchors it, declared when the
+        // KB lacks the term.
+        let opts = Opts {
+            now: Some("Utterance-7".into()),
+            ..Opts::default()
+        };
+        let t = translate(&kb, &wn(), "Rex chased a cat. Mike saw a cat.", &opts);
+        let formulas: Vec<Vec<String>> = t
+            .sentences
+            .iter()
+            .map(|s| {
+                s.outcome
+                    .as_ref()
+                    .expect("accepted")
+                    .formulas()
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect()
+            })
+            .collect();
+        assert!(formulas[0].contains(&"(instance Utterance-7 TimePoint)".to_string()));
+        assert!(
+            formulas[0].contains(&"(before (EndFn (WhenFn Pursuing-1)) Utterance-7)".to_string())
+        );
+        assert!(!formulas[1].contains(&"(instance Utterance-7 TimePoint)".to_string()));
+        assert!(formulas[1].contains(&"(before (EndFn (WhenFn Seeing-1)) Utterance-7)".to_string()));
+    }
+
+    #[test]
+    fn attitude_verbs_take_clauses() {
+        // "to" complement: the subject controls the clause, bound inside.
+        assert_eq!(
+            one("Mike wants to read a book."),
+            "(desires Mike (exists (?E1 ?X1) (and (instance ?E1 Reading) (agent ?E1 Mike) (instance ?X1 Book) (patient ?E1 ?X1))))"
+        );
+        // "that" complement: a sentence of its own.
+        assert_eq!(
+            one("Mike believes that Rex is a dog."),
+            "(believes Mike (instance Rex Dog))"
+        );
+        assert!(one("Mike does not want to read a book.").starts_with("(not (desires Mike (exists"));
+        // A generic subject keeps its universal outside the attitude.
+        let generic = Opts {
+            generic_subjects: true,
+            ..Opts::default()
+        };
+        let v = with("Dogs want to chase cats.", generic);
+        assert!(
+            v[0].starts_with("(forall (?X1) (=> (instance ?X1 Dog) (desires ?X1 (exists (?E1 ?X2)"),
+            "{v:?}"
+        );
+        // The same verb with a noun phrase object is the relation `wants`
+        // (its label outranks the WordNet sense).
+        assert_eq!(
+            one("Mike wants a book."),
+            "(and (instance Book-1 Book) (wants Mike Book-1))"
+        );
+        // The subject must fit the relation's first argument.
+        assert_eq!(
+            refusal("A book wants to fall.").reason.code(),
+            "role-mismatch"
+        );
+        assert_eq!(
+            refusal("Mike wanted to read a book.").reason.code(),
+            "unsupported/past-tense"
+        );
+        assert_eq!(refusal("Mike wants to.").reason.code(), "no-rule");
+        assert_eq!(
+            refusal("Mike wants to read a book quickly.").reason.code(),
+            "unsupported/adverb"
+        );
+    }
+
+    #[test]
+    fn role_nouns_describe_their_bearers() {
+        // A noun naming an Attribute instance: whatever bears it.
+        assert_eq!(
+            one("A teacher is a man."),
+            "(forall (?X1) (=> (attribute ?X1 Teacher) (instance ?X1 Human)))"
+        );
+        let generic = Opts {
+            generic_subjects: true,
+            ..Opts::default()
+        };
+        let v = with("Teachers read books.", generic);
+        assert!(
+            v[0].starts_with("(forall (?X1) (=> (attribute ?X1 Teacher) (exists"),
+            "{v:?}"
+        );
+        let k = one("The teacher reads a book.");
+        assert!(
+            k.contains("(attribute Teacher-1 Teacher)")
+                && k.contains("(agent Reading-1 Teacher-1)"),
+            "{k}"
+        );
+        assert_eq!(one("Mike is a teacher."), "(attribute Mike Teacher)");
+        // A common noun whose term is a KB instance denotes it.
+        assert_eq!(one("The earth is a rock."), "(instance PlanetEarth Rock)");
+        assert_eq!(one("The earth is red."), "(attribute PlanetEarth Red)");
     }
 
     // -- Discourse ------------------------------------------------------------------
@@ -1136,18 +1247,47 @@ mod tests {
     }
 
     #[test]
-    fn relative_clause_on_the_predicate_nominal() {
+    fn relative_clauses_restrict_the_noun_phrase() {
+        // Predicate position: a second fact about the subject.
         assert_eq!(
             one("A dog is an animal that barks."),
-            "(and (subclass Dog Animal) (forall (?X1) (=> (instance ?X1 Dog) (exists (?E1) (and (instance ?E1 Barking) (agent ?E1 ?X1))))))"
+            "(forall (?X1) (=> (instance ?X1 Dog) (exists (?E1) (and (instance ?X1 Animal) (instance ?E1 Barking) (agent ?E1 ?X1)))))"
         );
         assert_eq!(
             one("Rex is a dog which barks."),
-            "(and (instance Rex Dog) (instance Barking-1 Barking) (agent Barking-1 Rex))"
+            "(exists (?E1) (and (instance Rex Dog) (instance ?E1 Barking) (agent ?E1 Rex)))"
         );
         assert_eq!(
             one("A bird is an animal that has wings."),
-            "(and (subclass Bird Animal) (forall (?X1) (=> (instance ?X1 Bird) (exists (?X2) (and (instance ?X2 Wing) (part ?X2 ?X1))))))"
+            "(forall (?X1) (=> (instance ?X1 Bird) (exists (?X2) (and (instance ?X1 Animal) (instance ?X2 Wing) (part ?X2 ?X1)))))"
+        );
+        // Subject position: the clause restricts the universal.
+        assert_eq!(
+            one("Dogs that bark are loud."),
+            "(forall (?E1 ?X1) (=> (and (instance ?X1 Dog) (instance ?E1 Barking) (agent ?E1 ?X1)) (attribute ?X1 Loud)))"
+        );
+        assert_eq!(
+            one("Every dog that barks is loud."),
+            "(forall (?E1 ?X1) (=> (and (instance ?X1 Dog) (instance ?E1 Barking) (agent ?E1 ?X1)) (attribute ?X1 Loud)))"
+        );
+        // Object position, an object gap, and a modal inside the clause.
+        assert_eq!(
+            one("Rex sees a dog that Mike chases."),
+            "(exists (?E1) (and (instance Seeing-1 Seeing) (experiencer Seeing-1 Rex) (instance Dog-1 Dog) (instance ?E1 Pursuing) (agent ?E1 Mike) (patient ?E1 Dog-1) (patient Seeing-1 Dog-1)))"
+        );
+        assert_eq!(
+            one("Rex sees a dog that can bark."),
+            "(and (instance Seeing-1 Seeing) (experiencer Seeing-1 Rex) (instance Dog-1 Dog) (modalAttribute (exists (?E1) (and (instance ?E1 Barking) (agent ?E1 Dog-1))) Possibility) (patient Seeing-1 Dog-1))"
+        );
+        assert_eq!(
+            one("Dogs that bark are animals that fall."),
+            "(forall (?E1 ?X1) (=> (and (instance ?X1 Dog) (instance ?E1 Barking) (agent ?E1 ?X1)) (exists (?E2) (and (instance ?X1 Animal) (instance ?E2 Falling) (agent ?E2 ?X1)))))"
+        );
+        // A definite with a restriction is not resolved; the clause's own
+        // refusals come through.
+        assert_eq!(
+            one("The dog that barks is loud."),
+            "[unsupported/relative-clause]"
         );
         assert_eq!(
             refusal("A dog is an animal that barks quickly.")
@@ -1299,6 +1439,55 @@ mod tests {
         );
     }
 
+    // -- Conditionals ---------------------------------------------------------------------
+
+    #[test]
+    fn conditionals_bind_antecedent_referents() {
+        assert_eq!(
+            one("If a dog barks, it is loud."),
+            "(forall (?X1 ?E1) (=> (and (instance ?X1 Dog) (instance ?E1 Barking) (agent ?E1 ?X1)) (attribute ?X1 Loud)))"
+        );
+        assert_eq!(
+            one("If a dog barks then the dog is loud."),
+            "(forall (?X1 ?E1) (=> (and (instance ?X1 Dog) (instance ?E1 Barking) (agent ?E1 ?X1)) (attribute ?X1 Loud)))"
+        );
+        assert_eq!(
+            one("Rex is loud if Rex barks."),
+            "(forall (?E1) (=> (and (instance ?E1 Barking) (agent ?E1 Rex)) (attribute Rex Loud)))"
+        );
+        // No comma: the split is found by parsing.
+        assert_eq!(
+            one("When dogs bark cats fall."),
+            "(forall (?X1 ?E1) (=> (and (instance ?X1 Dog) (instance ?E1 Barking) (agent ?E1 ?X1)) (exists (?X2 ?E2) (and (instance ?X2 Cat) (instance ?E2 Falling) (agent ?E2 ?X2)))))"
+        );
+        // A consequent indefinite is existential; "every" keeps its force.
+        assert_eq!(
+            one("If every dog barks, a cat falls."),
+            "(=> (forall (?X1) (=> (instance ?X1 Dog) (exists (?E1) (and (instance ?E1 Barking) (agent ?E1 ?X1))))) (exists (?X2 ?E2) (and (instance ?X2 Cat) (instance ?E2 Falling) (agent ?E2 ?X2))))"
+        );
+        // Antecedent variables do not leak into later sentences.
+        assert_eq!(
+            kif("If a dog barks, it is loud. Rex sees it.")[1],
+            "[unsupported/pronoun]"
+        );
+        let generic = Opts {
+            generic_you: Some("Human".into()),
+            ..Opts::default()
+        };
+        assert_eq!(
+            with("If you read a book, you are loud.", generic),
+            vec!["(forall (?P1) (=> (instance ?P1 Human) (forall (?E1 ?X1) (=> (and (instance ?E1 Reading) (agent ?E1 ?P1) (instance ?X1 Book) (patient ?E1 ?X1)) (attribute ?P1 Loud)))))"]
+        );
+        assert_eq!(
+            refusal("Rex barks because Mike reads.").reason.code(),
+            "unsupported/subordination"
+        );
+        assert_eq!(
+            refusal("If Rex barks, Zeke reads.").reason.code(),
+            "unknown-name"
+        );
+    }
+
     // -- Modals ---------------------------------------------------------------------------
 
     #[test]
@@ -1354,11 +1543,8 @@ mod tests {
             with("You can bark.", generic),
             vec!["(forall (?P1) (=> (instance ?P1 Human) (modalAttribute (exists (?E1) (and (instance ?E1 Barking) (agent ?E1 ?P1))) Possibility)))"]
         );
-        // A modal anywhere else is still reported as the construct.
-        assert_eq!(
-            one("Rex sees a dog that can bark."),
-            "[unsupported/relative-clause]"
-        );
+        // A modal no rule reaches is still reported as the construct.
+        assert_eq!(one("Dogs are must."), "[unsupported/modal]");
     }
 
     // -- Refusals for recognized constructs ----------------------------------------------
@@ -1372,7 +1558,7 @@ mod tests {
             ("Rex barks because Mike reads.", "unsupported/subordination"),
             ("Rex will bark.", "unsupported/modal"),
             ("Rex would bark.", "unsupported/modal-counterfactual"),
-            ("Dogs that bark are animals.", "unsupported/relative-clause"),
+            ("The dog that barks is loud.", "unsupported/relative-clause"),
             ("Rex has a boy.", "unsupported/have"),
             ("Rex's boy is loud.", "unsupported/possessive"),
             ("It is loud.", "unsupported/expletive-it"),

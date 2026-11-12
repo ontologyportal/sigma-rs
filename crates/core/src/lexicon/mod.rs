@@ -235,6 +235,13 @@ impl WordNet {
         out
     }
 
+    /// Base forms `noun.exc`/`verb.exc` list for an irregular surface form
+    /// ("drove" -> "drive"), whether or not the form is a lemma itself.
+    pub fn exception_bases(&self, word: &str) -> Vec<String> {
+        let key = word.trim().to_lowercase().replace(' ', "_");
+        self.exceptions.get(&key).cloned().unwrap_or_default()
+    }
+
     fn senses_exact(&self, key: &str) -> Vec<Sense<'_>> {
         let Some(ids) = self.lemma_index.get(key) else {
             return Vec::new();

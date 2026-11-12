@@ -5,12 +5,15 @@
 //! that WordNet or the KB knows as one lemma ("motor vehicle") are heads
 //! too.  Adjectives may be comma-separated ("a small, simple shelter").
 //! A pronoun is a phrase of its own; a possessive pronoun or a phrase with
-//! `'s` owns the noun run that follows ("your tail", "Bob's car").  The
-//! sentence rule picks the reading under which the rest parses.
+//! `'s` owns the noun run that follows ("your tail", "Bob's car").  A
+//! relative marker after a noun phrase attaches a restrictive clause of
+//! every possible extent, longest first ("animals that fly", "food that
+//! people eat").  The sentence rule picks the reading under which the
+//! rest parses.
 
 use crate::lexicon::Pos;
 
-use super::super::grammar::{Cx, Head, Np, NpRule};
+use super::super::grammar::{Cx, GapSite, Head, Np, NpRule, Relative};
 use super::super::refuse::{Construct, Refusal, Refused};
 use super::super::token::{pronoun_info, Closed, Det};
 
@@ -22,6 +25,71 @@ impl NpRule for BasicNp {
     }
 
     fn candidates(&self, cx: &mut Cx, at: usize) -> Result<Vec<(Np, usize)>, Refused> {
+        let plain = self.plain(cx, at)?;
+        let mut out = Vec::new();
+        for (np, end) in &plain {
+            out.extend(self.relatives(cx, np, *end));
+        }
+        out.extend(plain);
+        Ok(out)
+    }
+}
+
+impl BasicNp {
+    /// Readings with a relative clause attached after `end`, longest
+    /// clause first.  The gap is the subject unless a noun phrase follows
+    /// the marker.
+    fn relatives(&self, cx: &mut Cx, np: &Np, end: usize) -> Vec<(Np, usize)> {
+        let Some(marker) = cx.tok(end) else {
+            return Vec::new();
+        };
+        let is_marker = marker.is(Closed::RelMarker)
+            || (marker.lower == "that" && cx.tokens[end - 1].is_open());
+        if !is_marker || matches!(np.head, Head::Pronoun { .. } | Head::Gap) {
+            return Vec::new();
+        }
+        let gap = match cx.tok(end + 1) {
+            Some(t)
+                if t.is_open() || matches!(t.closed(), Some(Closed::Det(_) | Closed::Pronoun)) =>
+            {
+                if cx.lex.is_verbal(&t.lower) && t.closed().is_none() {
+                    GapSite::Subject
+                } else {
+                    GapSite::Object
+                }
+            }
+            _ => GapSite::Subject,
+        };
+        let last = cx.end();
+        (end + 2..=last)
+            .rev()
+            .map(|e| {
+                let mut with = np.clone();
+                with.relative = Some(Box::new(Relative {
+                    marker_at: end,
+                    clause: cx.tokens[end + 1..e].to_vec(),
+                    gap,
+                }));
+                with.end = e;
+                (with, e)
+            })
+            .collect()
+    }
+
+    /// Readings without a relative clause.
+    fn plain(&self, cx: &mut Cx, at: usize) -> Result<Vec<(Np, usize)>, Refused> {
+        if cx.tok(at).is_some_and(|t| t.is(Closed::Gap)) {
+            let np = Np {
+                det: None,
+                mods: Vec::new(),
+                head: Head::Gap,
+                possessor: None,
+                relative: None,
+                start: at,
+                end: at + 1,
+            };
+            return Ok(vec![(np, at + 1)]);
+        }
         if let Some(pronoun) = cx.tok(at).filter(|t| t.is(Closed::Pronoun)) {
             let Some(info) = pronoun_info(&pronoun.lower) else {
                 return Ok(Vec::new());
@@ -34,6 +102,7 @@ impl NpRule for BasicNp {
                     info,
                 },
                 possessor: None,
+                relative: None,
                 start: at,
                 end: at + 1,
             };
@@ -88,9 +157,7 @@ impl NpRule for BasicNp {
         out.extend(plain);
         Ok(out)
     }
-}
 
-impl BasicNp {
     /// The noun run after an owner: every reading of `owner 's NOUN...`.
     fn possessed(&self, cx: &mut Cx, owner: Np, at: usize) -> Result<Vec<(Np, usize)>, Refused> {
         if !cx.tok(at).is_some_and(|t| t.is_open()) {
@@ -181,6 +248,7 @@ impl BasicNp {
                             plural,
                         },
                         possessor: None,
+                        relative: None,
                         start: at,
                         end: next,
                     },
@@ -278,6 +346,7 @@ impl BasicNp {
                 mods: Vec::new(),
                 head,
                 possessor: None,
+                relative: None,
                 start: at,
                 end: j,
             },

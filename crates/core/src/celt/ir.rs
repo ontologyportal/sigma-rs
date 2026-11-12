@@ -26,6 +26,16 @@ pub enum Term {
 }
 
 impl Term {
+    /// A referent's term: a bound variable from a conditional's
+    /// antecedent, or a constant.
+    pub fn referent(name: &str) -> Term {
+        if name.starts_with('?') {
+            Term::Var(name.to_string())
+        } else {
+            Term::Const(name.to_string())
+        }
+    }
+
     pub fn is_var(&self) -> bool {
         matches!(self, Term::Var(_))
     }
@@ -59,6 +69,9 @@ pub enum Cond {
     /// `(modalAttribute <drs> Attribute)`: the formula holds under a
     /// modality (`Possibility`, `Necessity`, `Obligation`).
     Modal(Drs, String),
+    /// `(relation term <drs>)`: a relation whose second argument is a
+    /// formula, as a propositional attitude (`(desires Mike (exists ...))`).
+    Holds(String, Term, Drs),
 }
 
 /// Bound variables and conditions.
@@ -126,6 +139,7 @@ impl Cond {
             ),
             Cond::Not(d) => list(vec![op(OpKind::Not), d.to_ast()]),
             Cond::Modal(d, attr) => list(vec![sym("modalAttribute"), d.to_ast(), sym(attr)]),
+            Cond::Holds(rel, term, d) => list(vec![sym(rel), term.to_ast(), d.to_ast()]),
             Cond::Implies(a, c) => {
                 let imp = list(vec![op(OpKind::Implies), a.body(), c.to_ast()]);
                 if a.vars.is_empty() {
@@ -271,10 +285,13 @@ impl Discourse {
         self.next_var = mark.next_var;
     }
 
-    /// Reset variable numbering at the start of a sentence.
+    /// Reset variable numbering at the start of a sentence, and forget
+    /// variable referents (a conditional's antecedent), which do not
+    /// outlive their sentence.
     pub fn begin_sentence(&mut self, index: usize) {
         self.sentence = index;
         self.next_var.clear();
+        self.referents.retain(|r| !r.term.starts_with('?'));
     }
 }
 

@@ -388,6 +388,11 @@ export class Session {
     return this.#kb.ask(query, opts.session, opts.tptp);
   }
 
+  /** Translate controlled English to SUO-KIF with the loaded KB and WordNet lexicon. */
+  translateCelt(text) {
+    return this.#kb.translateCelt(text);
+  }
+
   /**
    * Sampled consistency audit with this session's backend: walk
    * `request`'s slice of the KB's seeded sweep, checking each subproblem's

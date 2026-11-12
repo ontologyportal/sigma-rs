@@ -25,14 +25,9 @@ use super::super::grammar::{best, Cx, Kind, Logic, Np, SentenceRule, Step};
 use super::super::ir::{Cond, Drs};
 use super::super::refuse::{Construct, Refusal};
 use super::super::token::Closed;
-use super::copula::Copula;
-use super::event::Event;
-use super::have::Have;
+use super::complement;
 
 pub struct Modal;
-
-/// A clause rule entered with the subject already parsed.
-type Clause = dyn Fn(&mut Cx, Np, usize) -> Step<Logic>;
 
 impl SentenceRule for Modal {
     fn name(&self) -> &'static str {
@@ -123,27 +118,7 @@ impl Modal {
                 );
             }
         }
-        let saved = (cx.relaxed_agreement, cx.generic_subject, cx.under_modal);
-        cx.relaxed_agreement = true;
-        cx.generic_subject = true;
-        cx.under_modal = true;
-        let mut attempts = Vec::new();
-        let clauses: [&Clause; 3] = [
-            &|cx, s, i| Copula.with_subject(cx, false, s, i),
-            &|cx, s, i| Have.with_subject(cx, None, s, i),
-            &|cx, s, i| Event.with_subject(cx, None, s, i),
-        ];
-        for clause in clauses {
-            let subject = subject.clone();
-            let step = cx.attempt(|cx| clause(cx, subject, i));
-            let done = matches!(&step, Step::Hit(_, n) if cx.is_end(*n));
-            attempts.push(step);
-            if done {
-                break;
-            }
-        }
-        (cx.relaxed_agreement, cx.generic_subject, cx.under_modal) = saved;
-        match best(cx, attempts) {
+        match complement(cx, subject, i) {
             Step::Hit(logic, next) => Step::Hit(
                 Logic {
                     kind: if cx.question {
