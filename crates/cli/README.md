@@ -257,7 +257,7 @@ any `-f` / `-d` / inline `FORMULA` is treated as a session assertion.
 Run KIF test files (`*.kif.tq` format).
 
 ```
-sumo test PATH... [-k FILE] [--backend NAME] [--lang fof|tff]
+sumo test PATH... [-k FILE] [--backend NAME] [--vampire-portfolio] [--lang fof|tff]
           [--timeout SECS] [--profile] [-f FILE]... [-d DIR]... [--db DIR]
 ```
 
@@ -270,6 +270,7 @@ Test files are KIF-like but may contain special directives: `(note "…")`, `(ti
 | `--backend NAME` | `subprocess` | Prover backend: `subprocess` or `embedded` |
 | `--lang fof\|tff` | `fof` | TPTP language variant |
 | `--timeout SECS` | — | Override the per-test timeout, superseding any `(time N)` directive inside the test file |
+| `--vampire-portfolio` | off | Use Vampire's CASC portfolio with the `subprocess` backend (`--mode portfolio --schedule casc`). Portfolio strategies may reapply SInE selection. |
 | `--profile` | — | Print a timing breakdown of the major pipeline phases |
 
 ### `sumo load`

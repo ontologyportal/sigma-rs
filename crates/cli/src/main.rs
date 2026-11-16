@@ -396,7 +396,17 @@ fn main_worker() {
                     }
                     _ => None,
                 };
-                let runner = build_runner(&manager, keep);
+                #[cfg(feature = "ask")]
+                let vampire_portfolio = matches!(
+                    &cli.command,
+                    Cmd::Test {
+                        vampire_portfolio: true,
+                        ..
+                    }
+                );
+                #[cfg(not(feature = "ask"))]
+                let vampire_portfolio = false;
+                let runner = build_runner(&manager, keep, vampire_portfolio);
                 let kb = open_or_new(
                     use_db,
                     || {
@@ -614,6 +624,7 @@ where
             keep,
             step,
             full_kb,
+            vampire_portfolio: _,
         } => {
             if full_kb {
                 manager.disable_selection = true;
@@ -889,7 +900,7 @@ fn supplied(matches: &clap::ArgMatches, field: &str) -> bool {
 }
 
 /// Construct the external runner the resolved backend names.
-fn build_runner(manager: &KBManager, keep: Option<PathBuf>) -> Prover {
+fn build_runner(manager: &KBManager, keep: Option<PathBuf>, vampire_portfolio: bool) -> Prover {
     match manager.default_backend.as_str() {
         "e" | "eprover" => {
             // Resolve against systemsDir / $PATH; a bogus configured path falls
@@ -915,7 +926,11 @@ fn build_runner(manager: &KBManager, keep: Option<PathBuf>) -> Prover {
                 log::warn!("{e}; falling back to 'vampire' on PATH");
                 PathBuf::from("vampire")
             });
-            Prover::VampireSubprocess(VampireRunner { vampire_path: path, tptp_dump_path: keep })
+            Prover::VampireSubprocess(VampireRunner {
+                vampire_path: path,
+                tptp_dump_path: keep,
+                portfolio: vampire_portfolio,
+            })
         }
     }
 }
@@ -923,6 +938,16 @@ fn build_runner(manager: &KBManager, keep: Option<PathBuf>) -> Prover {
 #[cfg(test)]
 mod report_load_tests {
     use super::*;
+
+    #[test]
+    fn subprocess_runner_receives_portfolio_setting() {
+        let mut manager = KBManager::default();
+        manager.default_backend = "subprocess".into();
+        let Prover::VampireSubprocess(runner) = build_runner(&manager, None, true) else {
+            panic!("expected Vampire subprocess runner");
+        };
+        assert!(runner.portfolio);
+    }
 
     #[test]
     fn report_load_formats_without_panicking() {

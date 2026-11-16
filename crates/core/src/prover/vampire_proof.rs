@@ -187,7 +187,7 @@ pub(crate) fn docitems_to_proof_steps(doc: &[DocItem]) -> Vec<ProofStep> {
 
 // -- Command line ---------------------------------------------------------------
 
-/// The Vampire command-line arguments every text-driven runner uses (the
+/// The default Vampire command-line arguments for text-driven runners (the
 /// subprocess runner appends the input path; the browser bridge lets the
 /// Emscripten runner add its own).
 ///
@@ -209,18 +209,19 @@ pub(crate) fn docitems_to_proof_steps(doc: &[DocItem]) -> Vec<ProofStep> {
 ///    but spelling it out makes the intent explicit and survives any
 ///    future default change.
 ///
-/// If the single-strategy default proof search turns out to be
-/// insufficient on hard queries, options are:
-/// - Loosen the external SInE tolerance (`SineParams::benevolent(..)`)
-///   to feed more axioms into Vampire.
-/// - Switch back to `--mode casc` and accept the minor over-selection
-///   risk (CASC portfolio strategies may re-filter; non-SInE
-///   strategies still receive the full external-SInE set).
+/// The subprocess runner can opt into the CASC portfolio. Its strategies may
+/// re-filter the input despite the command-line SInE setting.
 #[cfg(feature = "external-prover")]
 pub fn vampire_cli_args(timeout_secs: &str) -> Vec<String> {
-    vec![
+    vampire_cli_args_with_portfolio(timeout_secs, false)
+}
+
+/// Build Vampire CLI arguments, optionally enabling its CASC portfolio.
+#[cfg(feature = "external-prover")]
+pub(crate) fn vampire_cli_args_with_portfolio(timeout_secs: &str, portfolio: bool) -> Vec<String> {
+    let mut args = vec![
         "--mode".into(),
-        "vampire".into(),
+        if portfolio { "portfolio" } else { "vampire" }.into(),
         "--input_syntax".into(),
         "tptp".into(),
         "--sine_selection".into(),
@@ -250,7 +251,11 @@ pub fn vampire_cli_args(timeout_secs: &str) -> Vec<String> {
         // and alpha-renaming).
         "--output_axiom_names".into(),
         "on".into(),
-    ]
+    ];
+    if portfolio {
+        args.extend(["--schedule".into(), "casc".into()]);
+    }
+    args
 }
 
 // -- Transcript -> ProverResult -------------------------------------------------
@@ -533,7 +538,16 @@ fof(f2,axiom,(
 
 #[cfg(all(test, feature = "external-prover"))]
 mod args_tests {
-    use super::vampire_cli_args;
+    use super::{vampire_cli_args, vampire_cli_args_with_portfolio};
+
+    #[test]
+    fn portfolio_args_select_casc_schedule() {
+        let args = vampire_cli_args_with_portfolio("42", true);
+        assert!(args.windows(2).any(|a| a == ["--mode", "portfolio"]));
+        assert!(args.windows(2).any(|a| a == ["--schedule", "casc"]));
+        assert!(args.windows(2).any(|a| a == ["-t", "42"]));
+        assert!(args.windows(2).any(|a| a == ["-p", "tptp"]));
+    }
 
     #[test]
     fn args_use_single_strategy_vampire_mode() {
