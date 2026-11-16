@@ -11,7 +11,6 @@ license     = "GPL-3.0"
 [workspace.dependencies]
 sigmakee-rs-core  = { path = "crates/core" }
 sigmakee-rs-sdk   = { path = "crates/sdk" }
-sigmakee          = { path = "crates/cli" }
 serde             = { version = "1", features = ["derive", "rc"] }
 serde_json        = "1.0.150"
 thiserror         = "2"

@@ -116,6 +116,7 @@ impl ProverOpts {
 /// let prover = Prover::VampireSubprocess(VampireRunner {
 ///     vampire_path: PathBuf::from("/usr/bin/vampire"),
 ///     tptp_dump_path: None,
+///     portfolio: false,
 /// });
 /// let opts = ProverOpts { timeout_secs: 5, mode: ProverMode::Prove };
 /// let result = prover.prove("fof(a, conjecture, p).\n", &opts);

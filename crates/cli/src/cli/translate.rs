@@ -29,7 +29,7 @@ where
 {
     if let Some(test_file) = test {
         let test_source = Source::Local(vec![test_file]);
-        let prover_opts = manager.external_prover.to_prover_opts();
+        let prover_opts = manager.external_opts();
         let tptp = session.translate_test(test_source, manager.into(), prover_opts);
         match tptp {
             Ok(tptp) => println!("{}", tptp),

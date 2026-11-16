@@ -115,6 +115,15 @@ async function runCase(
     }),
   );
 
+  // Keep unrelated boot-time source checks from opening modal dialogs. The
+  // release API routes registered below take precedence over this fallback.
+  await page.route("https://api.github.com/**", (route) =>
+    route.fulfill({ status: 404, body: "{}" }),
+  );
+  await page.route("**/latest-contradictions.json", (route) =>
+    route.fulfill({ status: 404, body: "{}" }),
+  );
+
   let releaseRequests = 0;
   await page.route(RELEASE_URL_RE, (route) => {
     releaseRequests += 1;

@@ -416,6 +416,11 @@ pub enum Cmd {
         /// query — `--scope` is ignored when this is set.
         #[arg(long = "full-kb")]
         full_kb: bool,
+
+        /// Use Vampire's CASC portfolio with the subprocess backend. Portfolio
+        /// strategies may reapply SInE selection to the generated problem.
+        #[arg(long = "vampire-portfolio")]
+        vampire_portfolio: bool,
     },
 
     /// Parse KIF file(s) and commit them to the LMDB database.

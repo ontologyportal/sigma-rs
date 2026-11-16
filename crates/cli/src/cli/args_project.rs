@@ -297,6 +297,13 @@ pub fn config_overrides(matches: &ArgMatches) -> Vec<(&'static OptionMeta, serde
 mod tests {
     use super::*;
 
+    #[test]
+    fn test_accepts_vampire_portfolio_flag() {
+        let matches = matches_for(&["sumo", "test", "case.kif.tq", "--vampire-portfolio"]);
+        let (_, test) = matches.subcommand().expect("test subcommand");
+        assert!(test.get_flag("vampire_portfolio"));
+    }
+
     fn matches_for(argv: &[&str]) -> ArgMatches {
         let derived = Cli::command();
         let declared = collect_longs(&derived);

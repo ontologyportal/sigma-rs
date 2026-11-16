@@ -11,7 +11,7 @@ use std::time::Instant;
 use super::super::super::super::result::{ProverResult, ProverStatus, ProverTimings};
 use super::super::{ProverOpts, ProverRunner};
 
-use crate::prover::vampire_proof::{result_from_transcript, vampire_cli_args};
+use crate::prover::vampire_proof::{result_from_transcript, vampire_cli_args_with_portfolio};
 
 // -- VampireRunner -------------------------------------------------------------
 
@@ -23,6 +23,8 @@ pub struct VampireRunner {
     /// When `None` the TPTP is piped directly to Vampire via stdin with no
     /// intermediate file.
     pub tptp_dump_path: Option<PathBuf>,
+    /// Run Vampire's CASC portfolio instead of its single strategy.
+    pub portfolio: bool,
 }
 
 impl Default for VampireRunner {
@@ -30,6 +32,7 @@ impl Default for VampireRunner {
         Self {
             vampire_path: PathBuf::from("vampire"),
             tptp_dump_path: None,
+            portfolio: false,
         }
     }
 }
@@ -58,7 +61,7 @@ impl ProverRunner for VampireRunner {
         // when the caller left it at 0.
         let secs = opts.timeout();
         let timeout = secs.to_string();
-        let args = vampire_cli_args(&timeout);
+        let args = vampire_cli_args_with_portfolio(&timeout, self.portfolio);
 
         crate::log!(
             Debug,
