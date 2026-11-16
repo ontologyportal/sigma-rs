@@ -34,6 +34,11 @@ export const router = createRouter({
       component: () => import("../views/VisualizeTab.vue"),
     },
     {
+      name: "translate",
+      path: "/translate",
+      component: () => import("../views/TranslateTab.vue"),
+    },
+    {
       name: "prover",
       path: "/prover",
       component: () => import("../views/AskTellTab.vue"),

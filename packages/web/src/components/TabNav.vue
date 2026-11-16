@@ -24,6 +24,7 @@ const TAB_GROUPS: TabGroup[] = [
     tabs: [
       ["browse", "Browse"],
       ["visualize", "Visualize"],
+      ["translate", "Translate"],
     ],
   },
   {
@@ -315,7 +316,7 @@ nav.tabs {
   content: attr(data-label);
   position: absolute;
   top: 0;
-  left: 12px;
+  left: 10px;
   font-size: 9px;
   text-transform: uppercase;
   letter-spacing: 0.09em;
@@ -334,7 +335,7 @@ nav.tab-rail button {
   border: none;
   color: var(--muted);
   cursor: pointer;
-  padding: 9px 12px;
+  padding: 9px 10px;
   border-bottom: 2px solid transparent;
   margin-bottom: -1px;
   flex: 0 0 auto;

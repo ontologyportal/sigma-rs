@@ -92,6 +92,7 @@ export const BASE = import.meta.env.BASE_URL;
 export const TABS = [
   "browse",
   "visualize",
+  "translate",
   "kb",
   "problems",
   "diagnostics",
