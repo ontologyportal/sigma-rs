@@ -539,10 +539,9 @@ GA/portfolio sweep genomes.
 | `strategy` | `native_prover.strategy` | `strategy` (nested, see above) | `--strategy <JSON\|FILE>` on `ask`/`test`/`audit`/`sweep` (`native-prover` build only) |
 | `profile` | `native_prover.profile` | `profile` | `--profile` — hand-declared **global** flag (`main.rs`), not projected through the `OptionMeta` table; sets `manager.native_prover.profile` directly |
 
-`disable_selection` isn't a `NativeOpts` field itself — it's a `KBManager`-only
-flag (`--full-kb` / config.xml `disableSelection`) that `KBManager::native_opts()`
-folds in as `opts.selection.select_all |= self.disable_selection` when building
-the `NativeOpts` the prover actually runs with.
+`disable_selection` is a `KBManager`-only flag (`--full-kb` / config.xml
+`disableSelection`). `KBManager::native_opts()` and `KBManager::external_opts()`
+fold it into `selection.select_all` for native and external provers alike.
 
 **`--strategy`** takes either inline JSON (`--strategy '{"schema":false,"para_cap":400}'`)
 or a path to a `.json` file holding the same object; either way it's a

@@ -370,7 +370,7 @@ impl ProverOptsFor for sigmakee_rs_core::NativeOpts {
 #[cfg(feature = "external-prover")]
 impl ProverOptsFor for sigmakee_rs_core::prover::ExternalOpts {
     fn from_manager(manager: &KBManager) -> Self {
-        manager.external_prover().to_prover_opts()
+        manager.external_opts()
     }
 }
 
@@ -401,6 +401,15 @@ impl KBManager {
         let mut o = self.native_prover.to_native_opts();
         o.selection.select_all |= self.disable_selection;
         o
+    }
+
+    /// Build runtime external-prover opts from the configured defaults,
+    /// including the top-level `disable_selection` setting.
+    #[cfg(feature = "external-prover")]
+    pub fn external_opts(&self) -> sigmakee_rs_core::prover::ExternalOpts {
+        let mut opts = self.external_prover.to_prover_opts();
+        opts.selection.select_all |= self.disable_selection;
+        opts
     }
 
     /// Resolve the configured Vampire binary to an existing path, or `Err`.
@@ -2363,6 +2372,30 @@ mod tests {
             m.native_opts().selection.select_all,
             "disable_selection forces whole-KB (select_all)"
         );
+    }
+
+    #[cfg(feature = "external-prover")]
+    #[test]
+    fn external_opts_folds_disable_selection_into_select_all() {
+        let mut manager = KBManager::default();
+        assert!(!manager.external_opts().selection.select_all);
+        assert!(
+            !<sigmakee_rs_core::prover::ExternalOpts as ProverOptsFor>::from_manager(&manager)
+                .selection
+                .select_all
+        );
+
+        manager.disable_selection = true;
+        assert!(manager.external_opts().selection.select_all);
+        assert!(
+            <sigmakee_rs_core::prover::ExternalOpts as ProverOptsFor>::from_manager(&manager)
+                .selection
+                .select_all
+        );
+
+        manager.disable_selection = false;
+        manager.external_prover.selection.select_all = true;
+        assert!(manager.external_opts().selection.select_all);
     }
 
     #[test]
