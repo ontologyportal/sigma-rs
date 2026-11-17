@@ -87,8 +87,14 @@ impl Session {
     /// `WordNetMappings30-*.txt` files. To be WASM safe the browser
     /// fetches the bytes and passes strings here. `indexSense`
     /// (most-frequent-sense ordering) and `exceptions` (`noun.exc` +
-    /// `verb.exc` concatenated) are optional refinements.
+    /// `verb.exc` concatenated) are optional refinements. `firstNames` is
+    /// `FirstNames.csv`, the proper names CELT reads as Humans (and their
+    /// genders, for "he"/"she").
     /// Returns the number of synsets indexed.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "wasm_bindgen export; positional args mirror the WordNetFiles fields"
+    )]
     #[wasm_bindgen(js_name = loadWordNet)]
     pub fn load_wordnet(
         &mut self,
@@ -98,7 +104,12 @@ impl Session {
         adv: &str,
         index_sense: Option<String>,
         exceptions: Option<String>,
+        first_names: Option<String>,
     ) -> u32 {
+        self.first_names = first_names
+            .as_deref()
+            .map(sigmakee_rs_core::celt::name_genders_from_csv)
+            .unwrap_or_default();
         use sigmakee_rs_core::lexicon::{Pos, WordNet};
         // No filenames come from the browser caller (it fetches these
         // itself and hands over bytes, not paths) -- fall back to the same
@@ -127,5 +138,6 @@ impl Session {
     pub fn clear_wordnet(&mut self) {
         let mut session_guard = self.session.write().expect("kb lock not poisoned");
         session_guard.set_lexicon(None);
+        self.first_names.clear();
     }
 }

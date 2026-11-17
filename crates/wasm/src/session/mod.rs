@@ -47,6 +47,9 @@ pub struct Session {
     /// The runner installed in the external layer, kept here so the last
     /// problem text can be read back after an ask.
     pub(crate) runner: Arc<WasmExternalRunner>,
+    /// `FirstNames.csv` rows installed with the lexicon
+    /// ([`loadWordNet`](Session::load_wordnet)), for CELT's proper names.
+    pub(crate) first_names: Vec<(String, Option<sigmakee_rs_core::celt::Gender>)>,
 }
 
 #[wasm_bindgen]
@@ -73,6 +76,7 @@ impl Session {
             )),
             config,
             runner,
+            first_names: Vec::new(),
         }
     }
 

@@ -388,9 +388,13 @@ export class Session {
     return this.#kb.ask(query, opts.session, opts.tptp);
   }
 
-  /** Translate controlled English to SUO-KIF with the loaded KB and WordNet lexicon. */
-  translateCelt(text) {
-    return this.#kb.translateCelt(text);
+  /**
+   * Translate controlled English to SUO-KIF with the loaded KB and WordNet lexicon.
+   * @param {string} text
+   * @param {import('./sdk').CeltOptions} [options]
+   */
+  translateCelt(text, options = {}) {
+    return this.#kb.translateCelt(text, options);
   }
 
   /**
@@ -553,15 +557,24 @@ export class Session {
    * `WordNetMappings30-*.txt` files — the browser fetches the bytes (there
    * is no filesystem here) and passes strings. `indexSense`
    * (most-frequent-sense ordering) and `exceptions` (`noun.exc` + `verb.exc`
-   * concatenated) are optional refinements.
+   * concatenated) are optional refinements; `firstNames` (`FirstNames.csv`)
+   * gives CELT its proper names.
    *
    * Installation is separate from KIF ingestion ({@link Session#ingest}):
    * once loaded, {@link Session#search} gains WordNet synonym hits.
-   * @param {{ noun: string, verb: string, adj: string, adv: string, indexSense?: string, exceptions?: string }} files
+   * @param {{ noun: string, verb: string, adj: string, adv: string, indexSense?: string, exceptions?: string, firstNames?: string }} files
    * @returns {number} the number of synsets indexed
    */
-  loadWordNet({ noun, verb, adj, adv, indexSense, exceptions }) {
-    return this.#kb.loadWordNet(noun, verb, adj, adv, indexSense, exceptions);
+  loadWordNet({ noun, verb, adj, adv, indexSense, exceptions, firstNames }) {
+    return this.#kb.loadWordNet(
+      noun,
+      verb,
+      adj,
+      adv,
+      indexSense,
+      exceptions,
+      firstNames,
+    );
   }
 
   /** Drop the currently installed WordNet lexicon, if any — the inverse of

@@ -3,7 +3,7 @@
 // Non-proving ops: validation, TPTP translation, snapshot/restore, and the
 // thread-pool knob -- the wasm face of the SDK's `session/ops.rs`.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sigmakee_rs_core::celt;
 use sigmakee_rs_sdk::{DiagnosticView, ScratchValidationView, TptpLang, TptpOptions};
 use wasm_bindgen::prelude::*;
@@ -15,8 +15,16 @@ use super::Session;
 #[wasm_bindgen]
 impl Session {
     /// Translate controlled English against the active KB using CELT.
+    /// `options` is a [`CeltOptions`] object (all fields optional), the
+    /// browser face of `sumo celt`'s flags.
     #[wasm_bindgen(js_name = translateCelt)]
-    pub fn translate_celt(&self, text: &str) -> Result<JsValue, JsValue> {
+    pub fn translate_celt(&self, text: &str, options: JsValue) -> Result<JsValue, JsValue> {
+        let options: CeltOptions = if options.is_undefined() || options.is_null() {
+            CeltOptions::default()
+        } else {
+            serde_wasm_bindgen::from_value(options)
+                .map_err(|e| JsValue::from_str(&format!("celt options: {e}")))?
+        };
         let session_guard = self.session.read().expect("kb lock not poisoned");
         let Some(lexicon) = session_guard.lexicon() else {
             return to_js(&CeltTranslationView {
@@ -26,9 +34,25 @@ impl Session {
             });
         };
 
-        let translation =
-            celt::translate(session_guard.kb(), lexicon, text, &celt::Opts::default());
-        to_js(&CeltTranslationView::from(translation))
+        let opts = options.to_opts(&self.first_names);
+        let kb = session_guard.kb();
+        let translation = if options.lines {
+            let mut all = celt::Translation::default();
+            for line in text.lines().filter(|l| !l.trim().is_empty()) {
+                all.sentences
+                    .extend(celt::translate(kb, lexicon, line, &opts).sentences);
+            }
+            all
+        } else {
+            celt::translate(kb, lexicon, text, &opts)
+        };
+        let mut view = CeltTranslationView::from(translation);
+        if options.parrot {
+            for sentence in view.sentences.iter_mut() {
+                sentence.parrot = sentence.kif.as_deref().map(|k| session_guard.parrot(k));
+            }
+        }
+        to_js(&view)
     }
 
     /// Set the worker-pool size the KB's `plan_threads` gates should target,
@@ -128,6 +152,80 @@ impl Session {
     }
 }
 
+/// CELT reading conventions, mirroring `sumo celt`'s flags.
+#[derive(Debug, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct CeltOptions {
+    /// The KB instance "I"/"me"/"my" refers to.
+    speaker: Option<String>,
+    /// The KB instance "you"/"your" refers to.
+    addressee: Option<String>,
+    /// Read "you" as an arbitrary instance of this class (ignored with an
+    /// addressee).
+    generic_you: Option<String>,
+    /// The time point the text is spoken at, for the past tense.
+    now: Option<String>,
+    /// Accept an unknown capitalized word as the name of a Human.
+    assume_names: bool,
+    /// Read a bare-plural or indefinite action-verb subject as universal.
+    generic: bool,
+    /// Read the installed `FirstNames.csv` names as proper names.
+    use_names: bool,
+    /// Translate each line as a separate document.
+    lines: bool,
+    /// Render each accepted sentence back to English.
+    parrot: bool,
+}
+
+impl Default for CeltOptions {
+    fn default() -> Self {
+        Self {
+            speaker: None,
+            addressee: None,
+            generic_you: None,
+            now: None,
+            assume_names: false,
+            generic: false,
+            use_names: true,
+            lines: false,
+            parrot: false,
+        }
+    }
+}
+
+impl CeltOptions {
+    /// The core options, with `names` as the proper-name list when
+    /// `use_names` is set. Blank strings count as unset.
+    fn to_opts(&self, names: &[(String, Option<celt::Gender>)]) -> celt::Opts {
+        let term = |s: &Option<String>| {
+            s.as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        };
+        let names = if self.use_names { names } else { &[] };
+        let addressee = term(&self.addressee);
+        celt::Opts {
+            assume_human_names: self.assume_names,
+            names: names.iter().map(|(n, _)| n.clone()).collect(),
+            generic_subjects: self.generic,
+            name_genders: names
+                .iter()
+                .filter_map(|(n, g)| g.map(|g| (n.clone(), g)))
+                .collect(),
+            speaker: term(&self.speaker),
+            generic_you: if addressee.is_some() {
+                None
+            } else {
+                term(&self.generic_you)
+            },
+            addressee,
+            now: term(&self.now),
+            ..celt::Opts::default()
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct CeltTranslationView {
     available: bool,
@@ -155,6 +253,8 @@ struct CeltSentenceView {
     reason: Option<String>,
     /// Char span of the refused word or construct within `text`.
     span: Option<CeltSpanView>,
+    /// The KIF rendered back to English, when asked for.
+    parrot: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -198,6 +298,7 @@ impl From<celt::SentenceResult> for CeltSentenceView {
             code: None,
             reason: None,
             span: None,
+            parrot: None,
         };
         match sentence.outcome {
             Ok(logic) => {
@@ -310,6 +411,69 @@ mod tests {
         assert_eq!((span.start, span.end), (0, 5));
         assert!(view.kind.is_none() && view.kif.is_none() && view.rule.is_none());
         assert!(view.choices.is_empty() && view.declared.is_empty());
+    }
+
+    fn names() -> Vec<(String, Option<celt::Gender>)> {
+        vec![
+            ("Mike".into(), Some(celt::Gender::Male)),
+            ("Sam".into(), None),
+        ]
+    }
+
+    #[test]
+    fn default_options_use_installed_names_and_bind_no_pronouns() {
+        let opts = CeltOptions::default().to_opts(&names());
+        assert_eq!(opts.names, vec!["Mike".to_string(), "Sam".to_string()]);
+        assert_eq!(
+            opts.name_genders,
+            vec![("Mike".to_string(), celt::Gender::Male)]
+        );
+        assert!(opts.speaker.is_none() && opts.addressee.is_none());
+        assert!(opts.generic_you.is_none() && opts.now.is_none());
+        assert!(!opts.assume_human_names && !opts.generic_subjects);
+    }
+
+    #[test]
+    fn options_map_onto_core_opts() {
+        let opts = CeltOptions {
+            speaker: Some(" Rex ".into()),
+            generic_you: Some("Human".into()),
+            now: Some("Today".into()),
+            assume_names: true,
+            generic: true,
+            use_names: false,
+            ..CeltOptions::default()
+        }
+        .to_opts(&names());
+        assert_eq!(opts.speaker.as_deref(), Some("Rex"));
+        assert_eq!(opts.generic_you.as_deref(), Some("Human"));
+        assert_eq!(opts.now.as_deref(), Some("Today"));
+        assert!(opts.assume_human_names && opts.generic_subjects);
+        assert!(opts.names.is_empty() && opts.name_genders.is_empty());
+    }
+
+    #[test]
+    fn blank_terms_are_unset_and_addressee_overrides_generic_you() {
+        let opts = CeltOptions {
+            speaker: Some("   ".into()),
+            addressee: Some("Mary".into()),
+            generic_you: Some("Human".into()),
+            ..CeltOptions::default()
+        }
+        .to_opts(&[]);
+        assert!(opts.speaker.is_none());
+        assert_eq!(opts.addressee.as_deref(), Some("Mary"));
+        assert!(opts.generic_you.is_none());
+    }
+
+    #[test]
+    fn options_deserialize_from_camel_case_with_defaults() {
+        let options: CeltOptions =
+            serde_json::from_str(r#"{"genericYou":"Human","assumeNames":true,"parrot":true}"#)
+                .expect("valid options");
+        assert_eq!(options.generic_you.as_deref(), Some("Human"));
+        assert!(options.assume_names && options.parrot);
+        assert!(options.use_names && !options.lines);
     }
 
     #[test]

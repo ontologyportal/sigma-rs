@@ -125,13 +125,7 @@ fn read_input(text: &[String], file: Option<&std::path::Path>) -> Result<String,
 /// templates, variables as generic noun phrases.
 #[cfg(feature = "ask")]
 fn parrot_back<L: TopLayer>(session: &Session<L>, kif: &str) -> String {
-    // The KB's own English (`EnglishWrittenLanguage` in newer SUMO), the
-    // one with the most templates when several are documented.
-    let language = sigmakee_rs_sdk::celt::english_languages(session.kb())
-        .into_iter()
-        .last()
-        .unwrap_or_else(|| "EnglishLanguage".into());
-    session.render_nl(kif, &language, true)
+    session.parrot(kif)
 }
 
 #[cfg(not(feature = "ask"))]

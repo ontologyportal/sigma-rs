@@ -33,6 +33,9 @@ const MAPPING_FILES: [string, MappingPos][] = [
 ];
 const INDEX_SENSE = "index.sense";
 const EXC_FILES = ["noun.exc", "verb.exc"];
+/** CELT's proper-name list -- mirrors `load_first_name_genders` in
+ *  crates/sdk/src/lexicon.rs. */
+const FIRST_NAMES = "FirstNames.csv";
 let installation: Promise<void> | null = null;
 /** How long after the last mapping edit the worker's lexicon is rebuilt. */
 const RELOAD_DELAY_MS = 800;
@@ -165,6 +168,14 @@ export const useWordNetStore = defineStore("wordnet", {
       }));
       const exceptions = excHits.map((r) => r.text).join("\n");
 
+      const firstNamesText = await fetchText(
+        rawUrl(`${WORDNET_DIR}/${FIRST_NAMES}`),
+      ).catch(() => null);
+      const firstNamesFile =
+        firstNamesText === null
+          ? []
+          : [{ name: FIRST_NAMES, size: byteSize(firstNamesText) }];
+
       const byPos = Object.fromEntries(texts.map(([text, pos]) => [pos, text]));
       this.payload = {
         noun: byPos.noun,
@@ -173,9 +184,15 @@ export const useWordNetStore = defineStore("wordnet", {
         adv: byPos.adv,
         indexSense: indexSenseText ?? undefined,
         exceptions,
+        firstNames: firstNamesText ?? undefined,
       };
       this.pristine = pristine;
-      this.files = [...mappingFiles, ...indexSenseFile, ...excFiles];
+      this.files = [
+        ...mappingFiles,
+        ...indexSenseFile,
+        ...excFiles,
+        ...firstNamesFile,
+      ];
       return this.payload;
     },
 

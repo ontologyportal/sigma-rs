@@ -4,11 +4,13 @@
  *  rule, lexical choices and side assertions), or with the reason it was
  *  refused and the offending words marked. The input is mirrored to `?q=`
  *  so a translation can be shared. */
-import { ref, shallowRef } from "vue";
-import type { CeltSentence, CeltTranslation } from "sigmakee/sdk";
+import { computed, reactive, ref, shallowRef, toRaw, watch } from "vue";
+import type { CeltOptions, CeltSentence, CeltTranslation } from "sigmakee/sdk";
 import { call } from "../services/sigma";
 import { navigate, updateParams } from "../router";
+import { CELT_OPTIONS_KEY } from "../constants";
 import { useTabQuery } from "../composables/useTabQuery";
+import { useWordNetStore } from "../stores/wordnet";
 import BusyButton from "../components/BusyButton.vue";
 import Card from "../components/Card.vue";
 import CopyButton from "../components/CopyButton.vue";
@@ -19,7 +21,66 @@ const busy = ref(false);
 const translation = shallowRef<CeltTranslation | null>(null);
 const error = ref("");
 
+const wordnet = useWordNetStore();
+
+/** Every option set, so the form binds to plain strings and booleans;
+ *  blank strings mean unset (the binding ignores them). */
+const DEFAULT_OPTIONS: Required<CeltOptions> = {
+  speaker: "",
+  addressee: "",
+  genericYou: "",
+  now: "",
+  assumeNames: false,
+  generic: false,
+  useNames: true,
+  lines: false,
+  parrot: false,
+};
+const options = reactive<Required<CeltOptions>>({ ...DEFAULT_OPTIONS });
+
+try {
+  const saved = JSON.parse(localStorage.getItem(CELT_OPTIONS_KEY) || "null");
+  if (saved && typeof saved === "object")
+    for (const k of Object.keys(DEFAULT_OPTIONS) as (keyof CeltOptions)[])
+      if (typeof saved[k] === typeof DEFAULT_OPTIONS[k])
+        (options as Record<string, unknown>)[k] = saved[k];
+} catch {
+  /* storage unavailable or corrupt: keep the defaults */
+}
+
+/** The options that differ from the defaults, for the summary line. */
+const activeOptions = computed(() =>
+  (Object.keys(DEFAULT_OPTIONS) as (keyof CeltOptions)[]).filter(
+    (k) => options[k] !== DEFAULT_OPTIONS[k],
+  ),
+);
+
+/** False once the lexicon is fetched without a `FirstNames.csv`. */
+const namesAvailable = computed(
+  () =>
+    !wordnet.files.length ||
+    wordnet.files.some((f) => f.name === "FirstNames.csv"),
+);
+
 const { query, onQuery, str } = useTabQuery(["translate"]);
+
+watch(
+  options,
+  () => {
+    try {
+      localStorage.setItem(CELT_OPTIONS_KEY, JSON.stringify(options));
+    } catch {
+      /* storage unavailable */
+    }
+    const input = str(query.value.q);
+    if (input.trim()) void run(input);
+  },
+  { deep: true },
+);
+
+function resetOptions() {
+  Object.assign(options, DEFAULT_OPTIONS);
+}
 
 onQuery((q) => {
   text.value = str(q.q);
@@ -32,18 +93,28 @@ function clear() {
   error.value = "";
 }
 
+/** Bumped per run; only the latest run's outcome is shown. */
+let latestRun = 0;
+
 async function run(input: string) {
+  const id = ++latestRun;
   busy.value = true;
   clear();
   try {
-    const { translation: t } = await call("translateCelt", { text: input });
+    const { translation: t } = await call("translateCelt", {
+      text: input,
+      // A reactive proxy cannot be structured-cloned across postMessage.
+      options: { ...toRaw(options) },
+    });
+    if (id !== latestRun) return;
     if (!t.available)
       error.value = t.error || "The WordNet-SUMO lexicon is not loaded.";
     else translation.value = t;
   } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e);
+    if (id === latestRun)
+      error.value = e instanceof Error ? e.message : String(e);
   } finally {
-    busy.value = false;
+    if (id === latestRun) busy.value = false;
   }
 }
 
@@ -110,6 +181,92 @@ function onKeydown(e: KeyboardEvent) {
         @click="translate"
       />
     </div>
+    <Disclosure
+      :summary="
+        activeOptions.length
+          ? `Options (${activeOptions.length} changed)`
+          : 'Options'
+      "
+      :open="activeOptions.length > 0"
+    >
+      <div class="options">
+        <div class="fields">
+          <div>
+            <label for="celt-speaker">Speaker ("I", "me", "my")</label>
+            <input
+              id="celt-speaker"
+              v-model.lazy.trim="options.speaker"
+              type="text"
+              placeholder="KB instance, e.g. Rex"
+            />
+          </div>
+          <div>
+            <label for="celt-addressee">Addressee ("you", "your")</label>
+            <input
+              id="celt-addressee"
+              v-model.lazy.trim="options.addressee"
+              type="text"
+              placeholder="KB instance, e.g. Mary"
+            />
+          </div>
+          <div>
+            <label for="celt-generic-you">Generic "you" class</label>
+            <input
+              id="celt-generic-you"
+              v-model.lazy.trim="options.genericYou"
+              type="text"
+              placeholder="e.g. Human"
+              :disabled="!!options.addressee"
+              :title="
+                options.addressee
+                  ? 'Ignored while an addressee is set'
+                  : 'Read &quot;you&quot; as any instance of this class'
+              "
+            />
+          </div>
+          <div>
+            <label for="celt-now">Now (for the past tense)</label>
+            <input
+              id="celt-now"
+              v-model.lazy.trim="options.now"
+              type="text"
+              placeholder="Time point; defaults to the KB's Now"
+            />
+          </div>
+        </div>
+        <div class="checks">
+          <label class="check"
+            ><input v-model="options.useNames" type="checkbox" /> Read first
+            names from <code>FirstNames.csv</code> as people
+            <span v-if="!namesAvailable" class="hint">(not loaded)</span></label
+          >
+          <label class="check"
+            ><input v-model="options.assumeNames" type="checkbox" /> Treat
+            unknown capitalized words as names of people</label
+          >
+          <label class="check"
+            ><input v-model="options.generic" type="checkbox" /> Read "Dogs
+            chase cats" as a rule about every dog</label
+          >
+          <label class="check"
+            ><input v-model="options.lines" type="checkbox" /> Translate each
+            line separately (no pronouns or "the" across lines)</label
+          >
+          <label class="check"
+            ><input v-model="options.parrot" type="checkbox" /> Parrot each
+            translation back as English</label
+          >
+        </div>
+        <button
+          v-if="activeOptions.length"
+          class="btn ghost small"
+          type="button"
+          @click="resetOptions"
+        >
+          Reset options
+        </button>
+      </div>
+    </Disclosure>
   </Card>
 
   <Card v-if="error">
@@ -138,6 +295,7 @@ function onKeydown(e: KeyboardEvent) {
             <code>{{ s.kif }}</code>
             <CopyButton :text="s.kif" title="Copy KIF" />
           </div>
+          <p v-if="s.parrot" class="parrot">~ {{ s.parrot }}</p>
           <Disclosure summary="How it was translated">
             <dl class="steps">
               <dt>Rule</dt>
@@ -205,6 +363,31 @@ function onKeydown(e: KeyboardEvent) {
 </template>
 
 <style scoped>
+.options {
+  display: grid;
+  gap: 12px;
+  margin-top: 10px;
+  justify-items: start;
+}
+.fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px 14px;
+  width: 100%;
+}
+.checks {
+  display: grid;
+  gap: 6px;
+}
+.checks .check {
+  font-size: 13px;
+  color: var(--fg);
+}
+.parrot {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--ok);
+}
 .input-label {
   margin-top: 12px;
 }

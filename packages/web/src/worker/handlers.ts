@@ -22,6 +22,7 @@ import type {
   AuditFocus,
   AuditRequest,
   AuditResult,
+  CeltOptions,
   CeltTranslation,
   Diagnostic,
   ImportOutcome,
@@ -421,10 +422,10 @@ export const handlers = {
     return { text: active().renderNl(kif, language, genericVars) };
   },
 
-  translateCelt({ text }: { text: string }): {
+  translateCelt({ text, options }: { text: string; options?: CeltOptions }): {
     translation: CeltTranslation;
   } {
-    return { translation: active().translateCelt(text) };
+    return { translation: active().translateCelt(text, options) };
   },
 
   prove({

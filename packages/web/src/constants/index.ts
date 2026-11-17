@@ -54,6 +54,8 @@ export const TEST_HISTORY_KEY = "sumoTestHistory";
 /** Persisted on/off for the WordNet synonym-search lexicon -- absent or
  *  anything but the literal string `'false'` means enabled (see state.ts). */
 export const WORDNET_ENABLED_KEY = "sumoBrowserWordNetEnabled";
+/** The Translate tab's CELT options (speaker, addressee, parrot, ...). */
+export const CELT_OPTIONS_KEY = "sumoBrowserCeltOptions";
 /** Per-source update preference (auto-update/auto-check/no-check), keyed by
  *  origin id -- see `useKBStore.updatePrefs`. */
 export const UPDATE_PREFS_KEY = "sumoBrowserUpdatePrefs";

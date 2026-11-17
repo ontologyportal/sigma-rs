@@ -75,6 +75,31 @@ export interface CeltSentence {
   reason: string | null;
   /** Char (code point) span of the refused word or construct within `text`. */
   span: { start: number; end: number } | null;
+  /** The KIF rendered back to English, when {@link CeltOptions.parrot} is set. */
+  parrot: string | null;
+}
+
+/** CELT reading conventions -- the browser face of `sumo celt`'s flags.
+ *  Every field is optional; blank strings count as unset. */
+export interface CeltOptions {
+  /** The KB instance "I"/"me"/"my" refers to; without it first person is refused. */
+  speaker?: string;
+  /** The KB instance "you"/"your" refers to. */
+  addressee?: string;
+  /** Read "you" as an arbitrary instance of this class (ignored with an addressee). */
+  genericYou?: string;
+  /** The time point the text is spoken at, for the past tense. */
+  now?: string;
+  /** Accept an unknown capitalized word as the name of a Human. */
+  assumeNames?: boolean;
+  /** Read a bare-plural or indefinite action-verb subject as universal. */
+  generic?: boolean;
+  /** Read the installed `FirstNames.csv` names as proper names (default true). */
+  useNames?: boolean;
+  /** Translate each line as a separate document. */
+  lines?: boolean;
+  /** Render each accepted sentence back to English. */
+  parrot?: boolean;
 }
 
 /** CELT output; `available` is false when the WordNet-SUMO lexicon is absent. */
@@ -494,6 +519,9 @@ export interface WordNetFiles {
   indexSense?: string;
   /** `noun.exc` + `verb.exc` contents, concatenated. */
   exceptions?: string;
+  /** `FirstNames.csv` contents (`"name","gender"` rows): words CELT reads
+   *  as proper names of Humans, and their genders for "he"/"she". */
+  firstNames?: string;
 }
 /** A capped report list: `items` holds up to the caller's `limit` rows,
  * `total` is the true count -- so a caller can render "50 of 3,412" instead
@@ -731,7 +759,7 @@ export class Session {
   /** Prove with this session's backend (Native or Vampire); TranslationOnly throws. */
   ask(query: string, opts?: AskOpts): AskResult;
   /** Translate controlled English against the active KB. */
-  translateCelt(text: string): CeltTranslation;
+  translateCelt(text: string, options?: CeltOptions): CeltTranslation;
   /** Sampled consistency audit with this session's backend: check `request`'s slice of the KB's seeded sweep, one SInE neighborhood per subproblem. */
   auditConsistency(request?: AuditRequest): AuditResult;
   /** Every contradiction recorded in the KB's findings cache, newest first. */
