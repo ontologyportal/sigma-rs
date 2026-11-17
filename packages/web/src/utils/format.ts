@@ -16,6 +16,12 @@ export const escAttr = (s: unknown): string => esc(s).replace(/"/g, "&quot;");
 /** `n` with locale thousands separators. */
 export const fmtNum = (n: unknown): string => Number(n).toLocaleString();
 
+const COMPACT = new Intl.NumberFormat(undefined, { notation: "compact" });
+
+/** `n` abbreviated for tight spaces like badges: exact below 1,000, then
+ *  "1.2K", "12K", "1.2M" -- never more than four characters. */
+export const fmtCount = (n: number): string => COMPACT.format(n);
+
 /** `d` as a short locale date ("Jan 5, 2026"). */
 export const fmtDate = (d: Date): string =>
   d.toLocaleDateString(undefined, {
