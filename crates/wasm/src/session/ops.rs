@@ -4,6 +4,7 @@
 // thread-pool knob -- the wasm face of the SDK's `session/ops.rs`.
 
 use serde::Serialize;
+use sigmakee_rs_core::celt;
 use sigmakee_rs_sdk::{DiagnosticView, ScratchValidationView, TptpLang, TptpOptions};
 use wasm_bindgen::prelude::*;
 
@@ -25,43 +26,9 @@ impl Session {
             });
         };
 
-        let translation = sigmakee_rs_core::celt::translate(
-            session_guard.kb(),
-            lexicon,
-            text,
-            &sigmakee_rs_core::celt::Opts::default(),
-        );
-        let sentences = translation
-            .sentences
-            .into_iter()
-            .map(|sentence| match sentence.outcome {
-                Ok(logic) => CeltSentenceView {
-                    text: sentence.text,
-                    offset: sentence.offset,
-                    kind: Some(
-                        match logic.kind {
-                            sigmakee_rs_core::celt::Kind::Assert => "assertion",
-                            sigmakee_rs_core::celt::Kind::Query => "question",
-                        }
-                        .to_string(),
-                    ),
-                    kif: Some(logic.formula().to_string()),
-                    reason: None,
-                },
-                Err(refusal) => CeltSentenceView {
-                    text: sentence.text,
-                    offset: sentence.offset,
-                    kind: None,
-                    kif: None,
-                    reason: Some(refusal.to_string()),
-                },
-            })
-            .collect();
-        to_js(&CeltTranslationView {
-            available: true,
-            error: None,
-            sentences,
-        })
+        let translation =
+            celt::translate(session_guard.kb(), lexicon, text, &celt::Opts::default());
+        to_js(&CeltTranslationView::from(translation))
     }
 
     /// Set the worker-pool size the KB's `plan_threads` gates should target,
@@ -161,18 +128,195 @@ impl Session {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 struct CeltTranslationView {
     available: bool,
     error: Option<String>,
     sentences: Vec<CeltSentenceView>,
 }
 
-#[derive(Serialize)]
+/// One sentence's outcome. An accepted sentence fills `kind`, `kif`, `rule`,
+/// `choices` and `declared`; a refused one fills `code`, `reason` and `span`.
+#[derive(Debug, Serialize)]
 struct CeltSentenceView {
     text: String,
     offset: usize,
     kind: Option<String>,
     kif: Option<String>,
+    /// The sentence rule that produced the reading.
+    rule: Option<String>,
+    /// Lexical decisions, in the order they were taken.
+    choices: Vec<CeltChoiceView>,
+    /// Side assertions the reading relies on, as KIF.
+    declared: Vec<String>,
+    /// Refusal code (`unknown-name`).
+    code: Option<String>,
+    /// Refusal message, without the code.
     reason: Option<String>,
+    /// Char span of the refused word or construct within `text`.
+    span: Option<CeltSpanView>,
+}
+
+#[derive(Debug, Serialize)]
+struct CeltChoiceView {
+    word: String,
+    term: String,
+    sense: String,
+    alternatives: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct CeltSpanView {
+    start: usize,
+    end: usize,
+}
+
+impl From<celt::Translation> for CeltTranslationView {
+    fn from(translation: celt::Translation) -> Self {
+        Self {
+            available: true,
+            error: None,
+            sentences: translation
+                .sentences
+                .into_iter()
+                .map(CeltSentenceView::from)
+                .collect(),
+        }
+    }
+}
+
+impl From<celt::SentenceResult> for CeltSentenceView {
+    fn from(sentence: celt::SentenceResult) -> Self {
+        let mut view = Self {
+            text: sentence.text,
+            offset: sentence.offset,
+            kind: None,
+            kif: None,
+            rule: None,
+            choices: Vec::new(),
+            declared: Vec::new(),
+            code: None,
+            reason: None,
+            span: None,
+        };
+        match sentence.outcome {
+            Ok(logic) => {
+                view.kind = Some(
+                    match logic.kind {
+                        celt::Kind::Assert => "assertion",
+                        celt::Kind::Query => "question",
+                    }
+                    .to_string(),
+                );
+                view.kif = Some(logic.formula().to_string());
+                view.rule = Some(logic.rule.to_string());
+                view.declared = logic
+                    .declared
+                    .conjuncts()
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect();
+                view.choices = logic
+                    .choices
+                    .into_iter()
+                    .map(|c| CeltChoiceView {
+                        word: c.word,
+                        term: c.term,
+                        sense: c.sense,
+                        alternatives: c.alternatives,
+                    })
+                    .collect();
+            }
+            Err(refused) => {
+                view.code = Some(refused.reason.code());
+                view.reason = Some(refused.reason.to_string());
+                view.span = Some(CeltSpanView {
+                    start: refused.start,
+                    end: refused.end,
+                });
+            }
+        }
+        view
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sigmakee_rs_core::celt::ir::{Drs, Term};
+    use sigmakee_rs_core::celt::{Choice, Kind, Logic, Refusal, Refused, SentenceResult};
+
+    fn accepted() -> SentenceResult {
+        let mut drs = Drs::default();
+        drs.atom(
+            "instance",
+            vec![Term::Const("Rex".into()), Term::Const("Dog".into())],
+        );
+        let mut declared = Drs::default();
+        declared.atom(
+            "instance",
+            vec![Term::Const("Rex".into()), Term::Const("Animal".into())],
+        );
+        SentenceResult {
+            text: "Rex is a dog.".into(),
+            offset: 4,
+            outcome: Ok(Logic {
+                kind: Kind::Assert,
+                drs,
+                choices: vec![Choice {
+                    word: "dog".into(),
+                    term: "Dog".into(),
+                    sense: "dog%1:05:00::".into(),
+                    alternatives: vec!["Canine".into()],
+                }],
+                rule: "copula",
+                declared,
+            }),
+        }
+    }
+
+    #[test]
+    fn accepted_sentence_carries_rule_choices_and_declared() {
+        let view = CeltSentenceView::from(accepted());
+        assert_eq!(view.offset, 4);
+        assert_eq!(view.kind.as_deref(), Some("assertion"));
+        assert_eq!(view.kif.as_deref(), Some("(instance Rex Dog)"));
+        assert_eq!(view.rule.as_deref(), Some("copula"));
+        assert_eq!(view.declared, vec!["(instance Rex Animal)".to_string()]);
+        assert_eq!(view.choices.len(), 1);
+        assert_eq!(view.choices[0].term, "Dog");
+        assert_eq!(view.choices[0].alternatives, vec!["Canine".to_string()]);
+        assert!(view.code.is_none() && view.reason.is_none() && view.span.is_none());
+    }
+
+    #[test]
+    fn refused_sentence_splits_code_from_message_and_keeps_span() {
+        let view = CeltSentenceView::from(SentenceResult {
+            text: "Florp the zib.".into(),
+            offset: 0,
+            outcome: Err(Refused::new(
+                Refusal::UnknownName {
+                    name: "Florp".into(),
+                },
+                0,
+                5,
+            )),
+        });
+        assert_eq!(view.code.as_deref(), Some("unknown-name"));
+        let reason = view.reason.expect("refusal message");
+        assert!(reason.contains("Florp"));
+        assert!(!reason.contains("[unknown-name]"));
+        let span = view.span.expect("refusal span");
+        assert_eq!((span.start, span.end), (0, 5));
+        assert!(view.kind.is_none() && view.kif.is_none() && view.rule.is_none());
+        assert!(view.choices.is_empty() && view.declared.is_empty());
+    }
+
+    #[test]
+    fn empty_translation_is_available_with_no_sentences() {
+        let view = CeltTranslationView::from(celt::Translation::default());
+        assert!(view.available);
+        assert!(view.error.is_none());
+        assert!(view.sentences.is_empty());
+    }
 }

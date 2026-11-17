@@ -23,6 +23,7 @@ const source = transpile(
 function fixture(reply) {
   const calls = [];
   const params = [];
+  const navigations = [];
   const query = vue.ref({});
   let handler = () => {};
   const imports = {
@@ -34,6 +35,7 @@ function fixture(reply) {
       },
     },
     "../router": {
+      navigate: (tab, q) => navigations.push({ tab, ...q }),
       updateParams: async (q) => {
         params.push(q);
         query.value = q;
@@ -61,6 +63,7 @@ function fixture(reply) {
     view,
     calls,
     params,
+    navigations,
     scope,
     settle,
     navigate: (q) => {
@@ -186,6 +189,70 @@ test("blank input neither translates nor updates the URL, and clearing q resets"
     f.navigate({});
     assert.equal(f.view.text.value, "");
     assert.equal(f.view.translation.value, null);
+  } finally {
+    f.scope.stop();
+  }
+});
+
+test("marked splits a refused sentence around its span", () => {
+  const f = fixture(() => translated([]));
+  try {
+    const m = f.view.marked({
+      text: "Florp the zib.",
+      span: { start: 10, end: 13 },
+    });
+    assert.deepEqual(plain(m), {
+      before: "Florp the ",
+      mark: "zib",
+      after: ".",
+    });
+  } finally {
+    f.scope.stop();
+  }
+});
+
+test("marked counts code points, not UTF-16 units", () => {
+  const f = fixture(() => translated([]));
+  try {
+    const m = f.view.marked({
+      text: "\u{1F415} barks zib.",
+      span: { start: 8, end: 11 },
+    });
+    assert.equal(m.mark, "zib");
+    assert.equal(m.before, "\u{1F415} barks ");
+  } finally {
+    f.scope.stop();
+  }
+});
+
+test("marked tolerates a missing or out-of-range span", () => {
+  const f = fixture(() => translated([]));
+  try {
+    assert.deepEqual(plain(f.view.marked({ text: "Hi.", span: null })), {
+      before: "Hi.",
+      mark: "",
+      after: "",
+    });
+    assert.deepEqual(
+      plain(f.view.marked({ text: "Hi.", span: { start: 2, end: 99 } })),
+      { before: "Hi", mark: ".", after: "" },
+    );
+    assert.deepEqual(
+      plain(f.view.marked({ text: "Hi.", span: { start: 5, end: 1 } })),
+      { before: "Hi.", mark: "", after: "" },
+    );
+  } finally {
+    f.scope.stop();
+  }
+});
+
+test("terms open on the Browse tab", () => {
+  const f = fixture(() => translated([]));
+  try {
+    f.view.openTerm("DomesticDog");
+    assert.deepEqual(plain(f.navigations), [
+      { tab: "browse", sym: "DomesticDog" },
+    ]);
   } finally {
     f.scope.stop();
   }

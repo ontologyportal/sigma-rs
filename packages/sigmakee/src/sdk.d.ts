@@ -45,13 +45,36 @@ export interface AskResult {
   input_tptp?: string;
 }
 
-/** One sentence produced by the CELT controlled-English translator. */
+/** One lexical decision CELT took: `word` grounded to `term` through
+ *  WordNet `sense`, with the candidate terms it passed over. */
+export interface CeltChoice {
+  word: string;
+  term: string;
+  sense: string;
+  alternatives: string[];
+}
+
+/** One sentence produced by the CELT controlled-English translator. An
+ *  accepted sentence fills `kind`, `kif`, `rule`, `choices` and `declared`;
+ *  a refused one fills `code`, `reason` and `span`. */
 export interface CeltSentence {
   text: string;
+  /** Char offset of the sentence in the input. */
   offset: number;
   kind: "assertion" | "question" | null;
   kif: string | null;
+  /** The sentence rule that produced the reading. */
+  rule: string | null;
+  /** Lexical decisions, in the order they were taken. */
+  choices: CeltChoice[];
+  /** Side assertions the reading relies on, as KIF. */
+  declared: string[];
+  /** Refusal code, e.g. `"unknown-name"`. */
+  code: string | null;
+  /** Refusal message, without the code. */
   reason: string | null;
+  /** Char (code point) span of the refused word or construct within `text`. */
+  span: { start: number; end: number } | null;
 }
 
 /** CELT output; `available` is false when the WordNet-SUMO lexicon is absent. */
