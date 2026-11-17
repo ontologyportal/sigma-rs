@@ -83,6 +83,12 @@ pub mod error;
 pub mod freshness;
 #[cfg(feature = "lexicon")]
 pub mod lexicon;
+#[cfg(feature = "lexicon")]
+pub mod celt {
+    //! Controlled English to SUO-KIF translation (`sigmakee_rs_core::celt`,
+    //! re-exported in full).
+    pub use sigmakee_rs_core::celt::*;
+}
 pub mod manager;
 pub mod session;
 pub mod source;

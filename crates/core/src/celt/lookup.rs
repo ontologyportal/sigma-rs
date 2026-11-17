@@ -1,0 +1,964 @@
+//! Word-to-term grounding over [`KnowledgeBase::search`].
+//!
+//! Every content word is resolved through the shared search API with the
+//! WordNet lexicon attached, so the vocabulary is exactly what `sumo search`
+//! finds: `termFormat` labels of the loaded KB first, then WordNet senses in
+//! most-frequent-sense order, restricted to terms the KB defines.  A word
+//! the KB has no label for and WordNet does not anchor is an unknown word;
+//! the fix is a `termFormat` axiom, not a parser change.
+//!
+//! The typing gates ([`Lookup::noun_class`], [`Lookup::verb`],
+//! [`Lookup::adjective`]) are the only place the KB's taxonomy is consulted
+//! for grounding.  Each gate returns one chosen [`Choice`] or a [`Refusal`].
+
+use std::cell::RefCell;
+use std::collections::HashMap;
+
+use crate::kb::search::{SearchOpts, SearchSource};
+use crate::kb::KnowledgeBase;
+use crate::layer::{Layer, TopLayer};
+use crate::lexicon::{MappingKind, Pos, Sense, SynsetId, WordNet};
+use crate::types::SymbolId;
+
+use super::refuse::Refusal;
+
+/// Where a candidate came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    /// A `(termFormat EnglishLanguage Term "word")` label equal to the word.
+    Label,
+    /// A WordNet synset anchored (`=` or `+`) to the term.
+    WordNet,
+}
+
+/// One possible SUMO term for a word.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Candidate {
+    pub term: String,
+    /// 1 for labels and the most frequent sense; higher = rarer sense.
+    pub rank: usize,
+    /// `dog#n#1=` for WordNet candidates, empty for labels.
+    pub sense: String,
+    /// The synset behind `sense`; `None` for labels.
+    pub synset: Option<SynsetId>,
+    pub source: Source,
+    /// Label or `=` anchor (the term IS the concept), vs a `+` anchor.
+    pub exact: bool,
+    /// An `@` anchor: the synset names this KB instance (the Sun).
+    pub instance: bool,
+}
+
+/// The chosen term for a word, with the alternatives that were passed over,
+/// so the translation can explain its lexical decisions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Choice {
+    pub word: String,
+    pub term: String,
+    pub sense: String,
+    /// The synset the term was reached through; `None` for a label.
+    pub synset: Option<SynsetId>,
+    pub alternatives: Vec<String>,
+}
+
+/// CELT argument types (paper, Figure 8), derived from SUMO class membership
+/// and used to select preposition roles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CeltType {
+    Time,
+    Person,
+    Object,
+}
+
+impl CeltType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CeltType::Time => "time",
+            CeltType::Person => "person",
+            CeltType::Object => "object",
+        }
+    }
+}
+
+/// How a verb grounds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Verb {
+    /// A Process class: the verb reifies as an event instance.
+    Event { class: String, choice: Choice },
+    /// A binary relation: the verb is a stative and relates subject to
+    /// object directly (`owns` -> `possesses`).
+    Stative { relation: String, choice: Choice },
+}
+
+/// Verb inflection recognized by the morphology.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Inflection {
+    /// Base form (plural or non-finite present).
+    Present,
+    /// Third-person singular present (`-s`).
+    ThirdSingular,
+    /// Regular `-ed` or an irregular past form.
+    Past,
+    /// `-ing`
+    Progressive,
+}
+
+const ENGLISH: &str = "EnglishLanguage";
+
+/// The English language symbols the KB documents terms in, the default
+/// name when it documents none.
+pub fn english_languages<L: TopLayer + Layer>(kb: &KnowledgeBase<L>) -> Vec<String> {
+    let mut langs: Vec<String> = kb
+        .documented_languages()
+        .into_iter()
+        .filter(|l| l.starts_with("English"))
+        .collect();
+    if langs.is_empty() {
+        langs.push(ENGLISH.to_string());
+    }
+    langs.sort();
+    langs
+}
+/// A part of speech is admitted for a word when it carries at least one in
+/// this many of the word's corpus tags ("make" is a noun in 1 of 1613 tags
+/// and is never read as one; "fly" is a noun in 9 of 67 and is).  A word
+/// with fewer than [`POS_PRIOR_EVIDENCE`] tags in all is admitted in every
+/// part of speech WordNet lists: the tagged corpus is small, and two tags
+/// of "plum" as an adverb say nothing against the noun.
+const POS_PRIOR_FLOOR: u32 = 30;
+const POS_PRIOR_EVIDENCE: u32 = 10;
+/// Nouns whose plural is the bare form; WordNet does not mark them.
+const INVARIANT_PLURALS: &[&str] = &[
+    "deer",
+    "sheep",
+    "fish",
+    "moose",
+    "bison",
+    "salmon",
+    "trout",
+    "swine",
+    "cattle",
+    "people",
+    "police",
+    "aircraft",
+    "species",
+    "series",
+    "offspring",
+    "shrimp",
+    "squid",
+    "elk",
+    "cod",
+];
+const GENERIC_TERMS: &[&str] = &[
+    "Entity",
+    "Physical",
+    "Abstract",
+    "Process",
+    "Object",
+    "SelfConnectedObject",
+];
+
+/// Memoizing word-to-term resolver bound to one KB and lexicon.
+pub struct Lookup<'a, L: TopLayer + Layer> {
+    kb: &'a KnowledgeBase<L>,
+    wn: &'a WordNet,
+    cache: RefCell<HashMap<(String, Pos, bool), Vec<Candidate>>>,
+    /// word -> symbols labeled with it; a KB search per call is the
+    /// dominant cost on a large KB.
+    labels: RefCell<HashMap<String, Vec<String>>>,
+    /// The KB's English language symbols (`EnglishLanguage`,
+    /// `EnglishWrittenLanguage` in newer SUMO), whichever carry labels.
+    languages: Vec<String>,
+}
+
+/// A written-capitalized word may take proper-noun senses (`Jay` the
+/// statesman); a lowercase one is a common noun and skips them.
+fn is_proper(word: &str) -> bool {
+    word.chars().next().is_some_and(char::is_uppercase)
+}
+
+impl<'a, L: TopLayer + Layer> Lookup<'a, L> {
+    pub fn new(kb: &'a KnowledgeBase<L>, wn: &'a WordNet) -> Self {
+        Self {
+            kb,
+            wn,
+            cache: RefCell::new(HashMap::new()),
+            labels: RefCell::new(HashMap::new()),
+            languages: english_languages(kb),
+        }
+    }
+
+    /// The language symbols labels are read in.
+    pub fn languages(&self) -> &[String] {
+        &self.languages
+    }
+
+    pub fn kb(&self) -> &'a KnowledgeBase<L> {
+        self.kb
+    }
+
+    // -- Part-of-speech oracles (syntax only, no KB typing) -------------------
+
+    /// Does WordNet have a sense of `word` (surface form) as `pos`?
+    pub fn has_sense(&self, word: &str, pos: Pos) -> bool {
+        self.wn.senses(word).iter().any(|s| s.synset.pos == pos)
+    }
+
+    /// Does the KB carry an English label equal to `word`?
+    pub fn has_label(&self, word: &str) -> bool {
+        self.label_hits(word).next().is_some()
+    }
+
+    /// Does WordNet list `word` as a noun lemma with this exact
+    /// capitalization ("Monday", "Europe")?  Such words are common nouns
+    /// despite the capital letter.
+    pub fn has_capitalized_lemma(&self, word: &str) -> bool {
+        self.wn
+            .senses(word)
+            .iter()
+            .any(|s| s.synset.pos == Pos::Noun && s.synset.words.iter().any(|w| w == word))
+    }
+
+    /// Is `word` usable as a noun: a plausible noun sense or a KB label.
+    pub fn is_nounish(&self, word: &str) -> bool {
+        (self.has_sense(word, Pos::Noun) && self.plausible(&self.noun_lemma(word).0, Pos::Noun))
+            || self.has_label(word)
+    }
+
+    /// Is `word` usable as an adjective: a plausible adjective sense, or a
+    /// label on an Attribute instance.
+    pub fn is_adjectival(&self, word: &str) -> bool {
+        let w = word.to_lowercase();
+        (self.senses_exact_pos(&w, Pos::Adj) && self.plausible(&w, Pos::Adj))
+            || self
+                .label_hits(word)
+                .any(|sym| self.is_attribute_instance(&sym))
+    }
+
+    /// The part-of-speech prior: is reading `lemma` as `pos` consistent
+    /// with how the word is used?  See [`POS_PRIOR_FLOOR`].
+    pub fn plausible(&self, lemma: &str, pos: Pos) -> bool {
+        let total = self.wn.tag_total(lemma);
+        let count = self.wn.tag_count(lemma, pos);
+        total < POS_PRIOR_EVIDENCE || (count > 0 && count * POS_PRIOR_FLOOR >= total)
+    }
+
+    /// Is `word` (any inflection) usable as a verb.
+    pub fn is_verbal(&self, word: &str) -> bool {
+        self.verb_lemma(word).is_some()
+    }
+
+    /// Can the bare noun `word` be plural as written ("deer", "people")?
+    pub fn is_invariant_plural(&self, word: &str) -> bool {
+        let w = word.to_lowercase();
+        INVARIANT_PLURALS.contains(&w.as_str()) || w.ends_with("fish")
+    }
+
+    // -- Morphology ------------------------------------------------------------
+
+    /// Base form and inflection of a verb surface form, using WordNet's
+    /// exception tables plus regular `-s`/`-es`/`-ies`/`-ed`/`-ing` rules.
+    pub fn verb_lemma(&self, word: &str) -> Option<(String, Inflection)> {
+        let w = word.to_lowercase();
+        self.wordnet_verb(&w)
+            .filter(|(lemma, _)| self.plausible(lemma, Pos::Verb))
+            .or_else(|| self.labeled_verb(&w))
+    }
+
+    fn wordnet_verb(&self, w: &str) -> Option<(String, Inflection)> {
+        if self.senses_exact_pos(w, Pos::Verb) {
+            return Some((w.to_string(), Inflection::Present));
+        }
+        let candidates: Vec<(String, Inflection)> = [
+            (
+                w.strip_suffix("ies").map(|s| format!("{s}y")),
+                Inflection::ThirdSingular,
+            ),
+            (
+                w.strip_suffix("es").map(str::to_string),
+                Inflection::ThirdSingular,
+            ),
+            (
+                w.strip_suffix('s').map(str::to_string),
+                Inflection::ThirdSingular,
+            ),
+            (
+                w.strip_suffix("ied").map(|s| format!("{s}y")),
+                Inflection::Past,
+            ),
+            (w.strip_suffix("ed").map(str::to_string), Inflection::Past),
+            (w.strip_suffix('d').map(str::to_string), Inflection::Past),
+            (doubled(w, "ed"), Inflection::Past),
+            (
+                w.strip_suffix("ing").map(str::to_string),
+                Inflection::Progressive,
+            ),
+            (
+                w.strip_suffix("ing").map(|s| format!("{s}e")),
+                Inflection::Progressive,
+            ),
+            (doubled(w, "ing"), Inflection::Progressive),
+        ]
+        .into_iter()
+        .filter_map(|(c, i)| c.map(|c| (c, i)))
+        .collect();
+        if let Some(hit) = candidates
+            .into_iter()
+            .find(|(c, _)| !c.is_empty() && self.senses_exact_pos(c, Pos::Verb))
+        {
+            return Some(hit);
+        }
+        // Irregular forms from verb.exc: past unless the form is a gerund.
+        let lemma = self.exception_base(w, Pos::Verb)?;
+        let infl = if w.ends_with("ing") {
+            Inflection::Progressive
+        } else {
+            Inflection::Past
+        };
+        Some((lemma, infl))
+    }
+
+    /// No WordNet verb: a KB label on a Process class or a binary
+    /// relation, or a binary relation's own name, still makes the word a
+    /// verb ("possesses"), unless the corpus prior says the word is not
+    /// one (the relation `part` does not make "parts" a verb).
+    fn labeled_verb(&self, w: &str) -> Option<(String, Inflection)> {
+        let labeled_verb = |form: &str| {
+            self.plausible(form, Pos::Verb)
+                && (self.verb_kind(form) == Some(false)
+                    || self
+                        .label_hits(form)
+                        .any(|sym| self.verb_kind(&sym).is_some()))
+        };
+        if labeled_verb(w) {
+            let infl = if w.ends_with('s') {
+                Inflection::ThirdSingular
+            } else {
+                Inflection::Present
+            };
+            return Some((w.to_string(), infl));
+        }
+        for base in [w.strip_suffix("es"), w.strip_suffix('s')]
+            .into_iter()
+            .flatten()
+        {
+            if labeled_verb(base) {
+                return Some((base.to_string(), Inflection::ThirdSingular));
+            }
+        }
+        None
+    }
+
+    /// Base form of a noun surface form and whether it was plural.
+    pub fn noun_lemma(&self, word: &str) -> (String, bool) {
+        let w = word.to_lowercase();
+        if let Some(base) = self.exception_base(&w, Pos::Noun) {
+            return (base, true);
+        }
+        if self.senses_exact_pos(&w, Pos::Noun) || self.has_label(&w) {
+            return (w, false);
+        }
+        for cand in [
+            w.strip_suffix("ies").map(|s| format!("{s}y")),
+            w.strip_suffix("es").map(str::to_string),
+            w.strip_suffix('s').map(str::to_string),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if !cand.is_empty()
+                && (self.senses_exact_pos(&cand, Pos::Noun) || self.has_label(&cand))
+            {
+                return (cand, true);
+            }
+        }
+        (w, false)
+    }
+
+    /// The irregular base form of `w` as `pos` ("drove" -> "drive"), even
+    /// when the surface form is a lemma of another part of speech (a
+    /// drove of cattle).
+    fn exception_base(&self, w: &str, pos: Pos) -> Option<String> {
+        if self.senses_exact_pos(w, pos) {
+            return None;
+        }
+        self.wn
+            .exception_bases(w)
+            .into_iter()
+            .map(|b| b.to_lowercase())
+            .find(|b| self.senses_exact_pos(b, pos))
+    }
+
+    fn senses_exact_pos(&self, w: &str, pos: Pos) -> bool {
+        self.wn
+            .senses(w)
+            .iter()
+            .any(|s| s.synset.pos == pos && s.lemma == w)
+    }
+
+    // -- Candidates --------------------------------------------------------------
+
+    /// Ranked SUMO candidates for a base-form word as `pos`: KB labels first,
+    /// then WordNet anchors in sense order.  Only terms the KB defines.
+    /// `proper` admits senses WordNet lists only capitalized.
+    pub fn candidates(&self, lemma: &str, pos: Pos, proper: bool) -> Vec<Candidate> {
+        let key = (lemma.to_lowercase(), pos, proper);
+        if let Some(c) = self.cache.borrow().get(&key) {
+            return c.clone();
+        }
+        let out = self.candidates_uncached(&key.0, pos, proper);
+        self.cache.borrow_mut().insert(key, out.clone());
+        out
+    }
+
+    /// The senses of `lemma` as `pos` in frequency order, re-ranked from 1
+    /// after dropping proper-noun-only senses for a common-noun query.
+    fn senses_for(&self, lemma: &str, pos: Pos, proper: bool) -> Vec<(usize, Sense<'_>)> {
+        self.wn
+            .senses(lemma)
+            .into_iter()
+            .filter(|s| s.synset.pos == pos && s.lemma == lemma)
+            .filter(|s| {
+                proper
+                    || s.synset
+                        .words
+                        .iter()
+                        .any(|w| w.eq_ignore_ascii_case(lemma) && !is_proper(w))
+            })
+            .enumerate()
+            .map(|(i, s)| (i + 1, s))
+            .collect()
+    }
+
+    fn candidates_uncached(&self, lemma: &str, pos: Pos, proper: bool) -> Vec<Candidate> {
+        let mut out: Vec<Candidate> = Vec::new();
+        for sym in self.label_hits(lemma) {
+            if !out.iter().any(|c| c.term == sym) {
+                out.push(Candidate {
+                    term: sym,
+                    rank: 1,
+                    sense: String::new(),
+                    synset: None,
+                    source: Source::Label,
+                    exact: true,
+                    instance: false,
+                });
+            }
+        }
+        // The search API's WordNet pass dedups per term across parts of
+        // speech, so the sense order is taken from the lexicon directly;
+        // only terms the KB defines count, exactly as the search filters.
+        let mut wn_hits: Vec<Candidate> = Vec::new();
+        for (rank, sense) in self.senses_for(lemma, pos, proper) {
+            for anchor in &sense.synset.sumo {
+                let (exact, instance) = match anchor.kind {
+                    MappingKind::Equivalent => (true, false),
+                    MappingKind::Subsuming => (false, false),
+                    MappingKind::Instance => (true, true),
+                    MappingKind::Other(_) => continue,
+                };
+                if !self.defined(&anchor.term)
+                    || out.iter().any(|c| c.term == anchor.term)
+                    || wn_hits.iter().any(|c| c.term == anchor.term)
+                {
+                    continue;
+                }
+                wn_hits.push(Candidate {
+                    term: anchor.term.clone(),
+                    rank,
+                    sense: format!("{}{}", sense.label(), anchor.kind.suffix()),
+                    synset: Some(sense.synset.id()),
+                    source: Source::WordNet,
+                    exact,
+                    instance,
+                });
+            }
+        }
+        out.extend(wn_hits);
+        out
+    }
+
+    /// Symbols whose English `termFormat` equals `word` (case-insensitive).
+    fn label_hits(&self, word: &str) -> impl Iterator<Item = String> + '_ {
+        let query = word.replace('_', " ").to_lowercase();
+        if let Some(hits) = self.labels.borrow().get(&query) {
+            return hits.clone().into_iter();
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut hits: Vec<String> = Vec::new();
+        for language in &self.languages {
+            let opts = SearchOpts {
+                language: Some(language),
+                limit: None,
+                ..SearchOpts::default()
+            };
+            hits.extend(
+                self.kb
+                    .search(&query, &opts)
+                    .into_iter()
+                    .filter(|h| {
+                        h.source == SearchSource::TermFormat && h.text.eq_ignore_ascii_case(&query)
+                    })
+                    .map(|h| h.symbol)
+                    .filter(|s| seen.insert(s.clone())),
+            );
+        }
+        self.labels.borrow_mut().insert(query, hits.clone());
+        hits.into_iter()
+    }
+
+    /// The no-sliding rule: the chosen term must come from a KB label or
+    /// the most frequent sense.  When neither passes the gate, the word is
+    /// refused for the most frequent sense's own reason (its anchor is not
+    /// in the KB, or has the wrong type) rather than translated by a rarer
+    /// sense that happens to fit.
+    fn strict(
+        &self,
+        word: &str,
+        lemma: &str,
+        pos: Pos,
+        usable: Vec<Candidate>,
+        all: &[Candidate],
+        wrong_type: impl Fn(String) -> Refusal,
+    ) -> Result<Vec<Candidate>, Refusal> {
+        if usable.iter().any(|c| c.rank == 1) {
+            return Ok(usable);
+        }
+        if let Some(r) = self.mfs_missing(word, lemma, pos) {
+            return Err(r);
+        }
+        match all.iter().find(|c| c.rank == 1) {
+            Some(c) => Err(wrong_type(c.term.clone())),
+            None => Err(Refusal::NoSumoAnchor {
+                word: word.into(),
+                pos: pos_name(pos),
+            }),
+        }
+    }
+
+    /// Why a word has no usable candidates, in priority order.
+    fn lexical_refusal(&self, word: &str, lemma: &str, pos: Pos) -> Refusal {
+        let senses = self.senses_for(lemma, pos, is_proper(word));
+        if senses.is_empty() {
+            return Refusal::UnknownWord { word: word.into() };
+        }
+        let anchors: Vec<String> = senses
+            .iter()
+            .flat_map(|(_, s)| s.synset.sumo.iter())
+            .filter(|a| matches!(a.kind, MappingKind::Equivalent | MappingKind::Subsuming))
+            .map(|a| a.term.clone())
+            .collect();
+        match anchors.first() {
+            None => Refusal::NoSumoAnchor {
+                word: word.into(),
+                pos: pos_name(pos),
+            },
+            Some(term) => Refusal::TermNotInKb {
+                word: word.into(),
+                term: term.clone(),
+            },
+        }
+    }
+
+    /// When the most frequent sense's anchor is missing from the KB, the
+    /// no-sliding rule refuses the word for that reason rather than for a
+    /// typing failure of some rarer sense.
+    fn mfs_missing(&self, word: &str, lemma: &str, pos: Pos) -> Option<Refusal> {
+        let (_, sense) = self
+            .senses_for(lemma, pos, is_proper(word))
+            .into_iter()
+            .next()?;
+        let anchor = sense
+            .synset
+            .sumo
+            .iter()
+            .find(|a| matches!(a.kind, MappingKind::Equivalent | MappingKind::Subsuming))?;
+        (!self.defined(&anchor.term)).then(|| Refusal::TermNotInKb {
+            word: word.into(),
+            term: anchor.term.clone(),
+        })
+    }
+
+    fn choose(word: &str, mut cands: Vec<Candidate>) -> Choice {
+        let first = cands.remove(0);
+        Choice {
+            word: word.into(),
+            term: first.term,
+            sense: first.sense,
+            synset: first.synset,
+            alternatives: cands.into_iter().map(|c| c.term).collect(),
+        }
+    }
+
+    // -- Typing gates --------------------------------------------------------------
+
+    /// A noun that must name a class of individuals (a generic subject, a
+    /// predicate nominal); a class of attributes (`SocialRole`) is not one.
+    pub fn noun_class(&self, word: &str) -> Result<Choice, Refusal> {
+        let (lemma, _) = self.noun_lemma(word);
+        let all = self.candidates(&lemma, Pos::Noun, is_proper(word));
+        if all.is_empty() {
+            return Err(self.lexical_refusal(word, &lemma, Pos::Noun));
+        }
+        let classes: Vec<Candidate> = all
+            .iter()
+            .filter(|c| {
+                !c.instance
+                    && self.sym(&c.term).is_some_and(|s| {
+                        self.kb.is_class(s) && !self.kb.has_ancestor(s, "Attribute")
+                    })
+            })
+            .cloned()
+            .collect();
+        let classes = self.strict(word, &lemma, Pos::Noun, classes, &all, |term| {
+            Refusal::NotAClass {
+                word: word.into(),
+                term,
+            }
+        })?;
+        if GENERIC_TERMS.contains(&classes[0].term.as_str()) {
+            return Err(Refusal::GenericTerm {
+                word: word.into(),
+                term: classes[0].term.clone(),
+            });
+        }
+        Ok(Self::choose(word, classes))
+    }
+
+    /// A noun in predicate position after the copula: either a class
+    /// (`a dog`) or an Attribute instance (`a pianist` -> Musician).
+    pub fn predicate_noun(&self, word: &str) -> Result<(Choice, bool), Refusal> {
+        let (lemma, _) = self.noun_lemma(word);
+        let all = self.candidates(&lemma, Pos::Noun, is_proper(word));
+        if all.is_empty() {
+            return Err(self.lexical_refusal(word, &lemma, Pos::Noun));
+        }
+        let usable: Vec<Candidate> = all
+            .iter()
+            .filter(|c| {
+                self.is_attribute_instance(&c.term)
+                    || (!c.instance
+                        && self.sym(&c.term).is_some_and(|s| {
+                            self.kb.is_class(s) && !self.kb.has_ancestor(s, "Attribute")
+                        }))
+            })
+            .cloned()
+            .collect();
+        let usable = self.strict(word, &lemma, Pos::Noun, usable, &all, |term| {
+            Refusal::NotAClass {
+                word: word.into(),
+                term,
+            }
+        })?;
+        match usable.first() {
+            None => Err(Refusal::UnknownWord { word: word.into() }),
+            Some(c) => {
+                let is_attr = self.is_attribute_instance(&c.term);
+                if !is_attr && GENERIC_TERMS.contains(&c.term.as_str()) {
+                    return Err(Refusal::GenericTerm {
+                        word: word.into(),
+                        term: c.term.clone(),
+                    });
+                }
+                Ok((Self::choose(word, usable), is_attr))
+            }
+        }
+    }
+
+    /// An adjective: must ground to an instance under `Attribute`.
+    pub fn adjective(&self, word: &str) -> Result<Choice, Refusal> {
+        let w = word.to_lowercase();
+        let all = self.candidates(&w, Pos::Adj, is_proper(word));
+        if all.is_empty() {
+            return Err(self.lexical_refusal(word, &w, Pos::Adj));
+        }
+        let attrs: Vec<Candidate> = all
+            .iter()
+            .filter(|c| self.is_attribute_instance(&c.term))
+            .cloned()
+            .collect();
+        let attrs = self.strict(word, &w, Pos::Adj, attrs, &all, |term| {
+            Refusal::NotAnAttribute {
+                word: word.into(),
+                term,
+            }
+        })?;
+        Ok(Self::choose(word, attrs))
+    }
+
+    /// Every term a verb form may ground to, labels first: a `termFormat`
+    /// on the surface form, the base form, the gerund or the third-person
+    /// singular (SUMO labels relations as "possesses"), a binary relation
+    /// named by one of those forms, a relation labeled by a synonym in the
+    /// most frequent synset ("want" shares its synset with "desire", the
+    /// label of `desires`), then the WordNet senses.
+    fn verb_candidates(&self, word: &str) -> Option<(String, Inflection, Vec<Candidate>)> {
+        let (lemma, infl) = self.verb_lemma(word)?;
+        let mut all: Vec<Candidate> = Vec::new();
+        let label = |term: &str| Candidate {
+            term: term.to_string(),
+            rank: 1,
+            sense: String::new(),
+            synset: None,
+            source: Source::Label,
+            exact: true,
+            instance: false,
+        };
+        let forms = [
+            word.to_lowercase(),
+            lemma.clone(),
+            format!("{lemma}ing"),
+            third_singular(&lemma),
+        ];
+        for form in &forms {
+            for c in self.candidates(form, Pos::Verb, false) {
+                if c.source == Source::Label && !all.iter().any(|a| a.term == c.term) {
+                    all.push(c);
+                }
+            }
+            if self.verb_kind(form) == Some(false) && !all.iter().any(|a| a.term == *form) {
+                all.push(label(form));
+            }
+        }
+        if let Some((_, sense)) = self.senses_for(&lemma, Pos::Verb, false).into_iter().next() {
+            for mate in sense.synset.words.iter().filter(|w| **w != lemma) {
+                for form in [mate.to_string(), third_singular(mate)] {
+                    let named: Vec<String> = self
+                        .label_hits(&form)
+                        .chain(std::iter::once(form.clone()))
+                        .filter(|sym| self.verb_kind(sym) == Some(false))
+                        .collect();
+                    for sym in named {
+                        if !all.iter().any(|a| a.term == sym) {
+                            all.push(label(&sym));
+                        }
+                    }
+                }
+            }
+        }
+        for c in self.candidates(&lemma, Pos::Verb, false) {
+            if !all.iter().any(|a| a.term == c.term) {
+                all.push(c);
+            }
+        }
+        Some((lemma, infl, all))
+    }
+
+    /// A verb: a Process class (event) or a binary relation (stative).
+    pub fn verb(&self, word: &str) -> Result<(Verb, Inflection), Refusal> {
+        let Some((lemma, infl, all)) = self.verb_candidates(word) else {
+            let w = word.to_lowercase();
+            return Err(if self.wn.senses(&w).is_empty() && !self.has_label(&w) {
+                Refusal::UnknownWord { word: word.into() }
+            } else {
+                Refusal::NoRule {
+                    at: word.into(),
+                    expected: vec!["a verb".into()],
+                }
+            });
+        };
+        if all.is_empty() {
+            return Err(self.lexical_refusal(word, &lemma, Pos::Verb));
+        }
+        let usable: Vec<Candidate> = all
+            .iter()
+            .filter(|c| self.verb_kind(&c.term).is_some())
+            .cloned()
+            .collect();
+        let usable = self.strict(word, &lemma, Pos::Verb, usable, &all, |term| {
+            Refusal::NotAnEvent {
+                verb: word.into(),
+                term,
+            }
+        })?;
+        let Some(first) = usable.first() else {
+            return Err(Refusal::UnknownWord { word: word.into() });
+        };
+        if GENERIC_TERMS.contains(&first.term.as_str()) || first.term == "IntentionalProcess" {
+            return Err(Refusal::GenericTerm {
+                word: word.into(),
+                term: first.term.clone(),
+            });
+        }
+        let term = first.term.clone();
+        let stative = self.verb_kind(&term) == Some(false);
+        let choice = Self::choose(word, usable);
+        let verb = if stative {
+            Verb::Stative {
+                relation: term,
+                choice,
+            }
+        } else {
+            Verb::Event {
+                class: term,
+                choice,
+            }
+        };
+        Ok((verb, infl))
+    }
+
+    /// A verb that takes a clause: the first of its candidate terms that
+    /// is a binary relation whose second argument is a `Formula`
+    /// (`believes`, `desires`, `knows`, `hopes`), with the word's
+    /// inflection.  `None` when the word is no verb or none of its terms
+    /// takes a formula.
+    pub fn attitude_verb(&self, word: &str) -> Option<(Choice, Inflection)> {
+        let (_, infl, all) = self.verb_candidates(word)?;
+        let takes_formula = |term: &str| {
+            self.verb_kind(term) == Some(false)
+                && self.domain_class(term, 2).as_deref() == Some("Formula")
+        };
+        let usable: Vec<Candidate> = all
+            .iter()
+            .filter(|c| takes_formula(&c.term))
+            .cloned()
+            .collect();
+        (!usable.is_empty()).then(|| (Self::choose(word, usable), infl))
+    }
+
+    /// A noun that names an Attribute instance (a role: "teacher" ->
+    /// Teacher), for a class phrase read as "whatever bears it".
+    pub fn attribute_noun(&self, word: &str) -> Option<Choice> {
+        match self.predicate_noun(word) {
+            Ok((choice, true)) => Some(choice),
+            _ => None,
+        }
+    }
+
+    /// `Some(true)` for a Process class, `Some(false)` for a binary
+    /// relation, `None` otherwise.
+    fn verb_kind(&self, term: &str) -> Option<bool> {
+        let s = self.sym(term)?;
+        if self.kb.is_class(s) && self.kb.has_ancestor(s, "Process") {
+            Some(true)
+        } else if self.kb.is_relation(s) && !self.kb.is_function(s) && self.arity(s) == Some(2) {
+            Some(false)
+        } else {
+            None
+        }
+    }
+
+    /// A common noun that names one KB instance ("the sun" -> Sun): the
+    /// label or most frequent sense grounds to an instance (an `@` anchor,
+    /// or an `=` anchor the KB declares an instance, "the earth" ->
+    /// PlanetEarth), attributes excepted.
+    pub fn named_instance(&self, word: &str) -> Option<Choice> {
+        let (lemma, plural) = self.noun_lemma(word);
+        if plural {
+            return None;
+        }
+        let all = self.candidates(&lemma, Pos::Noun, is_proper(word));
+        let first = all.iter().find(|c| c.rank == 1)?;
+        let is_inst = self
+            .sym(&first.term)
+            .is_some_and(|s| self.kb.is_instance(s) && !self.kb.has_ancestor(s, "Attribute"));
+        is_inst.then(|| Self::choose(word, vec![first.clone()]))
+    }
+
+    /// A capitalized word as a proper name: the KB instance with that
+    /// symbol name or English label.
+    pub fn name(&self, word: &str) -> Option<String> {
+        if let Some(s) = self.sym(word) {
+            if self.kb.is_instance(s) {
+                return Some(word.to_string());
+            }
+        }
+        self.label_hits(word)
+            .find(|sym| self.sym(sym).is_some_and(|s| self.kb.is_instance(s)))
+    }
+
+    // -- KB queries used by the rules ----------------------------------------------
+
+    pub fn sym(&self, term: &str) -> Option<SymbolId> {
+        self.kb.symbol_id(term)
+    }
+
+    pub fn defined(&self, term: &str) -> bool {
+        self.sym(term).is_some()
+    }
+
+    pub fn has_ancestor(&self, term: &str, ancestor: &str) -> bool {
+        self.sym(term)
+            .is_some_and(|s| self.kb.has_ancestor(s, ancestor))
+    }
+
+    pub fn is_attribute_instance(&self, term: &str) -> bool {
+        self.sym(term)
+            .is_some_and(|s| self.kb.is_instance(s) && self.kb.has_ancestor(s, "Attribute"))
+    }
+
+    fn arity(&self, s: SymbolId) -> Option<i32> {
+        self.kb.layer.semantic().arity(s)
+    }
+
+    /// Class of the instance-of domain of `relation` at 1-based `arg`.
+    pub fn domain_class(&self, relation: &str, arg: usize) -> Option<String> {
+        use crate::types::RelationDomain;
+        match self.kb.domain(relation, arg)? {
+            RelationDomain::Domain(id) | RelationDomain::DomainSubclass(id) => self.kb.sym_name(id),
+            RelationDomain::Unknown => None,
+        }
+    }
+
+    /// The CELT argument type of a class or instance (paper, Figure 8).
+    pub fn celt_type(&self, term: &str) -> CeltType {
+        if ["Human", "OccupationalRole", "SocialRole"]
+            .iter()
+            .any(|a| self.has_ancestor(term, a))
+        {
+            CeltType::Person
+        } else if ["TimePosition", "TimeMeasure", "Process"]
+            .iter()
+            .any(|a| self.has_ancestor(term, a))
+        {
+            CeltType::Time
+        } else {
+            CeltType::Object
+        }
+    }
+
+    /// Do two classes disagree on a top-level SUMO partition?  Catches wrong
+    /// senses like `snow` -> Snowing (a Process) declared a subclass of Ice.
+    pub fn cross_category(&self, sub: &str, sup: &str) -> Option<String> {
+        ["Process", "Attribute", "Physical", "Abstract"]
+            .iter()
+            .find(|cat| self.has_ancestor(sub, cat) != self.has_ancestor(sup, cat))
+            .map(|c| c.to_string())
+    }
+}
+
+/// The regular third-person singular of a base verb form.
+fn third_singular(lemma: &str) -> String {
+    if lemma.ends_with('s')
+        || lemma.ends_with('x')
+        || lemma.ends_with('z')
+        || lemma.ends_with("ch")
+        || lemma.ends_with("sh")
+    {
+        format!("{lemma}es")
+    } else if let Some(stem) = lemma.strip_suffix('y') {
+        if stem.ends_with(|c: char| "aeiou".contains(c)) {
+            format!("{lemma}s")
+        } else {
+            format!("{stem}ies")
+        }
+    } else {
+        format!("{lemma}s")
+    }
+}
+
+fn doubled(w: &str, suffix: &str) -> Option<String> {
+    let stem = w.strip_suffix(suffix)?;
+    let mut chars = stem.chars();
+    let last = chars.next_back()?;
+    let prev = chars.next_back()?;
+    (last == prev && !"aeiou".contains(last)).then(|| stem[..stem.len() - 1].to_string())
+}
+
+fn pos_name(pos: Pos) -> &'static str {
+    match pos {
+        Pos::Noun => "noun",
+        Pos::Verb => "verb",
+        Pos::Adj => "adjective",
+        Pos::Adv => "adverb",
+    }
+}

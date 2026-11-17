@@ -39,7 +39,7 @@ const NOUN = [
   "03100490 06 n 01 car 0 000 | a motor vehicle &%Automobile=",
 ].join("\n");
 
-function fixture({ enabled = true, fetchHook, edits = {} } = {}) {
+function fixture({ enabled = true, fetchHook, edits = {}, missing = [] } = {}) {
   setActivePinia(createPinia());
   const downloads = [];
   const commands = [];
@@ -72,6 +72,9 @@ function fixture({ enabled = true, fetchHook, edits = {} } = {}) {
       fetchText: async (url) => {
         downloads.push(url);
         await fetchHook?.(url);
+        if (missing.some((name) => url.endsWith(name)))
+          throw new Error(`404 ${url}`);
+        if (url.endsWith("FirstNames.csv")) return FIRST_NAMES;
         return url.endsWith("-noun.txt") ? NOUN : "mapping text";
       },
     },
@@ -101,6 +104,25 @@ function fixture({ enabled = true, fetchHook, edits = {} } = {}) {
 }
 
 const NOUN_PATH = "WordNetMappings/WordNetMappings30-noun.txt";
+const FIRST_NAMES = '"name","gender"\n"Mike","M"';
+
+test("FirstNames.csv is fetched and installed with the mapping files", async () => {
+  const { store, downloads } = fixture();
+  const payload = await store.fetchPayload();
+  assert.ok(downloads.includes("WordNetMappings/FirstNames.csv"));
+  assert.equal(payload.firstNames, FIRST_NAMES);
+  const file = store.files.find((f) => f.name === "FirstNames.csv");
+  assert.equal(file?.size, FIRST_NAMES.length);
+  assert.equal(store.trackedFiles.length, 4);
+});
+
+test("a missing FirstNames.csv is optional", async () => {
+  const { store } = fixture({ missing: ["FirstNames.csv"] });
+  const payload = await store.fetchPayload();
+  assert.equal(payload.firstNames, undefined);
+  assert.ok(!store.files.some((f) => f.name === "FirstNames.csv"));
+  assert.equal(payload.noun, NOUN);
+});
 
 test("a saved mapping edit outranks the upstream download", async () => {
   const { store, downloads } = fixture({ edits: { [NOUN_PATH]: "edited" } });
@@ -169,14 +191,14 @@ test("startup and unused session replacement never download WordNet", async () =
 test("first use shares one download and install; later use and recovery reuse the payload", async () => {
   const { store, downloads, commands } = fixture();
   await Promise.all([store.install(), store.install()]);
-  assert.equal(downloads.length, 7);
+  assert.equal(downloads.length, 8);
   assert.deepEqual(commands, ["loadWordNet"]);
   assert.equal(store.installed, true);
   assert.equal(store.loading, false);
   await store.install();
   assert.equal(commands.length, 1);
   await store.reinstall();
-  assert.equal(downloads.length, 7);
+  assert.equal(downloads.length, 8);
   assert.deepEqual(commands, ["loadWordNet", "loadWordNet"]);
 });
 
@@ -191,7 +213,7 @@ test("disabled WordNet stays unloaded until explicitly enabled", async () => {
   assert.equal(store.installed, false);
   await store.reinstall();
   assert.deepEqual(commands, ["loadWordNet", "clearWordNet"]);
-  assert.equal(downloads.length, 7);
+  assert.equal(downloads.length, 8);
 });
 
 test("failed first use can be retried without leaving loading stuck", async () => {

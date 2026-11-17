@@ -10,22 +10,27 @@ import SourceLoc from "./SourceLoc.vue";
 import Row from "./Row.vue";
 import Col from "./Col.vue";
 
-const props = defineProps<{
-  /** The formula; the paraphrase is always derived from this, whatever is displayed. */
-  kif: string;
-  /** The step's TPTP rendering, displayed when `lang` is `tptp`. `null` when
-   *  the step had no TPTP representation. */
-  tptp?: string | null;
-  /** Displayed dialect: `tptp` shows `tptp` (falling back to `kif` when absent), anything else `kif`. */
-  lang?: "kif" | "tptp";
-  /** Source constituent of the formula, for the `file:line` + blame footer.
-   *  `null` for a step with no source origin (a synthetic/CNF sentence). */
-  file?: string | null;
-  /** 1-based source line inside `file`. */
-  line?: number | null;
-  /** The viewed symbol: highlighted rather than linked inside the formula. */
-  focusSymbol?: string;
-}>();
+const props = withDefaults(
+  defineProps<{
+    /** The formula; the paraphrase is always derived from this, whatever is displayed. */
+    kif: string;
+    /** The step's TPTP rendering, displayed when `lang` is `tptp`. `null` when
+     *  the step had no TPTP representation. */
+    tptp?: string | null;
+    /** Displayed dialect: `tptp` shows `tptp` (falling back to `kif` when absent), anything else `kif`. */
+    lang?: "kif" | "tptp";
+    /** Source constituent of the formula, for the `file:line` + blame footer.
+     *  `null` for a step with no source origin (a synthetic/CNF sentence). */
+    file?: string | null;
+    /** 1-based source line inside `file`. */
+    line?: number | null;
+    /** The viewed symbol: highlighted rather than linked inside the formula. */
+    focusSymbol?: string;
+    /** Show the formula's English paraphrase beside (or under) it. */
+    paraphrase?: boolean;
+  }>(),
+  { paraphrase: true },
+);
 
 const shell = useShellStore();
 const isCompact = computed(() => shell.isCompact);
@@ -85,7 +90,9 @@ function onToggle(e: Event) {
   isOpen.value = (e.target as HTMLDetailsElement).open;
 }
 
-const isVisible = computed(() => !isCompact.value || isOpen.value);
+const isVisible = computed(
+  () => props.paraphrase && (!isCompact.value || isOpen.value),
+);
 
 watch(
   [isVisible, nlKey],
@@ -109,7 +116,14 @@ watch(
 
 <template>
   <li ref="root">
-    <div v-if="isCompact">
+    <div v-if="!paraphrase">
+      <div v-if="$slots.header" class="hint"><slot name="header" /></div>
+      <pre class="ref-kif" v-html="highlighted"></pre>
+      <div v-if="file" class="ref-meta">
+        <SourceLoc :file="file" :line="line" />
+      </div>
+    </div>
+    <div v-else-if="isCompact">
       <details class="cite" @toggle="onToggle">
         <summary>
           <div v-if="$slots.header" class="hint"><slot name="header" /></div>

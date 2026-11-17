@@ -16,6 +16,7 @@ following document is a full end user's guide for using the CLI.
     * [`test`](#sumo-test)
     * [`load`](#sumo-load)
     * [`man`](#sumo-man)
+    * [`celt`](#sumo-celt)
     * [`audit`](#sumo-audit)
     * [`update`](#sumo-update)
     * [`config`](#sumo-config)
@@ -304,6 +305,66 @@ sumo man SYMBOL [--lang LANG] [-P] [-f FILE]... [-d DIR]... [--db DIR]
 | `SYMBOL` | — | Symbol to describe (e.g. `Human`, `subclass`, `instance`) |
 | `--lang LANG` | — | Filter documentation / term-format entries by language tag (e.g. `EnglishLanguage`). When omitted, entries in all languages are shown |
 | `-P` / `--no-pager` | — | Disable the interactive pager; print directly to stdout. Pager is also disabled automatically when stdout is not a TTY or when `NO_PAGER` is set |
+
+### `sumo celt`
+
+Translate controlled English into SUO-KIF grounded in the loaded KB. The input is a deliberately tiny fragment of English that is really a formal language: every accepted sentence has exactly one reading, and the translator never guesses -- a sentence it cannot read is refused with the word or construct at fault, a caret under it, and a hint for rewriting it. Vocabulary comes from the KB's `termFormat` labels first and the WordNet mappings second (labels outrank senses, so a wrong most-frequent sense is fixed by adding a `termFormat`), and only terms the KB actually defines are used; proper names are KB instances, or unknown capitalized words with `--assume-names`. Assertions bind indefinites to Skolem constants (`Book-1`) so each formula is independently tellable and a later "the book" refers back; questions become conjectures. Requires the WordNet lexicon (`<lexicon>` in config.xml or `<kbDir>/WordNetMappings`).
+
+```
+sumo celt [TEXT]... [--input FILE] [--names FILE] [--assume-names] [--generic] [--speaker TERM] [--addressee TERM] [--you CLASS] [--now TERM] [--kif-only] [--lines] [--parrot] [--explain] [-f FILE]... [-d DIR]... [--db DIR]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `TEXT` | stdin | The English text, joined with spaces. When omitted (and no `--input`), read from stdin |
+| `--input FILE` | -- | Read the text from a file instead (`-f` is the KB constituent flag) |
+| `--names FILE` | `<lexicon dir>/FirstNames.csv` when present | A `FirstNames.csv` (`"name","gender"` rows) of words that always read as proper names of Humans, even where WordNet has a common-noun sense ("Mike") |
+| `--assume-names` | off | Accept an unknown capitalized word as the name of a `Human` instead of refusing the sentence (emits `(instance Mike Human)` and `(names "Mike" Mike)`) |
+| `--generic` | off | Read a bare-plural or indefinite subject of an action verb as a universal ("Dogs chase cats" -> every dog chases some cat) instead of refusing it as ambiguous between a habit and a law |
+| `--speaker TERM` | -- | The KB instance "I"/"me"/"my" refers to; without it first person is refused |
+| `--addressee TERM` | -- | The KB instance "you"/"your" refers to, for text that addresses someone in particular |
+| `--you CLASS` | -- | With no addressee, read "you" as an arbitrary instance of CLASS: "A flashlight helps you" becomes a universal over every instance, with every "you"/"your" in the sentence bound to the same variable. The verb's own role domains still apply, so a class the KB cannot use in that role is refused |
+| `--now TERM` | KB's `Now` if defined | The time point the text is spoken at. The past tense anchors each event before it: "Mike read a book" adds `(before (EndFn (WhenFn Reading-1)) TERM)`; a TERM the KB does not define is declared `(instance TERM TimePoint)` beside the sentence. Without a speech time the past tense is refused |
+| `--kif-only` | off | Print only the KIF formulas, one per line; refused sentences become `;;` comment lines |
+| `--lines` | off | Treat each input line as its own document: no referent, pronoun binding or Skolem numbering carries between lines. Use it for corpora of unrelated statements; without it the whole input is one discourse, as for prose |
+| `--parrot` | off | Parrot each accepted sentence back: render its formulas as English through the KB's `format`/`termFormat` templates (`~ ...` lines), so the translation can be read against the original |
+| `--explain` | off | Also print each accepted sentence's lexical choices (`word -> Term (sense) [alternatives]`) and the matching rule |
+
+Exit status is success only when every sentence translated. The run ends with `N/M sentences translated` and, for any refusals, a histogram of refusal codes -- on a corpus, that histogram is the list of constructs worth supporting next.
+
+```
+Rex is a dog.          (instance Rex Dog)
+A dog is an animal.    (subclass Dog Animal)
+A hut is a small, simple shelter.
+                       (subclass Hut Shelter) + one rule per adjective
+Mike reads a book.     (instance Reading-1 Reading) (agent Reading-1 Mike)
+                       (instance Book-1 Book) (patient Reading-1 Book-1)
+Birds have feathers.   (forall (?X1) (=> (instance ?X1 Bird)
+                         (exists (?X2) (and (instance ?X2 Feather) (part ?X2 ?X1)))))
+Dogs and cats are animals.
+                       (subclass Dog Animal) (subclass Cat Animal)
+A bird is an animal that flies.
+                       (subclass Bird Animal) + a rule that every bird flies
+Is Rex a dog?          ?- (instance Rex Dog)
+```
+
+Modals scope over their clause, and are written the way SUMO writes modality: `(modalAttribute FORMULA Possibility)`. The clause after the modal is parsed by the ordinary rules (a copula with "be", "have", an event with its object and prepositional phrases) and bound with variables rather than Skolem constants, since nothing inside a possibility exists; a generic subject keeps its universal outside. "Dogs can chase cats" is `(forall (?X) (=> (instance ?X Dog) (modalAttribute (exists (?E ?Y) (and (instance ?E Pursuing) (agent ?E ?X) (instance ?Y Cat) (patient ?E ?Y))) Possibility)))`. can/could/may/might give `Possibility`, must `Necessity`, should/ought `Obligation`; "cannot" denies the possibility, "must not" and "should not" modalize the negated clause. "would" is refused as `modal-counterfactual`, will/shall as `unsupported/modal` (the future). The first-order prover pipeline does not yet reason inside `modalAttribute`; the sentences are stored faithfully for when it does.
+
+Verbs that take a clause ("wants to read", "believes that Rex is a dog") are read from the KB's own signatures: a verb is an attitude verb when one of its terms is a binary relation whose second argument is a `Formula` (`believes`, `desires`, `knows`, `hopes`, `fears`, `expects`, `doubts`, `considers`, `prefers`, `says`), and the sentence becomes that relation applied to the subject and the complement's formula: `(desires Mike (exists (?E ?X) (and (instance ?E Reading) (agent ?E Mike) (instance ?X Book) (patient ?E ?X))))`, `(believes Mike (instance Rex Dog))`. An infinitive complement shares the subject and is parsed like a modal's clause; a "that" complement is a sentence of its own; both are bound rather than asserted. The verb reaches the relation through a `termFormat` label on any of its forms ("desires"), or through a label on a synonym in its most frequent WordNet synset ("want" and "desire" share one), so `desires` needs no English of its own. The same verb with a noun-phrase object ("wants an apple") stays a stative or an event. "Wanted to" is refused as past tense.
+
+Nouns that name an Attribute instance rather than a class ("teacher" -> `Teacher`, an `OccupationalRole`) describe whatever bears the attribute: "A teacher is a man" is `(forall (?X) (=> (attribute ?X Teacher) (instance ?X Human)))`, "Teachers read books" quantifies over bearers of `Teacher`, and "the teacher" introduces `(attribute Teacher-1 Teacher)`. No bearer class is guessed; the KB's own axioms about the role say what kind of thing holds it. A common noun whose term is a KB instance ("the earth" -> `PlanetEarth`, "the sun" -> `Sol`) denotes that instance.
+
+Prepositions map to relations through a table in the grammar (the CELT paper's Table 1, keyed by preposition and complement type; an event head takes `eventLocated`, an object `located`). WordNet has no prepositions, so the table is the one piece of English kept in code; the planned successor is a KB relation (`prepositionRole LANGUAGE "on" eventLocated Process Object`) in a constituent file, so prepositions extend the way `termFormat` labels do.
+
+A relative clause is a restriction on the noun phrase it follows, wherever that phrase is: a subject ("Animals that fly are birds" puts the clause in the antecedent of the universal), an object or a prepositional complement (the clause joins the existential), or a predicate nominal ("A bird is an animal that flies": a second fact about the subject). The clause is parsed by the ordinary rules with the head standing in for its missing argument, which is the subject unless a noun phrase follows the marker ("food that people eat"), so verbs, roles and vocabulary inside the clause are checked as in any sentence; the clause's extent is found by parsing, longest first. A definite with a restriction ("the dog that barks") and a non-restrictive clause are refused as `unsupported/relative-clause`.
+
+Conditionals ("If A, B", "If A then B", "B if A", and the same with "when") are implications: the antecedent is parsed with its indefinites as bound variables, which become the variables of a universal and stay visible to the consequent, so "If a dog barks, it is loud" is `(forall (?X ?E) (=> (and (instance ?X Dog) (instance ?E Barking) (agent ?E ?X)) (attribute ?X Loud)))`; a consequent indefinite is existential, and "every" keeps its own force. Without a comma or "then", the split is found by parsing. "Because", "so", "while", "although" and "unless" stay refused as `unsupported/subordination`.
+
+Pronouns are bound, never guessed. First and second person are deictic and come only from `--speaker`, `--addressee` or `--you`. Third person is anaphoric: "he", "she", "it" and "they" bind to the most recent compatible referent of an earlier sentence or an earlier clause (never a co-argument of their own clause; a reflexive binds only there), where compatibility is read from the KB (`Man`/`Woman`/`Human`/`Collection` by default, overridable in `Opts::pronoun_classes`) and from the gender column of `FirstNames.csv`. Two candidates is `ambiguous-reference`; none is a refusal, or `expletive-it` for "It is cold". Possessives ("your tail", "Bob's car", "the dog's bed") use the same typing as "have".
+
+Words are classified in position, with three part-of-speech checks that keep a wrong reading from sliding through: the subject must agree with its verb or copula in number ("The dog bark" matches no rule), a lowercase or sentence-initial word never takes a sense WordNet lists only capitalized ("jays" is the bird, not the statesman), and a part of speech the sense-tagged corpus almost never uses for a word is not tried ("make" is a verb, not a brand; "part" is a noun). Compound sentences are decomposed before parsing: "and"/"but" between clauses or between like items ("feathers and wings", "red, young, and loud") becomes one sentence per conjunct, and a relative clause on the predicate nominal becomes a second sentence about the subject; the whole is accepted only when every part is. "Have" is read by its object: body parts and artifact parts are `part`, attribute nouns `attribute`, other objects of an agent `possesses`.
+
+Refused constructs (each names its code, e.g. `unsupported/pronoun`): unbound pronouns, "or", subordinate clauses other than if/when, relative clauses on a definite, will/shall/would, passives, numbers, progressive and perfect aspect, adverbs, bare-plural action generics ("Dogs chase cats", unless `--generic`), and any word the lexicon or KB has no term for.
 
 ### `sumo audit`
 

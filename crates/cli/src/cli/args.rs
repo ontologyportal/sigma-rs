@@ -503,6 +503,87 @@ pub enum Cmd {
         limit: usize,
     },
 
+    /// Translate controlled English into SUO-KIF grounded in the loaded
+    /// KB.  Every sentence has exactly one reading or is refused with the
+    /// offending word/construct and a rewrite hint; nothing is guessed.
+    /// Vocabulary comes from `termFormat` labels plus the WordNet
+    /// mappings, so the lexicon must be loaded (`<lexicon>` in
+    /// config.xml or `<kbDir>/WordNetMappings`).
+    ///
+    /// Example: `sumo celt "Rex is a dog. Is Rex a dog?"`
+    Celt {
+        /// The English text (joined with spaces).  When omitted and no
+        /// `--file` is given, the text is read from stdin.
+        text: Vec<String>,
+
+        /// Read the text from this file instead of the command line
+        /// (`-f` is the KB constituent flag, hence a different name).
+        #[arg(long, value_name = "FILE", conflicts_with = "text")]
+        input: Option<PathBuf>,
+
+        /// A `FirstNames.csv` (`"name","gender"` rows) of words that always
+        /// read as proper names of Humans.  Default: the lexicon
+        /// directory's own `FirstNames.csv` when present.
+        #[arg(long, value_name = "FILE")]
+        names: Option<PathBuf>,
+
+        /// Accept an unknown capitalized word as the name of a Human
+        /// (`(instance Mike Human)`) instead of refusing the sentence.
+        #[arg(long = "assume-names")]
+        assume_names: bool,
+
+        /// Read a bare-plural or indefinite subject of an action verb as
+        /// a universal ("Dogs chase cats" -> every dog chases some cat)
+        /// instead of refusing it as ambiguous.
+        #[arg(long)]
+        generic: bool,
+
+        /// The KB instance "I"/"me"/"my" refers to.  Without it first
+        /// person is refused.
+        #[arg(long, value_name = "TERM")]
+        speaker: Option<String>,
+
+        /// The KB instance "you"/"your" refers to, when the text addresses
+        /// someone in particular.
+        #[arg(long, value_name = "TERM")]
+        addressee: Option<String>,
+
+        /// Read "you" as an arbitrary instance of this class ("A flashlight
+        /// helps you" -> every Human) when there is no --addressee.
+        #[arg(long = "you", value_name = "CLASS", conflicts_with = "addressee")]
+        generic_you: Option<String>,
+
+        /// The time point the text is spoken at, for the past tense ("Mike
+        /// read a book" ends before it).  A term the KB does not define is
+        /// declared a TimePoint.  Without it, the KB's own `Now` is used
+        /// when defined; otherwise past-tense sentences are refused.
+        #[arg(long, value_name = "TERM")]
+        now: Option<String>,
+
+        /// Print only the KIF formulas, one per line; refused sentences
+        /// become `;;` comment lines.
+        #[arg(long = "kif-only", conflicts_with = "explain")]
+        kif_only: bool,
+
+        /// Treat each input line as a separate document: no discourse
+        /// (referents, "it", "the dog", Skolem numbering) carries from one
+        /// line to the next.  For corpora of unrelated statements.
+        #[arg(long)]
+        lines: bool,
+
+        /// Parrot each accepted sentence back: render its formulas as
+        /// English through the KB's `format`/`termFormat` templates, so
+        /// the translation can be checked against the original.
+        #[arg(long)]
+        parrot: bool,
+
+        /// Also print each accepted sentence's lexical choices
+        /// (`word -> Term (sense) [alternatives]`) and the rule that
+        /// matched.
+        #[arg(long)]
+        explain: bool,
+    },
+
     /// Audit the knowledge base for inconsistency by sampling: walk a
     /// seeded pseudorandom sweep of its axioms (bookkeeping heads such as
     /// `documentation` excluded) and check each one's SInE neighbourhood

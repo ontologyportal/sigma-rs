@@ -4,6 +4,7 @@ import { useRoute, type LocationQuery } from "vue-router";
 import { PROMOTE_TABS } from "../constants";
 import { navigate, type TabName } from "../router";
 import { useKBStore } from "../stores/kb";
+import { fmtCount, fmtNum } from "../utils/format";
 import DropMenu from "./DropMenu.vue";
 
 /** The tab navigation, in three tiers: a grouped tab strip when it fits,
@@ -24,6 +25,7 @@ const TAB_GROUPS: TabGroup[] = [
     tabs: [
       ["browse", "Browse"],
       ["visualize", "Visualize"],
+      ["translate", "Translate"],
     ],
   },
   {
@@ -52,6 +54,11 @@ const TAB_GROUPS: TabGroup[] = [
 
 const errorCount = computed(
   () => kb.diagnostics.filter((d) => d.severity === "error").length,
+);
+
+/** The exact diagnostics count, for the abbreviated badge's tooltip. */
+const badgeTitle = computed(
+  () => `${fmtNum(kb.diagnostics.length)} diagnostics`,
 );
 
 const currentTab = computed(() => (route.name as TabName) ?? "browse");
@@ -206,7 +213,8 @@ watch(() => kb.diagnostics.length, measure, { flush: "post" });
             v-if="name === 'diagnostics' && kb.diagnostics.length"
             class="tab-badge"
             :class="{ err: errorCount > 0 }"
-            >{{ kb.diagnostics.length }}</span
+            :title="badgeTitle"
+            >{{ fmtCount(kb.diagnostics.length) }}</span
           >
         </button>
       </div>
@@ -242,7 +250,8 @@ watch(() => kb.diagnostics.length, measure, { flush: "post" });
             v-if="groupBadged(group)"
             class="tab-badge"
             :class="{ err: errorCount > 0 }"
-            >{{ kb.diagnostics.length }}</span
+            :title="badgeTitle"
+            >{{ fmtCount(kb.diagnostics.length) }}</span
           >
           <span class="rail-caret" aria-hidden="true">&#9662;</span>
         </button>
@@ -315,7 +324,7 @@ nav.tabs {
   content: attr(data-label);
   position: absolute;
   top: 0;
-  left: 12px;
+  left: 9px;
   font-size: 9px;
   text-transform: uppercase;
   letter-spacing: 0.09em;
@@ -323,8 +332,8 @@ nav.tabs {
   opacity: 0.8;
 }
 .tab-group + .tab-group {
-  margin-left: 10px;
-  padding-left: 10px;
+  margin-left: 8px;
+  padding-left: 8px;
   border-left: 1px solid var(--line);
 }
 nav.tabs button,
@@ -334,7 +343,7 @@ nav.tab-rail button {
   border: none;
   color: var(--muted);
   cursor: pointer;
-  padding: 9px 12px;
+  padding: 9px;
   border-bottom: 2px solid transparent;
   margin-bottom: -1px;
   flex: 0 0 auto;

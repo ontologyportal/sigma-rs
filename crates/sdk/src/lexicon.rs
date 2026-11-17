@@ -137,6 +137,25 @@ fn fetch_text(url: &str) -> SdkResult<String> {
         .map_err(|e| SdkError::Http(format!("{url}: {e}")))
 }
 
+/// Load the proper-name list from `<dir>/FirstNames.csv` (shipped alongside
+/// the WordNet mappings) for `celt::Opts::names`.
+pub fn load_first_names(dir: &Path) -> SdkResult<Vec<String>> {
+    Ok(load_first_name_genders(dir)?
+        .into_iter()
+        .map(|(n, _)| n)
+        .collect())
+}
+
+/// Load `FirstNames.csv` with each name's gender (`None` when the row
+/// has none), for `celt::Opts::name_genders`.
+pub fn load_first_name_genders(
+    dir: &Path,
+) -> SdkResult<Vec<(String, Option<sigmakee_rs_core::celt::Gender>)>> {
+    let path = dir.join("FirstNames.csv");
+    let text = std::fs::read_to_string(&path).map_err(|e| SdkError::Io { path, source: e })?;
+    Ok(sigmakee_rs_core::celt::name_genders_from_csv(&text))
+}
+
 /// Load the [`WsdIndex`] (SigmaKEE's `wordFrequencies_combined.txt`
 /// context-co-occurrence data) from a `WordNetMappings` directory.  A
 /// missing file is an error here; callers that treat WSD as an optional

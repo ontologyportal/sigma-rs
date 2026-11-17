@@ -148,6 +148,23 @@ pub struct SynsetId {
     pub offset: u32,
 }
 
+impl fmt::Display for SynsetId {
+    /// `02084071-n`: the zero-padded offset and the part-of-speech letter.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:08}-{}", self.offset, self.pos.as_char())
+    }
+}
+
+impl Synset {
+    /// This synset's [`SynsetId`].
+    pub fn id(&self) -> SynsetId {
+        SynsetId {
+            pos: self.pos,
+            offset: self.offset,
+        }
+    }
+}
+
 /// One sense of a query word: the synset plus which surface lemma matched
 /// and its 1-based rank in the lemma's frequency-ordered sense list.
 #[derive(Debug, Clone)]
@@ -180,6 +197,8 @@ pub struct WordNet {
     sumo_index: HashMap<String, Vec<SynsetId>>,
     /// irregular inflection -> base form(s), from `noun.exc` / `verb.exc`.
     exceptions: HashMap<String, Vec<String>>,
+    /// (lemma, pos) -> summed SemCor tag count from `index.sense`.
+    tag_counts: HashMap<(String, Pos), u32>,
 }
 
 impl fmt::Debug for WordNet {
@@ -233,6 +252,13 @@ impl WordNet {
         out
     }
 
+    /// Base forms `noun.exc`/`verb.exc` list for an irregular surface form
+    /// ("drove" -> "drive"), whether or not the form is a lemma itself.
+    pub fn exception_bases(&self, word: &str) -> Vec<String> {
+        let key = word.trim().to_lowercase().replace(' ', "_");
+        self.exceptions.get(&key).cloned().unwrap_or_default()
+    }
+
     fn senses_exact(&self, key: &str) -> Vec<Sense<'_>> {
         let Some(ids) = self.lemma_index.get(key) else {
             return Vec::new();
@@ -252,6 +278,24 @@ impl WordNet {
                 }
             })
             .collect()
+    }
+
+    /// How often `lemma` was tagged as `pos` in WordNet's sense-tagged
+    /// corpus (`index.sense` tag counts summed over senses); 0 when
+    /// `index.sense` was not loaded or the lemma was never tagged.
+    pub fn tag_count(&self, lemma: &str, pos: Pos) -> u32 {
+        self.tag_counts
+            .get(&(lemma.to_lowercase().replace(' ', "_"), pos))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Tag count of `lemma` summed over every part of speech.
+    pub fn tag_total(&self, lemma: &str) -> u32 {
+        [Pos::Noun, Pos::Verb, Pos::Adj, Pos::Adv]
+            .into_iter()
+            .map(|p| self.tag_count(lemma, p))
+            .sum()
     }
 
     /// Every synset anchored to SUMO term `term` -- the reverse direction,

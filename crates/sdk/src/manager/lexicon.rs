@@ -2,6 +2,8 @@
 //
 // Resolve a KBManager's `lexicon` config into a loaded WordNet, best-effort.
 
+use std::path::{Path, PathBuf};
+
 use super::{resolve_constituent, KBManager, LexiconSource};
 use crate::lexicon::WordNet;
 
@@ -27,24 +29,8 @@ impl KBManager {
             // `<kbDir>/<directory-or-"WordNetMappings">`, resolved like a
             // constituent path (absolute as-is, else relative to kbDir,
             // itself relative to baseDir).
-            None => {
-                let dir_name = cfg.directory.as_deref().unwrap_or(DEFAULT_SUBDIR);
-                let dir = resolve_constituent(
-                    std::path::Path::new(dir_name),
-                    &self.base_dir,
-                    &self.kb_dir,
-                );
-                crate::lexicon::load_dir_with(&dir, cfg)
-            }
-            // An explicit local `path` already names the mapping directory
-            // itself (matching `load_dir`'s existing convention) unless
-            // `directory` narrows further into a subpath of it.
-            Some(LexiconSource::Local { path }) => {
-                let dir = match cfg.directory.as_deref() {
-                    Some(sub) => path.join(sub),
-                    None => path.clone(),
-                };
-                crate::lexicon::load_dir_with(&dir, cfg)
+            None | Some(LexiconSource::Local { .. }) => {
+                crate::lexicon::load_dir_with(&self.local_lexicon_dir()?, cfg)
             }
             #[cfg(feature = "http")]
             Some(LexiconSource::Http { url }) => {
@@ -81,12 +67,101 @@ impl KBManager {
             }
         }
     }
+
+    /// The local mapping directory a `None` or `Local` `<lexicon>` source
+    /// names; `None` for remote sources.
+    ///
+    /// No explicit source is the SigmaKEE default layout,
+    /// `<kbDir>/<directory-or-"WordNetMappings">`, resolved like a
+    /// constituent path (absolute as-is, else relative to kbDir, itself
+    /// relative to baseDir).  An explicit local `path` already names the
+    /// mapping directory itself (matching `load_dir`'s convention) unless
+    /// `directory` narrows further into a subpath of it.
+    fn local_lexicon_dir(&self) -> Option<PathBuf> {
+        let cfg = &self.lexicon;
+        match &cfg.source {
+            None => {
+                let dir_name = cfg.directory.as_deref().unwrap_or(DEFAULT_SUBDIR);
+                Some(resolve_constituent(
+                    Path::new(dir_name),
+                    &self.base_dir,
+                    &self.kb_dir,
+                ))
+            }
+            Some(LexiconSource::Local { path }) => Some(match cfg.directory.as_deref() {
+                Some(sub) => path.join(sub),
+                None => path.clone(),
+            }),
+            Some(_) => None,
+        }
+    }
+
+    /// Load the `FirstNames.csv` proper-name list from the same local
+    /// directory [`KBManager::load_lexicon`] reads the mappings from,
+    /// best-effort: a remote source, a disabled lexicon, or a missing file
+    /// degrades to `None`.
+    pub fn load_first_names(&self) -> Option<Vec<String>> {
+        Some(
+            self.load_first_name_genders()?
+                .into_iter()
+                .map(|(n, _)| n)
+                .collect(),
+        )
+    }
+
+    /// [`KBManager::load_first_names`] with each name's gender.
+    pub fn load_first_name_genders(
+        &self,
+    ) -> Option<Vec<(String, Option<sigmakee_rs_core::celt::Gender>)>> {
+        if !self.load_lexicons {
+            return None;
+        }
+        let dir = self.local_lexicon_dir()?;
+        match crate::lexicon::load_first_name_genders(&dir) {
+            Ok(names) => Some(names),
+            Err(e) => {
+                log::debug!("wordnet: first names not loaded ({e})");
+                None
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::manager::LexiconConfig;
+
+    #[test]
+    fn first_names_resolve_to_the_lexicon_dir() {
+        let dir = std::env::temp_dir().join(format!("sigma-first-names-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("FirstNames.csv"),
+            "\"name\",\"gender\"\n\"Zeke\",\"M\"\n",
+        )
+        .unwrap();
+        let m = KBManager {
+            lexicon: LexiconConfig {
+                source: Some(LexiconSource::Local { path: dir.clone() }),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(m.load_first_names(), Some(vec!["Zeke".to_string()]));
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        let http = KBManager {
+            lexicon: LexiconConfig {
+                source: Some(LexiconSource::Http {
+                    url: "http://example.invalid".into(),
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(http.load_first_names(), None);
+    }
 
     #[test]
     fn load_lexicons_false_never_attempts_anything() {

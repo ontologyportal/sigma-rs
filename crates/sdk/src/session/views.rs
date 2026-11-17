@@ -147,7 +147,7 @@ fn wordnet_mappings_for(
                 .iter()
                 .filter(move |a| a.term == symbol)
                 .map(move |anchor| WordNetMappingView {
-                    id: format!("{:08}-{}", synset.offset, synset.pos.as_char()),
+                    id: synset.id().to_string(),
                     words: synset
                         .words
                         .iter()
@@ -201,7 +201,7 @@ impl WordNetSenseView {
     fn new(synset: &sigmakee_rs_core::lexicon::Synset, label: String) -> Self {
         let pos = synset.pos.as_char();
         Self {
-            id: format!("{:08}-{pos}", synset.offset),
+            id: synset.id().to_string(),
             pos: pos.to_string(),
             offset: format!("{:08}", synset.offset),
             label,
@@ -1876,6 +1876,20 @@ impl<L: TopLayer> Session<L> {
             None => String::new(),
         }
     }
+
+    /// English for a formula through the KB's own English templates,
+    /// variables as generic noun phrases -- how a CELT translation is
+    /// parroted back for checking against the original sentence.  Uses the
+    /// documented English language with the most templates (falling back
+    /// to `EnglishLanguage`).
+    #[cfg(any(feature = "external-prover", feature = "native-prover"))]
+    pub fn parrot(&self, kif: &str) -> String {
+        let language = sigmakee_rs_core::celt::english_languages(&self.kb)
+            .into_iter()
+            .last()
+            .unwrap_or_else(|| "EnglishLanguage".into());
+        self.render_nl(kif, &language, true)
+    }
 }
 
 #[cfg(feature = "native-prover")]
@@ -2069,6 +2083,27 @@ mod tests {
             reader: Box::new(std::io::Cursor::new(Vec::from(kif))),
         });
         s
+    }
+
+    #[cfg(any(feature = "external-prover", feature = "native-prover"))]
+    #[test]
+    fn parrot_uses_the_last_documented_english_language() {
+        let s = session_with(
+            "(documentation part EnglishLanguage \"Parthood.\")
+             (documentation part EnglishWrittenLanguage \"Parthood.\")
+             (format EnglishLanguage part \"%1 belongs to %2\")
+             (format EnglishWrittenLanguage part \"%1 is a part of %2\")",
+        );
+        let english = s.parrot("(part Wheel Car)");
+        assert!(english.contains("is a part of"), "{english}");
+    }
+
+    #[cfg(any(feature = "external-prover", feature = "native-prover"))]
+    #[test]
+    fn parrot_falls_back_to_english_language() {
+        let s = session_with("(format EnglishLanguage part \"%1 is a part of %2\")");
+        let english = s.parrot("(part Wheel Car)");
+        assert!(english.contains("is a part of"), "{english}");
     }
 
     #[cfg(feature = "lexicon")]

@@ -6,9 +6,9 @@ use std::process;
 
 use sigmakee::cli::args_project;
 use sigmakee::cli::{
-    maybe_notify_update, run_check, run_config, run_config_tui, run_config_write, run_flush,
-    run_load, run_load_warm, run_man, run_search, run_translate, run_update, run_validate,
-    ConstituentEdit,
+    maybe_notify_update, run_celt, run_check, run_config, run_config_tui, run_config_write,
+    run_flush, run_load, run_load_warm, run_man, run_search, run_translate, run_update,
+    run_validate, CeltFlags, ConstituentEdit,
 };
 #[cfg(feature = "ask")]
 use sigmakee::cli::{run_ask, run_ask_tui, run_audit, run_test};
@@ -338,7 +338,10 @@ fn main_worker() {
         }
     }
 
-    let ok = if matches!(cli.command, Cmd::Translate { .. } | Cmd::Man { .. }) {
+    let ok = if matches!(
+        cli.command,
+        Cmd::Translate { .. } | Cmd::Man { .. } | Cmd::Celt { .. }
+    ) {
         // Translation-only commands run on a `TranslationLayer`, independent of
         // `--backend`: the native `ProverLayer` lacks `HasTranslation`.
         let kb = open_or_new(
@@ -693,7 +696,7 @@ where
     }
 }
 
-/// Dispatch the translation-only commands (`translate`, `man`) on a
+/// Dispatch the translation-only commands (`translate`, `man`, `celt`) on a
 /// `TranslationLayer` session. These don't use a prover, so they run
 /// independent of `--backend`.
 fn dispatch_translation(
@@ -738,7 +741,40 @@ fn dispatch_translation(
             lang,
             no_pager,
         } => run_man(session, manager, symbol, lang, no_pager),
-        _ => unreachable!("dispatch_translation only handles Translate/Man"),
+        Cmd::Celt {
+            text,
+            input,
+            names,
+            assume_names,
+            generic,
+            speaker,
+            addressee,
+            generic_you,
+            now,
+            kif_only,
+            lines,
+            parrot,
+            explain,
+        } => run_celt(
+            session,
+            manager,
+            text,
+            input,
+            names,
+            CeltFlags {
+                assume_names,
+                generic,
+                speaker,
+                addressee,
+                generic_you,
+                now,
+                kif_only,
+                lines,
+                parrot,
+                explain,
+            },
+        ),
+        _ => unreachable!("dispatch_translation only handles Translate/Man/Celt"),
     }
 }
 
