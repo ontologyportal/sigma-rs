@@ -4,7 +4,7 @@
 // thread-pool knob -- the wasm face of the SDK's `session/ops.rs`.
 
 use serde::{Deserialize, Serialize};
-use sigmakee_rs_core::celt;
+use sigmakee_rs_core::{celt, AstKif};
 use sigmakee_rs_sdk::{DiagnosticView, ScratchValidationView, TptpLang, TptpOptions};
 use wasm_bindgen::prelude::*;
 
@@ -262,6 +262,8 @@ struct CeltChoiceView {
     word: String,
     term: String,
     sense: String,
+    /// The WordNet synset id (`02084071-n`), `None` for a label.
+    synset: Option<String>,
     alternatives: Vec<String>,
 }
 
@@ -309,7 +311,7 @@ impl From<celt::SentenceResult> for CeltSentenceView {
                     }
                     .to_string(),
                 );
-                view.kif = Some(logic.formula().to_string());
+                view.kif = Some(logic.formula().format_plain(0));
                 view.rule = Some(logic.rule.to_string());
                 view.declared = logic
                     .declared
@@ -324,6 +326,7 @@ impl From<celt::SentenceResult> for CeltSentenceView {
                         word: c.word,
                         term: c.term,
                         sense: c.sense,
+                        synset: c.synset.map(|id| id.to_string()),
                         alternatives: c.alternatives,
                     })
                     .collect();
@@ -346,6 +349,7 @@ mod tests {
     use super::*;
     use sigmakee_rs_core::celt::ir::{Drs, Term};
     use sigmakee_rs_core::celt::{Choice, Kind, Logic, Refusal, Refused, SentenceResult};
+    use sigmakee_rs_core::lexicon::{Pos, SynsetId};
 
     fn accepted() -> SentenceResult {
         let mut drs = Drs::default();
@@ -367,7 +371,11 @@ mod tests {
                 choices: vec![Choice {
                     word: "dog".into(),
                     term: "Dog".into(),
-                    sense: "dog%1:05:00::".into(),
+                    sense: "dog#n#1=".into(),
+                    synset: Some(SynsetId {
+                        pos: Pos::Noun,
+                        offset: 2084071,
+                    }),
                     alternatives: vec!["Canine".into()],
                 }],
                 rule: "copula",
@@ -386,6 +394,7 @@ mod tests {
         assert_eq!(view.declared, vec!["(instance Rex Animal)".to_string()]);
         assert_eq!(view.choices.len(), 1);
         assert_eq!(view.choices[0].term, "Dog");
+        assert_eq!(view.choices[0].synset.as_deref(), Some("02084071-n"));
         assert_eq!(view.choices[0].alternatives, vec!["Canine".to_string()]);
         assert!(view.code.is_none() && view.reason.is_none() && view.span.is_none());
     }

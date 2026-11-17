@@ -51,6 +51,8 @@ export interface CeltChoice {
   word: string;
   term: string;
   sense: string;
+  /** WordNet synset id (`02084071-n`) behind `sense`; `null` for a KB label. */
+  synset: string | null;
   alternatives: string[];
 }
 

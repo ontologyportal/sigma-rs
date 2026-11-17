@@ -13,6 +13,7 @@ import { useTabQuery } from "../composables/useTabQuery";
 import { useWordNetStore } from "../stores/wordnet";
 import BusyButton from "../components/BusyButton.vue";
 import Card from "../components/Card.vue";
+import CiteRow from "../components/CiteRow.vue";
 import CopyButton from "../components/CopyButton.vue";
 import Disclosure from "../components/Disclosure.vue";
 
@@ -146,6 +147,11 @@ function marked(s: CeltSentence): {
 
 function openTerm(symbol: string) {
   navigate("browse", { sym: symbol });
+}
+
+/** Look up and select a synset on the WordNet tab by its id. */
+function openSynset(id: string) {
+  navigate("wordnet", { q: id, s: id });
 }
 
 function onKeydown(e: KeyboardEvent) {
@@ -292,7 +298,9 @@ function onKeydown(e: KeyboardEvent) {
         </div>
         <template v-if="s.kif">
           <div class="kif">
-            <code>{{ s.kif }}</code>
+            <ol class="kif-rows">
+              <CiteRow :kif="s.kif" :paraphrase="false" />
+            </ol>
             <CopyButton :text="s.kif" title="Copy KIF" />
           </div>
           <p v-if="s.parrot" class="parrot">~ {{ s.parrot }}</p>
@@ -323,7 +331,14 @@ function onKeydown(e: KeyboardEvent) {
                           }}</a>
                         </td>
                         <td>
-                          <code>{{ c.sense || "-" }}</code>
+                          <a
+                            v-if="c.synset"
+                            href="#"
+                            :title="`Open synset ${c.synset} on the WordNet tab`"
+                            @click.prevent="openSynset(c.synset)"
+                            ><code>{{ c.sense }}</code></a
+                          >
+                          <code v-else>{{ c.sense || "-" }}</code>
                         </td>
                         <td>
                           <template v-if="c.alternatives.length">
@@ -346,9 +361,14 @@ function onKeydown(e: KeyboardEvent) {
               <template v-if="s.declared.length">
                 <dt>Assumes</dt>
                 <dd>
-                  <code v-for="d in s.declared" :key="d" class="declared">{{
-                    d
-                  }}</code>
+                  <ol class="kif-rows">
+                    <CiteRow
+                      v-for="d in s.declared"
+                      :key="d"
+                      :kif="d"
+                      :paraphrase="false"
+                    />
+                  </ol>
                 </dd>
               </template>
             </dl>
@@ -423,15 +443,19 @@ function onKeydown(e: KeyboardEvent) {
   justify-content: space-between;
   gap: 8px;
   margin-top: 6px;
-  padding: 8px 10px;
+  padding: 2px 6px;
   border: 1px solid var(--line);
   border-radius: 7px;
   background: var(--bg);
 }
-.kif code {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  font-size: 13px;
+.kif-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+  flex: 1;
+  display: grid;
+  gap: 4px;
 }
 .reason {
   margin: 6px 0 0;
@@ -476,8 +500,5 @@ mark {
   padding: 3px 12px 3px 0;
   border-bottom: 1px solid var(--line);
   vertical-align: top;
-}
-.declared {
-  display: block;
 }
 </style>

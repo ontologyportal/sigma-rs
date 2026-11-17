@@ -269,6 +269,18 @@ test("terms open on the Browse tab", () => {
   }
 });
 
+test("word senses open their synset on the WordNet tab", () => {
+  const f = fixture(() => translated([]));
+  try {
+    f.view.openSynset("02084071-n");
+    assert.deepEqual(plain(f.navigations), [
+      { tab: "wordnet", q: "02084071-n", s: "02084071-n" },
+    ]);
+  } finally {
+    f.scope.stop();
+  }
+});
+
 test("options are sent with the translation and persisted", async () => {
   const f = fixture(() => translated([]));
   try {

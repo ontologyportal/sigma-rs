@@ -148,6 +148,23 @@ pub struct SynsetId {
     pub offset: u32,
 }
 
+impl fmt::Display for SynsetId {
+    /// `02084071-n`: the zero-padded offset and the part-of-speech letter.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:08}-{}", self.offset, self.pos.as_char())
+    }
+}
+
+impl Synset {
+    /// This synset's [`SynsetId`].
+    pub fn id(&self) -> SynsetId {
+        SynsetId {
+            pos: self.pos,
+            offset: self.offset,
+        }
+    }
+}
+
 /// One sense of a query word: the synset plus which surface lemma matched
 /// and its 1-based rank in the lemma's frequency-ordered sense list.
 #[derive(Debug, Clone)]

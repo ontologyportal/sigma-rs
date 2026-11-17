@@ -147,7 +147,7 @@ fn wordnet_mappings_for(
                 .iter()
                 .filter(move |a| a.term == symbol)
                 .map(move |anchor| WordNetMappingView {
-                    id: format!("{:08}-{}", synset.offset, synset.pos.as_char()),
+                    id: synset.id().to_string(),
                     words: synset
                         .words
                         .iter()
@@ -201,7 +201,7 @@ impl WordNetSenseView {
     fn new(synset: &sigmakee_rs_core::lexicon::Synset, label: String) -> Self {
         let pos = synset.pos.as_char();
         Self {
-            id: format!("{:08}-{pos}", synset.offset),
+            id: synset.id().to_string(),
             pos: pos.to_string(),
             offset: format!("{:08}", synset.offset),
             label,

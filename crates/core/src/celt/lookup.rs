@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use crate::kb::search::{SearchOpts, SearchSource};
 use crate::kb::KnowledgeBase;
 use crate::layer::{Layer, TopLayer};
-use crate::lexicon::{MappingKind, Pos, Sense, WordNet};
+use crate::lexicon::{MappingKind, Pos, Sense, SynsetId, WordNet};
 use crate::types::SymbolId;
 
 use super::refuse::Refusal;
@@ -39,6 +39,8 @@ pub struct Candidate {
     pub rank: usize,
     /// `dog#n#1=` for WordNet candidates, empty for labels.
     pub sense: String,
+    /// The synset behind `sense`; `None` for labels.
+    pub synset: Option<SynsetId>,
     pub source: Source,
     /// Label or `=` anchor (the term IS the concept), vs a `+` anchor.
     pub exact: bool,
@@ -53,6 +55,8 @@ pub struct Choice {
     pub word: String,
     pub term: String,
     pub sense: String,
+    /// The synset the term was reached through; `None` for a label.
+    pub synset: Option<SynsetId>,
     pub alternatives: Vec<String>,
 }
 
@@ -433,6 +437,7 @@ impl<'a, L: TopLayer + Layer> Lookup<'a, L> {
                     term: sym,
                     rank: 1,
                     sense: String::new(),
+                    synset: None,
                     source: Source::Label,
                     exact: true,
                     instance: false,
@@ -461,6 +466,7 @@ impl<'a, L: TopLayer + Layer> Lookup<'a, L> {
                     term: anchor.term.clone(),
                     rank,
                     sense: format!("{}{}", sense.label(), anchor.kind.suffix()),
+                    synset: Some(sense.synset.id()),
                     source: Source::WordNet,
                     exact,
                     instance,
@@ -578,6 +584,7 @@ impl<'a, L: TopLayer + Layer> Lookup<'a, L> {
             word: word.into(),
             term: first.term,
             sense: first.sense,
+            synset: first.synset,
             alternatives: cands.into_iter().map(|c| c.term).collect(),
         }
     }
@@ -691,6 +698,7 @@ impl<'a, L: TopLayer + Layer> Lookup<'a, L> {
             term: term.to_string(),
             rank: 1,
             sense: String::new(),
+            synset: None,
             source: Source::Label,
             exact: true,
             instance: false,

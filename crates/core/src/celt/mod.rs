@@ -1007,6 +1007,10 @@ mod tests {
         assert_eq!(l.rule, "copula");
         assert_eq!(l.choices[0].term, "Dog");
         assert_eq!(l.choices[0].sense, "dog#n#1=");
+        assert_eq!(
+            l.choices[0].synset.map(|id| id.to_string()).as_deref(),
+            Some("00000001-n")
+        );
     }
 
     #[test]
